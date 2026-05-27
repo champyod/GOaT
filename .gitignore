@@ -90,6 +90,9 @@ typings/
 # Nuxt.js build / generate output
 .nuxt
 dist
+src-tauri/target/
+src-tauri/gen/
+src-tauri/.tauri/
 
 # Gatsby files
 .cache/
