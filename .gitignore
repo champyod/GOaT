@@ -122,3 +122,20 @@ src-tauri/.tauri/
 
 # Placeholder icons and generated icon assets
 src-tauri/icons/
+
+# Local Environment Variables
+.env.*.local
+.env.development
+.env.production
+
+# IDE & Editor Folders
+.vscode/
+.idea/
+*.suo
+
+# OS Artifacts
+.DS_Store
+Thumbs.db
+
+# Rust specific
+**/*.rs.bk
