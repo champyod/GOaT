@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+      - name: Install root deps (Tauri CLI)
+        run: bun install
+      - name: Install frontend deps
+        run: bun --cwd app install
+      - name: Frontend type check
+        run: bun --cwd app run check
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Rust clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+      - name: Rust fmt check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.12"
+      - name: Pin Python 3.12 (3.14 wheels missing for planned ML deps — see GOaT_LECTURE.md §10.2; revisit when model deps land)
+        working-directory: model
+        run: uv python pin 3.12
+      - name: Sync model deps
+        working-directory: model
+        run: uv sync
+      - name: Model smoke test
+        working-directory: model
+        run: uv run main.py
+
+  build:
+    needs: lint-and-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+      - name: Install root deps (Tauri CLI)
+        run: bun install
+      - name: Install frontend deps
+        run: bun --cwd app install
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.12"
+      - name: Pin Python 3.12 (3.14 wheels missing for planned ML deps; revisit when model deps land)
+        working-directory: model
+        run: uv python pin 3.12
+      - name: Sync model deps
+        working-directory: model
+        run: uv sync
+      - name: Model smoke test
+        working-directory: model
+        run: uv run main.py
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Regenerate icons
+        run: bun tauri icon icon.png
+      - name: Build Tauri app
+        run: bun tauri build
