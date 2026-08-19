@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.goat.app",
   "build": {
-    "beforeDevCommand": "bun --cwd app run dev",
-    "beforeBuildCommand": "bun --cwd app run build",
+    "beforeDevCommand": "bun run --cwd app dev",
+    "beforeBuildCommand": "bun run --cwd app build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../app/build"
   },
