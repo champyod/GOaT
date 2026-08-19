@@ -23,9 +23,9 @@ jobs:
       - name: Install root deps (Tauri CLI)
         run: bun install
       - name: Install frontend deps
-        run: bun --cwd app install
+        run: bun install --cwd app
       - name: Frontend type check
-        run: bun --cwd app run check
+        run: bun run --cwd app check
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -58,7 +58,7 @@ jobs:
       - name: Install root deps (Tauri CLI)
         run: bun install
       - name: Install frontend deps
-        run: bun --cwd app install
+        run: bun install --cwd app
 
       - uses: dtolnay/rust-toolchain@stable
 
