@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Downloaded / generated datasets and synthetic images
+data/*
+!data/.gitkeep
+
+# Evaluation results and model artifacts
+results/*
+!results/.gitkeep
+*.onnx
+*.pt
+*.safetensors
+*.bin
+*.pkl
+*.ct2/
