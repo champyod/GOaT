@@ -12,6 +12,7 @@ dependencies = [
     "sacrebleu>=2.4",
     "tqdm>=4.66",
     "psutil>=6.0",
+    "matplotlib>=3.11.1",
 ]
 
 [project.optional-dependencies]
