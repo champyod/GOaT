@@ -1,5 +1,8 @@
 """MT evaluation: corpus / per-domain BLEU, throughput, latency.
 
+Throughput counts real tokenizer pieces of the hypotheses via the backend
+(whitespace splitting is meaningless for Thai), reported as tokens/s.
+
 Input files follow the analysis.typ contract:
 
     data/mt/test/flores200.th   (source sentences, one per line)
@@ -58,7 +61,7 @@ def run_mt(
         raise RuntimeError(f"expected {len(sources)} translations, got {len(hypotheses)}")
 
     bleu = corpus_bleu(refs, hypotheses)
-    tokens = sum(len(s.split()) for s in hypotheses)
+    tokens = backend.n_tokens(hypotheses)
     total_s = float(np.sum(per_batch_ms)) / 1000.0
 
     return {

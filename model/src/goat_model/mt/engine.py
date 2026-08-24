@@ -27,6 +27,8 @@ class MTResult:
 class MTBackend(Protocol):
     def translate(self, sentences: list[str]) -> MTResult: ...
 
+    def n_tokens(self, texts: list[str]) -> int: ...
+
 
 class NLLBTransformers(MTBackend):
     """Reference implementation used as the ground truth for selection.
@@ -98,6 +100,12 @@ class NLLBTransformers(MTBackend):
             translations = [tokenizer.decode(out, skip_special_tokens=True) for out in outputs]
         latency = (time.perf_counter() - start) * 1000.0
         return MTResult(translations=translations, latency_ms=latency)
+
+    def n_tokens(self, texts: list[str]) -> int:
+        """Count tokenizer pieces, excluding special tokens."""
+        _, tokenizer = self._load()
+        encoded = tokenizer(texts, add_special_tokens=False)
+        return sum(len(ids) for ids in encoded["input_ids"])
 
 
 def get_mt(
