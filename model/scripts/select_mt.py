@@ -24,8 +24,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="MT selection experiment (BLEU/latency decision rule)."
     )
-    parser.add_argument("--src", choices=("th", "en"), default="th")
-    parser.add_argument("--tgt", choices=("th", "en"), default="en")
+    parser.add_argument("--src", choices=("th", "en"), default="en")
+    parser.add_argument("--tgt", choices=("th", "en"), default="th")
     parser.add_argument("--repeats", type=int, default=c.MT_N_RUNS)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=c.SEED)

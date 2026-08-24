@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 """MT evaluation.
 
-Usage (from analysis.typ):
-    python scripts/eval_mt.py --model NLLB-200-distilled-600M --src th --tgt en \
+Usage:
+    python scripts/eval_mt.py --model NLLB-200-distilled-600M \
         --dataset flores200 --output ./results/mt.json --device cpu \
         --beam 4 --max_len 256 --seed 42
-
-NOTE: `--src`/`--tgt` use th/en and are mapped to FLORES-200 codes. The proposal
-conflicts on direction - scope.typ says EN->TH for the app while analysis.typ
-evaluates th->en. Decide one and keep it consistent.
 """
 
 from __future__ import annotations
@@ -29,8 +25,8 @@ from goat_model.utils import setup_seed, write_json
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate an NLLB-200 model on FLORES-200.")
     parser.add_argument("--model", choices=c.MT_MODELS, default="NLLB-200-distilled-600M")
-    parser.add_argument("--src", choices=("th", "en"), default="th")
-    parser.add_argument("--tgt", choices=("th", "en"), default="en")
+    parser.add_argument("--src", choices=("th", "en"), default="en")
+    parser.add_argument("--tgt", choices=("th", "en"), default="th")
     parser.add_argument("--dataset", choices=("flores200",), default="flores200")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cpu")

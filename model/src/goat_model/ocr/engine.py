@@ -57,7 +57,11 @@ class PaddleOCRv5(OCRBackend):
 
 
 class ThaiTrOCR(OCRBackend):
-    """OpenThaiGPT ThaiTrOCR (Vision Transformer + Electra decoder)."""
+    """OpenThaiGPT ThaiTrOCR (Vision Transformer encoder + Electra decoder).
+
+    Loader follows the official model card "How to Use":
+    https://huggingface.co/openthaigpt/thai-trocr
+    """
 
     name = "ThaiTrOCR"
     model_id = "openthaigpt/thai-trocr"
@@ -72,12 +76,12 @@ class ThaiTrOCR(OCRBackend):
         if self._model is None:
             if not have("torch", "transformers"):
                 raise RuntimeError("torch/transformers not installed — run `uv sync --extra ocr`")
-            from transformers import AutoModelForCausalLM, AutoProcessor
+            from transformers import TrOCRProcessor, VisionEncoderDecoderModel
 
             from goat_model.utils import setup_seed
 
-            self._processor = AutoProcessor.from_pretrained(self.model_id)
-            self._model = AutoModelForCausalLM.from_pretrained(self.model_id)
+            self._processor = TrOCRProcessor.from_pretrained(self.model_id)
+            self._model = VisionEncoderDecoderModel.from_pretrained(self.model_id)
             self._model.eval()
             if self.device == "cpu":
                 self._model = self._model.to("cpu")
@@ -88,13 +92,15 @@ class ThaiTrOCR(OCRBackend):
         import time
 
         import torch
+        from PIL import Image as PILImage
 
         model, processor = self._load()
         start = time.perf_counter()
         with torch.inference_mode():
-            pixel_values = processor(images=image, return_tensors="pt").pixel_values
-            generated = model.generate(pixel_values)
-            text = processor.batch_decode(generated, skip_special_tokens=True)[0]
+            pil_image = PILImage.fromarray(image).convert("RGB")
+            pixel_values = processor(images=pil_image, return_tensors="pt").pixel_values
+            generated_ids = model.generate(pixel_values)
+            text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
         latency = (time.perf_counter() - start) * 1000.0
         return OCRResult(text=text, latency_ms=latency)
 

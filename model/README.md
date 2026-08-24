@@ -61,7 +61,7 @@ uv sync --extra train        # peft + accelerate + datasets
 ```sh
 python scripts/eval_ocr.py --model PP-OCRv5-mobile --dataset thaiocrbench \
     --output ./results/ocr.json --device cpu --seed 42
-python scripts/eval_mt.py --model NLLB-200-distilled-600M --src th --tgt en \
+python scripts/eval_mt.py --model NLLB-200-distilled-600M --src en --tgt th \
     --dataset flores200 --output ./results/mt.json --device cpu \
     --beam 4 --max_len 256 --seed 42
 python scripts/monitor_ram.py --pid <goat_pid> --duration 60 --output results/ram.json
@@ -69,11 +69,12 @@ python scripts/monitor_ram.py --pid <goat_pid> --duration 60 --output results/ra
 
 ## Open decisions
 
-- **Translation direction** is inconsistent in the proposal: `scope.typ` says
-  EN->TH for the app, while `analysis.typ` evaluates `--src th --tgt en`.
-  Pick one before running the MT experiments.
+- **Translation direction**: resolved to **EN->TH** (per `scope.typ`); the
+  eval defaults and commands above use `--src en --tgt th`. `analysis.typ`
+  still shows th->en examples - update the doc to match.
 - Python was pinned to **3.12** (`.python-version`, and CI overrides to 3.12)
   because 3.14 wheels are missing for the ML deps; the proposal text still says
   3.13.
-- `thaiocrbench` / `thai-ocr-evaluation` download sources are TBD — confirm via
-  the papers, then replace the manual `--ingest` step with an auto-downloader.
+- `thaiocrbench` / `thai-ocr-evaluation` now auto-download from
+  `scb10x/ThaiOCRBench` (transcription tasks only) and
+  `openthaigpt/thai-ocr-evaluation`; `--ingest` remains as a manual fallback.
