@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
+from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test, summarize
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
@@ -37,7 +38,13 @@ def main() -> None:
     domain_file = c.MT_TEST / "flores200.domains"
     sources, refs, tags = evaluate.load_pairs(src_file, ref_file, domain_file)
 
-    results: dict = {"runs": args.repeats, "models": {}, "comparisons": []}
+    results: dict = {
+        "runs": args.repeats,
+        "seed": args.seed,
+        "dataset_revisions": dataset_revisions(),
+        "models": {},
+        "comparisons": [],
+    }
     bleu_series: dict[str, list[float]] = {}
     latency_series: dict[str, list[float]] = {}
     last_by_model: dict[str, dict] = {}
@@ -51,11 +58,14 @@ def main() -> None:
             max_length=c.MT_MAX_LENGTH,
             length_penalty=c.MT_LENGTH_PENALTY,
             device="cpu",
+            seed=args.seed,
         )
         bleu_series[model] = []
         latency_series[model] = []
         for _ in range(args.repeats):
-            run = evaluate.run_mt(backend, sources, refs, batch_size=c.MT_BATCH_SIZE)
+            run = evaluate.run_mt(
+                backend, sources, refs, batch_size=c.MT_BATCH_SIZE, seed=args.seed
+            )
             bleu_series[model].append(run["bleu"])
             latency_series[model].append(run["average_ms_per_sentence"] / 1000.0)
             last_by_model[model] = run
@@ -65,7 +75,7 @@ def main() -> None:
             "bleu": {"mean": bleu_mean, "std": bleu_std},
             "avg_s_per_sentence": {"mean": lat_mean, "std": lat_std},
             "per_domain_bleu": evaluate.per_domain_bleu(
-                refs, last_by_model[model]["hypotheses"], tags
+                refs, last_by_model[model]["hypotheses"], tags, seed=args.seed
             ),
         }
 

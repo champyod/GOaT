@@ -60,12 +60,15 @@ def main() -> None:
         max_length=args.max_len,
         length_penalty=args.length_penalty,
         device=args.device,
+        seed=args.seed,
     )
 
     run_metrics: dict[str, list[float]] = {"bleu": [], "throughput_tokens_per_s": []}
     last = None
     for _ in range(args.repeats):
-        last = evaluate.run_mt(backend, sources, refs, batch_size=args.batch_size)
+        last = evaluate.run_mt(
+            backend, sources, refs, batch_size=args.batch_size, seed=args.seed
+        )
         run_metrics["bleu"].append(last["bleu"])
         run_metrics["throughput_tokens_per_s"].append(last["throughput_tokens_per_s"])
 

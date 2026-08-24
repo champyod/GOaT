@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from goat_model.constants import SEED
 from goat_model.mt.engine import MTBackend
 
 
@@ -36,13 +37,15 @@ def load_pairs(
     return sources, refs, tags
 
 
-def run_mt(backend: MTBackend, sources: list[str], refs: list[str], batch_size: int = 16) -> dict:
+def run_mt(
+    backend: MTBackend, sources: list[str], refs: list[str], batch_size: int = 16, seed: int = SEED
+) -> dict:
     import numpy as np
 
     from goat_model.metrics import corpus_bleu
     from goat_model.utils import setup_seed
 
-    setup_seed(42)
+    setup_seed(seed)
     hypotheses: list[str] = []
     per_batch_ms: list[float] = []
     for i in range(0, len(sources), batch_size):
@@ -68,12 +71,12 @@ def run_mt(backend: MTBackend, sources: list[str], refs: list[str], batch_size: 
 
 
 def per_domain_bleu(
-    refs: list[str], hypotheses: list[str], tags: list[str | None]
+    refs: list[str], hypotheses: list[str], tags: list[str | None], seed: int = SEED
 ) -> dict[str, float]:
     from goat_model.metrics import corpus_bleu
     from goat_model.utils import setup_seed
 
-    setup_seed(42)
+    setup_seed(seed)
     grouped_refs: dict[str, list[str]] = {}
     grouped_hyp: dict[str, list[str]] = {}
     for ref, hyp, tag in zip(refs, hypotheses, tags):

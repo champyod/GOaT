@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
+from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
@@ -29,7 +30,13 @@ def main() -> None:
     args = parser.parse_args()
 
     setup_seed(args.seed)
-    results: dict = {"runs": args.repeats, "models": {}, "comparisons": []}
+    results: dict = {
+        "runs": args.repeats,
+        "seed": args.seed,
+        "dataset_revisions": dataset_revisions(),
+        "models": {},
+        "comparisons": [],
+    }
 
     cer_by_model: dict[str, list[float]] = {}
     for model in c.OCR_MODELS:
@@ -37,7 +44,7 @@ def main() -> None:
         for dataset in c.OCR_DATASETS:
             dataset_dir = c.OCR_EVAL / dataset
             assets = evaluate.discover_assets(dataset_dir)
-            backend = get_ocr(model, device="cpu")
+            backend = get_ocr(model, device="cpu", seed=args.seed)
             img_size = c.OCR_IMG_SIZE[model]
             runs = [
                 evaluate.run_ocr(backend, assets, img_size, seed=args.seed)

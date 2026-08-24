@@ -16,6 +16,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from goat_model.constants import SEED
 from goat_model.ocr.engine import OCRBackend
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
@@ -59,7 +60,7 @@ def run_ocr(
     backend: OCRBackend,
     assets: list[OCRAsset],
     img_size: int,
-    seed: int = 42,
+    seed: int = SEED,
 ) -> list[dict]:
     from goat_model.metrics import cer, word_accuracy
     from goat_model.utils import read_gt, setup_seed

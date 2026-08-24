@@ -11,6 +11,7 @@ from typing import Protocol
 
 import numpy as np
 
+from goat_model.constants import SEED
 from goat_model.utils import have
 
 
@@ -29,8 +30,9 @@ class PaddleOCRv5(OCRBackend):
 
     name = "PP-OCRv5-mobile"
 
-    def __init__(self, device: str = "cpu") -> None:
+    def __init__(self, device: str = "cpu", seed: int = SEED) -> None:
         self.device = device
+        self.seed = seed
         self._engine = None
 
     def _load(self):
@@ -39,6 +41,9 @@ class PaddleOCRv5(OCRBackend):
                 from paddleocr import PaddleOCR
             except ImportError as err:
                 raise RuntimeError("paddleocr not installed — run `uv sync --extra ocr`") from err
+            import paddle
+
+            paddle.seed(self.seed)
             # TODO: confirm kwargs against installed PaddleOCR v3.x API
             self._engine = PaddleOCR(
                 ocr_version="PP-OCRv5", use_gpu=self.device != "cpu", lang="th"
@@ -67,8 +72,9 @@ class ThaiTrOCR(OCRBackend):
     model_id = "openthaigpt/thai-trocr"
     img_size = 384
 
-    def __init__(self, device: str = "cpu") -> None:
+    def __init__(self, device: str = "cpu", seed: int = SEED) -> None:
         self.device = device
+        self.seed = seed
         self._model = None
         self._processor = None
 
@@ -85,7 +91,7 @@ class ThaiTrOCR(OCRBackend):
             self._model.eval()
             if self.device == "cpu":
                 self._model = self._model.to("cpu")
-            setup_seed(42)
+            setup_seed(self.seed)
         return self._model, self._processor
 
     def recognize(self, image: np.ndarray) -> OCRResult:
@@ -108,7 +114,7 @@ class ThaiTrOCR(OCRBackend):
 BACKENDS = {"PP-OCRv5-mobile": PaddleOCRv5, "ThaiTrOCR": ThaiTrOCR}
 
 
-def get_ocr(model: str, device: str = "cpu") -> OCRBackend:
+def get_ocr(model: str, device: str = "cpu", seed: int = SEED) -> OCRBackend:
     if model not in BACKENDS:
         raise ValueError(f"unknown OCR model {model!r}; expected one of {sorted(BACKENDS)}")
-    return BACKENDS[model](device=device)
+    return BACKENDS[model](device=device, seed=seed)

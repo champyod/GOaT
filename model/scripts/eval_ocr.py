@@ -45,7 +45,7 @@ def main() -> None:
             f"no images under {dataset_dir} - run scripts/download_data.py --dataset {args.dataset}"
         )
 
-    backend = get_ocr(args.model, device=args.device)
+    backend = get_ocr(args.model, device=args.device, seed=args.seed)
     img_size = c.OCR_IMG_SIZE[args.model]
     print(f"[{args.model}] {len(assets)} images from {args.dataset} on {args.device}")
 

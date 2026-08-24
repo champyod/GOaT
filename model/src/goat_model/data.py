@@ -17,6 +17,31 @@ from goat_model import constants as c
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
+HF_DATASET_REPOS = {
+    "scb-mt": "pythainlp/scb_mt_en_th_2020",
+    "flores200": "facebook/flores",
+    "thaiocrbench": "scb10x/ThaiOCRBench",
+    "thai-ocr-evaluation": "openthaigpt/thai-ocr-evaluation",
+}
+
+
+def dataset_revisions() -> dict[str, str | None]:
+    """Best-effort commit hash of each backing HF repo, for result provenance."""
+    try:
+        from huggingface_hub import HfApi
+        from huggingface_hub.errors import HfHubHTTPError
+    except ImportError as err:
+        raise SystemExit("huggingface_hub not installed - run `uv sync --extra mt`") from err
+
+    api = HfApi()
+    revisions: dict[str, str | None] = {}
+    for name, repo in HF_DATASET_REPOS.items():
+        try:
+            revisions[name] = api.dataset_info(repo).sha
+        except (HfHubHTTPError, OSError):
+            revisions[name] = None
+    return revisions
+
 
 def download_flores200(out_dir: Path) -> Path:
     """Download FLORES-200 devtest th/en as parallel one-sentence-per-line files."""

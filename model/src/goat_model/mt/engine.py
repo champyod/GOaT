@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from goat_model.constants import SEED
 from goat_model.utils import have
 
 NLLB_HF_IDS = {
@@ -43,6 +44,7 @@ class NLLBTransformers(MTBackend):
         max_length: int = 256,
         length_penalty: float = 1.0,
         device: str = "cpu",
+        seed: int = SEED,
     ) -> None:
         self.model_name = model_name
         self.src_lang = src_lang
@@ -51,6 +53,7 @@ class NLLBTransformers(MTBackend):
         self.max_length = max_length
         self.length_penalty = length_penalty
         self.device = device
+        self.seed = seed
         self._model = None
         self._tokenizer = None
 
@@ -70,7 +73,7 @@ class NLLBTransformers(MTBackend):
             self._model.eval()
             if self.device == "cpu":
                 self._model = self._model.to("cpu")
-            setup_seed(42)
+            setup_seed(self.seed)
         return self._model, self._tokenizer
 
     def translate(self, sentences: list[str]) -> MTResult:
@@ -105,6 +108,7 @@ def get_mt(
     max_length: int = 256,
     length_penalty: float = 1.0,
     device: str = "cpu",
+    seed: int = SEED,
 ) -> MTBackend:
     if model_name not in NLLB_HF_IDS:
         raise ValueError(f"unknown MT model {model_name!r}; expected one of {sorted(NLLB_HF_IDS)}")
@@ -116,4 +120,5 @@ def get_mt(
         max_length=max_length,
         length_penalty=length_penalty,
         device=device,
+        seed=seed,
     )
