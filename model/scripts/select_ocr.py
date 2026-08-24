@@ -52,7 +52,7 @@ def main() -> None:
             ]
             summary = evaluate.aggregate_records(runs)
             stats[dataset] = summary
-            cer_by_model.setdefault(model, []).update(rec["cer"] for run in runs for rec in run)
+            cer_by_model.setdefault(model, []).extend(rec["cer"] for run in runs for rec in run)
         results["models"][model] = stats
 
     thai_mean = sum(cer_by_model["ThaiTrOCR"]) / len(cer_by_model["ThaiTrOCR"])

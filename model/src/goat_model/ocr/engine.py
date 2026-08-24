@@ -26,7 +26,11 @@ class OCRBackend(Protocol):
 
 
 class PaddleOCRv5(OCRBackend):
-    """PaddleOCR PP-OCRv5-mobile (detection + recognition, CPU)."""
+    """PaddleOCR PP-OCRv5-mobile (detection + recognition, CPU).
+
+    Built against the PaddleOCR 3.x pipeline API: predict() returns Result
+    objects whose text lives in rec_texts.
+    """
 
     name = "PP-OCRv5-mobile"
 
@@ -44,10 +48,10 @@ class PaddleOCRv5(OCRBackend):
             import paddle
 
             paddle.seed(self.seed)
-            # TODO: confirm kwargs against installed PaddleOCR v3.x API
-            self._engine = PaddleOCR(
-                ocr_version="PP-OCRv5", use_gpu=self.device != "cpu", lang="th"
-            )
+            kwargs = {"ocr_version": "PP-OCRv5", "lang": "th"}
+            if self.device != "cpu":
+                kwargs["device"] = self.device
+            self._engine = PaddleOCR(**kwargs)
         return self._engine
 
     def recognize(self, image: np.ndarray) -> OCRResult:
@@ -57,8 +61,17 @@ class PaddleOCRv5(OCRBackend):
         start = time.perf_counter()
         result = engine.predict(image)
         latency = (time.perf_counter() - start) * 1000.0
-        text = "\n".join(line[1][0] for page in result for line in page[1] if line[1][0])
+        text = "\n".join(self._page_texts(result))
         return OCRResult(text=text, latency_ms=latency)
+
+    @staticmethod
+    def _page_texts(result) -> list[str]:
+        texts: list[str] = []
+        for page in result:
+            data = page.json if hasattr(page, "json") else page
+            res = data.get("res", data) if isinstance(data, dict) else {}
+            texts.extend(str(t) for t in res.get("rec_texts", []))
+        return texts
 
 
 class ThaiTrOCR(OCRBackend):
