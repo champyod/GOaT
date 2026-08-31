@@ -77,6 +77,9 @@ MT_BATCH_SIZE = 16
 # literature couples alpha to rank as a scale factor, alpha ~ 2r); only the
 # learning rate is swept. Rank 12 and alpha 32 keep alpha in the standard
 # 1-3x rank band while staying a sound capacity choice for a 600M model.
+# The finding that modest rank (e.g. 4-16) matches full fine-tuning, so rank
+# sensitivity is low, is from Hu et al., LoRA: Low-Rank Adaptation of Large
+# Language Models, ICLR 2022, doi:10.48550/arXiv.2106.09685.
 LORA_RANKS = (12,)
 LORA_ALPHAS = (32,)
 LORA_TARGET_MODULES = ("q_proj", "v_proj")
