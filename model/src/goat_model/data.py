@@ -18,7 +18,7 @@ from goat_model import constants as c
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 HF_DATASET_REPOS = {
-    "scb-mt": "pythainlp/scb_mt_en_th_2020",
+    "scb-mt": "pythainlp/scb_mt_enth_2020",
     "flores200": "facebook/flores",
     "thaiocrbench": "scb10x/ThaiOCRBench",
     "thai-ocr-evaluation": "openthaigpt/thai-ocr-evaluation",
@@ -78,12 +78,12 @@ def download_scbmt(
     except ImportError as err:
         raise SystemExit("datasets not installed - run `uv sync --extra mt`") from err
 
-    ds = load_dataset("pythainlp/scb_mt_en_th_2020", split="train")
+    ds = load_dataset("pythainlp/scb_mt_enth_2020", split="train")
     print(f"loaded {ds.num_rows} pairs (target sample: {sample})")
 
     rng = np.random.default_rng(seed)
 
-    strat_col = next((col for col in ("domain", "year_month") if col in ds.features), None)
+    strat_col = next((col for col in ("subdataset", "domain", "year_month") if col in ds.features), None)
     if strat_col is None:
         print("WARN: no categorical column for stratification - using plain random sample")
         idx = rng.choice(ds.num_rows, sample, replace=False)

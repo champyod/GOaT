@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CLI wrapper around goat_model.data - all logic lives in the library.
 
-  --dataset scb-mt                 SCB-MT-EN-TH (HF pythainlp/scb_mt_en_th_2020) -> data/mt/
+  --dataset scb-mt                 SCB-MT-EN-TH (HF pythainlp/scb_mt_enth_2020) -> data/mt/
   --dataset flores200              FLORES-200 th/en devtest -> data/mt/test/flores200.th|.en
   --dataset thaiocrbench           scb10x/ThaiOCRBench transcription tasks -> canonical layout
   --dataset thai-ocr-evaluation    openthaigpt/thai-ocr-evaluation -> canonical layout
