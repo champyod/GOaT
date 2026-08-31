@@ -73,9 +73,12 @@ MT_MAX_LENGTH = 256
 MT_LENGTH_PENALTY = 1.0
 MT_BATCH_SIZE = 16
 
-# LoRA fine-tuning ranges.
-LORA_RANKS = (8, 12, 16)
-LORA_ALPHAS = (16, 32, 48)
+# LoRA fine-tuning ranges. Rank and alpha are folded to single values (the
+# literature couples alpha to rank as a scale factor, alpha ~ 2r); only the
+# learning rate is swept. Rank 12 and alpha 32 keep alpha in the standard
+# 1-3x rank band while staying a sound capacity choice for a 600M model.
+LORA_RANKS = (12,)
+LORA_ALPHAS = (32,)
 LORA_TARGET_MODULES = ("q_proj", "v_proj")
 LORA_LEARNING_RATES = (2e-4, 3e-4, 4e-4, 5e-4)
 LORA_EPOCHS = (3, 10)
