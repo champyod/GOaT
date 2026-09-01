@@ -48,10 +48,25 @@ OCR_GRID_BATCH_SIZES = (8, 16, 32)
 OCR_GRID_EPOCHS = (10, 50)
 OCR_EARLY_STOP_PATIENCE = 5
 
-# Data augmentation used for the 15k-image fine-tune set.
+# Data augmentation used for the 10.5k-image fine-tune set.
 AUG_ROTATION_DEG = 3.0
 AUG_BRIGHTNESS_FRAC = 0.20
 AUG_GAUSSIAN_SIGMA = 5.0
+
+# OCR fine-tuning (step 10). Only ThaiTrOCR (the HF-trainable candidate) is
+# fine-tuned, with full weights; the PP-OCRv5-mobile pipeline stays frozen.
+THAITROCR_MODEL_ID = "openthaigpt/thai-trocr"
+OCR_REAL_SCREEN_DIR = "PLACEHOLDER"  # real 500 screens not captured yet
+OCR_SYNTHETIC_N = 10_000
+OCR_FONTS = (
+    "TH Sarabun PSK",
+    "Noto Sans Thai",
+    "Kanit",
+    "Prompt",
+    "Sriracha",
+)
+OCR_WIKI_LANGS = ("th", "en")  # Thai 50% / English 50% from Wikipedia
+OCR_EARLY_STOP_METRIC = "eval_cer"
 
 # ---------------------------------------------------------------------------
 # MT
