@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """OCR evaluation.
 
-Usage (from analysis.typ):
+Usage:
     python scripts/eval_ocr.py --model PP-OCRv5-mobile --dataset thaiocrbench \
         --output ./results/ocr.json --device cpu --seed 42
     python scripts/eval_ocr.py --model ThaiTrOCR --dataset thai-ocr-evaluation ...

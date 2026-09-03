@@ -2,8 +2,7 @@
 """Export trained models for the app: OCR -> ONNX, MT -> CTranslate2.
 
 Expects artifacts written by train_ocr.py / train_mt.py under
-model/artifacts/. Smoke-tests each exported file with a short inference call
-(methodology: 'ทดสอบไฟล์แบบจำลองที่ส่งออกแล้ว').
+model/artifacts/. Smoke-tests each exported file with a short inference call.
 """
 
 from __future__ import annotations

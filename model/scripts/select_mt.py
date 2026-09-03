@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MT model selection: NLLB-200-distilled-600M vs 1.3B.
 
-Applies the decision rule (hypothesis 3 / methodology):
+Applies the decision rule:
 pick 600M iff BLEU > 35 AND average latency <= 2 s per screen, else 1.3B.
 """
 
