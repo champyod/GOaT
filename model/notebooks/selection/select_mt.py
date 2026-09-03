@@ -8,6 +8,8 @@ pick 600M iff BLEU > 35 AND average latency <= 2 s per screen, else 1.3B.
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -19,6 +21,31 @@ from goat_model.metrics import cohens_d, paired_t_test, summarize
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
 from goat_model.utils import LogProgress, setup_seed, write_json
+
+
+def _partial_path(output: Path) -> Path:
+    return output.with_name(output.stem + ".partial.json")
+
+
+def _model_file(output: Path, model: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", model).strip("_")
+    return output.with_name(f"{output.stem}.{safe}.json")
+
+
+def _load_partial(path: Path, seed: int, repeats: int) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if data.get("seed") != seed or data.get("runs") != repeats:
+        return {}
+    return data
+
+
+def _flush_partial(path: Path, seed: int, repeats: int, bleu, lat, hyp) -> None:
+    write_json(path, {"seed": seed, "runs": repeats, "bleu_series": bleu, "latency_series": lat, "last_hyp": hyp})
 
 
 def main() -> None:
@@ -53,6 +80,13 @@ def main() -> None:
     bleu_series: dict[str, list[float]] = {}
     latency_series: dict[str, list[float]] = {}
     last_by_model: dict[str, dict] = {}
+    partial_path = _partial_path(args.output)
+    saved = _load_partial(partial_path, args.seed, args.repeats)
+    saved_bleu = saved.get("bleu_series", {})
+    saved_lat = saved.get("latency_series", {})
+    saved_hyp = saved.get("last_hyp", {})
+    if saved:
+        print(f"[select-mt] resuming from {partial_path}", flush=True)
 
     for model in c.MT_MODELS:
         backend = get_mt(
@@ -65,19 +99,23 @@ def main() -> None:
             device=device,
             seed=args.seed,
         )
-        bleu_series[model] = []
-        latency_series[model] = []
+        bleu_series[model] = list(saved_bleu.get(model, []))
+        latency_series[model] = list(saved_lat.get(model, []))
+        done = len(bleu_series[model])
+        last_by_model[model] = {"hypotheses": saved_hyp.get(model, [])}
         print(f"[select-mt] {model} — loading weights (first run downloads GBs)", flush=True)
         prog = LogProgress(args.repeats, f"select-mt {model}", unit="repeat", interval_s=30.0)
-        for rep in range(args.repeats):
+        prog.n = done
+        for rep in range(done, args.repeats):
             run = evaluate.run_mt(
                 backend, sources, refs, batch_size=c.MT_BATCH_SIZE, seed=args.seed
             )
             bleu_series[model].append(run["bleu"])
             latency_series[model].append(run["average_ms_per_sentence"] / 1000.0)
+            last_by_model[model] = run
+            _flush_partial(partial_path, args.seed, args.repeats, bleu_series, latency_series, {m: last_by_model[m]["hypotheses"] for m in last_by_model if last_by_model[m].get("hypotheses")})
             prog.update()
         prog.close()
-        last_by_model[model] = run
         bleu_mean, bleu_std = summarize(bleu_series[model])
         lat_mean, lat_std = summarize(latency_series[model])
         results["models"][model] = {
@@ -87,6 +125,7 @@ def main() -> None:
                 refs, last_by_model[model]["hypotheses"], tags, seed=args.seed
             ),
         }
+        write_json(_model_file(args.output, model), {"model": model, "seed": args.seed, **results["models"][model]})
 
     a, b = c.MT_MODELS
     test = paired_t_test(bleu_series[a], bleu_series[b], alpha=c.MT_ALPHA)
@@ -113,6 +152,7 @@ def main() -> None:
         "selected": selected,
     }
     write_json(args.output, results)
+    partial_path.unlink(missing_ok=True)
 
     for model in c.MT_MODELS:
         m = results["models"][model]

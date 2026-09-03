@@ -9,6 +9,8 @@ pick ThaiTrOCR iff its CER <= 0.10, otherwise pick the lowest CER model.
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -20,6 +22,31 @@ from goat_model.metrics import cohens_d, paired_t_test
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
 from goat_model.utils import LogProgress, setup_seed, write_json
+
+
+def _partial_path(output: Path) -> Path:
+    return output.with_name(output.stem + ".partial.json")
+
+
+def _model_file(output: Path, model: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", model).strip("_")
+    return output.with_name(f"{output.stem}.{safe}.json")
+
+
+def _load_partial(path: Path, seed: int, repeats: int) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if data.get("seed") != seed or data.get("runs") != repeats:
+        return {}
+    return data
+
+
+def _recs(triples: list) -> list[dict]:
+    return [{"cer": c, "word_accuracy": w, "latency_ms": m} for c, w, m in triples]
 
 
 def main() -> None:
@@ -44,6 +71,11 @@ def main() -> None:
     }
 
     cer_by_model: dict[str, list[float]] = {}
+    partial_path = _partial_path(args.output)
+    saved = _load_partial(partial_path, args.seed, args.repeats)
+    saved_runs = saved.get("runs_data", {})
+    if saved:
+        print(f"[select-ocr] resuming from {partial_path}", flush=True)
     for model in c.OCR_MODELS:
         stats = {}
         for dataset in c.OCR_DATASETS:
@@ -52,16 +84,26 @@ def main() -> None:
             backend = get_ocr(model, device=device, seed=args.seed)
             img_size = c.OCR_IMG_SIZE[model]
             print(f"[select-ocr] {model}/{dataset} — loading weights (first run downloads GBs)", flush=True)
+            key = f"{model}/{dataset}"
+            stored = [list(r) for r in saved_runs.get(key, [])]
+            done = len(stored)
             prog = LogProgress(args.repeats, f"select-ocr {model}/{dataset}", unit="repeat", interval_s=30.0)
-            runs = []
-            for _ in range(args.repeats):
-                runs.append(evaluate.run_ocr(backend, assets, img_size, seed=args.seed))
+            prog.n = done
+            runs = [_recs(r) for r in stored]
+            triples = [list(r) for r in stored]
+            for _ in range(done, args.repeats):
+                recs = evaluate.run_ocr(backend, assets, img_size, seed=args.seed)
+                runs.append(recs)
+                triples.append([[rec["cer"], rec["word_accuracy"], rec["latency_ms"]] for rec in recs])
+                saved_runs[key] = triples
+                write_json(partial_path, {"seed": args.seed, "runs": args.repeats, "runs_data": saved_runs})
                 prog.update()
             prog.close()
             summary = evaluate.aggregate_records(runs)
             stats[dataset] = summary
             cer_by_model.setdefault(model, []).extend(rec["cer"] for run in runs for rec in run)
         results["models"][model] = stats
+        write_json(_model_file(args.output, model), {"model": model, "seed": args.seed, **stats})
 
     thai_mean = sum(cer_by_model["ThaiTrOCR"]) / len(cer_by_model["ThaiTrOCR"])
     pp_mean = sum(cer_by_model["PP-OCRv5-mobile"]) / len(cer_by_model["PP-OCRv5-mobile"])
@@ -89,6 +131,7 @@ def main() -> None:
         "selected": decision,
     }
     write_json(args.output, results)
+    partial_path.unlink(missing_ok=True)
 
     print(f"ThaiTrOCR mean CER: {thai_mean:.4f} | PP-OCRv5-mobile: {pp_mean:.4f}", flush=True)
     print(f"paired t-test p={test['p_value']:.4f} significant={test['significant']}", flush=True)
