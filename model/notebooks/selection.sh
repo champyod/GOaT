@@ -19,6 +19,11 @@ REPEATS_MT="$(PYTHONPATH=src python3 -c 'from goat_model.constants import MT_N_R
 REPEATS_OCR="$(PYTHONPATH=src python3 -c 'from goat_model.constants import OCR_N_RUNS; print(OCR_N_RUNS)')"
 ART_MT="$(PYTHONPATH=src python3 -c 'from goat_model.constants import ART_MT; print(ART_MT)')"
 ART_OCR="$(PYTHONPATH=src python3 -c 'from goat_model.constants import ART_OCR; print(ART_OCR)')"
+MT_DATA="$(PYTHONPATH=src python3 -c 'from goat_model.constants import DRIVE_PATHS; print(DRIVE_PATHS["mt"])')"
+MT_TEST_DIR="$(PYTHONPATH=src python3 -c 'from goat_model.constants import DRIVE_PATHS; print(DRIVE_PATHS["mt_test"])')"
+OCR_EVAL_DIR="$(PYTHONPATH=src python3 -c 'from goat_model.constants import DRIVE_PATHS; print(DRIVE_PATHS["ocr_eval"])')"
+RESULTS="$(PYTHONPATH=src python3 -c 'from goat_model.constants import DRIVE_PATHS; print(DRIVE_PATHS["results"])')"
+DATA_ROOT="$(PYTHONPATH=src python3 -c 'from goat_model.constants import DRIVE_PATHS; print(DRIVE_PATHS["data_root"])')"
 
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -27,14 +32,12 @@ fi
 
 uv sync --extra ocr --extra mt --extra train
 
-uv run python notebooks/data/download_data.py --dataset scb-mt --out-dir "$DRIVE/datasets/mt"
-uv run python notebooks/data/download_data.py --dataset flores200 --out-dir "$DRIVE/datasets/mt/test"
-uv run python notebooks/data/download_data.py --dataset thaiocrbench --out-dir "$DRIVE/datasets/ocr/thaiocrbench"
-uv run python notebooks/data/download_data.py --dataset thai-ocr-evaluation --out-dir "$DRIVE/datasets/ocr/thai-ocr-evaluation"
-uv run python notebooks/selection/select_mt.py --mt-test-dir "$DRIVE/datasets/mt/test" --output "$DRIVE/results/mt_selection.json" --repeats "$REPEATS_MT" --seed "$SEED"
-uv run python notebooks/selection/select_ocr.py --ocr-eval-dir "$DRIVE/datasets/ocr" --output "$DRIVE/results/ocr_selection.json" --repeats "$REPEATS_OCR" --seed "$SEED"
-uv run python notebooks/training/train_mt.py --mt-dir "$DRIVE/datasets/mt" --selection "$DRIVE/results/mt_selection.json" --output "$DRIVE/results/mt_training.json" --out-root "$ART_MT" --seed "$SEED"
-uv run python notebooks/training/train_ocr.py --selection "$DRIVE/results/ocr_selection.json" --data-root "$DRIVE/data" --output "$DRIVE/results/ocr_training.json" --out-root "$ART_OCR" --seed "$SEED"
+uv run python notebooks/data/download_data.py --dataset scb-mt --out-dir "$MT_DATA"
+uv run python notebooks/data/download_data.py --dataset flores200 --out-dir "$MT_TEST_DIR"
+uv run python notebooks/data/download_data.py --dataset thaiocrbench --out-dir "$OCR_EVAL_DIR/thaiocrbench"
+uv run python notebooks/data/download_data.py --dataset thai-ocr-evaluation --out-dir "$OCR_EVAL_DIR/thai-ocr-evaluation"
+uv run python notebooks/selection/select_mt.py --mt-test-dir "$MT_TEST_DIR" --output "$RESULTS/mt_selection.json" --repeats "$REPEATS_MT" --seed "$SEED"
+uv run python notebooks/selection/select_ocr.py --ocr-eval-dir "$OCR_EVAL_DIR" --output "$RESULTS/ocr_selection.json" --repeats "$REPEATS_OCR" --seed "$SEED"
 
 echo "Done"
-ls -lh "$DRIVE/results/" 2>&1
+ls -lh "$RESULTS/" 2>&1
