@@ -50,7 +50,8 @@ class PaddleOCRv5(OCRBackend):
             paddle.seed(self.seed)
             kwargs = {"ocr_version": "PP-OCRv5", "lang": "th"}
             if self.device != "cpu":
-                kwargs["device"] = self.device
+                # PaddleX names it "gpu", not "cuda".
+                kwargs["device"] = "gpu" if self.device == "cuda" else self.device
             self._engine = PaddleOCR(**kwargs)
         return self._engine
 
