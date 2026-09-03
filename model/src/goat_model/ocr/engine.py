@@ -102,8 +102,7 @@ class ThaiTrOCR(OCRBackend):
             self._processor = TrOCRProcessor.from_pretrained(self.model_id)
             self._model = VisionEncoderDecoderModel.from_pretrained(self.model_id)
             self._model.eval()
-            if self.device == "cpu":
-                self._model = self._model.to("cpu")
+            self._model = self._model.to(self.device)
             setup_seed(self.seed)
         return self._model, self._processor
 
@@ -117,7 +116,7 @@ class ThaiTrOCR(OCRBackend):
         start = time.perf_counter()
         with torch.inference_mode():
             pil_image = PILImage.fromarray(image).convert("RGB")
-            pixel_values = processor(images=pil_image, return_tensors="pt").pixel_values
+            pixel_values = processor(images=pil_image, return_tensors="pt").pixel_values.to(self.device)
             generated_ids = model.generate(pixel_values)
             text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
         latency = (time.perf_counter() - start) * 1000.0

@@ -1,4 +1,4 @@
-"""CPU machine-translation backends for NLLB-200 distilled models.
+"""Machine-translation backends for NLLB-200 distilled models.
 
 Heavy frameworks (torch/transformers/ctranslate2) are imported lazily so the
 base `uv sync` environment can still run smoke tests and data-prep scripts.
@@ -73,8 +73,7 @@ class NLLBTransformers(MTBackend):
             )
             self._model = AutoModelForSeq2SeqLM.from_pretrained(model_id)
             self._model.eval()
-            if self.device == "cpu":
-                self._model = self._model.to("cpu")
+            self._model = self._model.to(self.device)
             setup_seed(self.seed)
         return self._model, self._tokenizer
 
@@ -89,7 +88,7 @@ class NLLBTransformers(MTBackend):
         model, tokenizer = self._load()
         start = time.perf_counter()
         with torch.inference_mode():
-            inputs = tokenizer(sentences, return_tensors="pt", padding=True, truncation=True)
+            inputs = tokenizer(sentences, return_tensors="pt", padding=True, truncation=True).to(self.device)
             outputs = model.generate(
                 **inputs,
                 forced_bos_token_id=tokenizer.convert_tokens_to_ids(self.tgt_lang),
