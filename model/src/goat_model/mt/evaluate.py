@@ -15,8 +15,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from goat_model.constants import SEED
-from tqdm import tqdm
 from goat_model.mt.engine import MTBackend
+from goat_model.utils import LogProgress
 
 
 def load_pairs(
@@ -52,12 +52,15 @@ def run_mt(
     setup_seed(seed)
     hypotheses: list[str] = []
     per_batch_ms: list[float] = []
-    print(f"[mt-eval] {len(sources)} sents, bs={batch_size}", flush=True)
-    for i in tqdm(range(0, len(sources), batch_size), desc="mt-eval", unit="batch"):
+    batches = range(0, len(sources), batch_size)
+    prog = LogProgress(len(batches), "mt-eval", unit="batch", interval_s=10.0)
+    for i in batches:
         batch = sources[i : i + batch_size]
         result = backend.translate(batch)
         hypotheses.extend(result.translations)
         per_batch_ms.append(result.latency_ms)
+        prog.update()
+    prog.close()
 
     if len(hypotheses) != len(sources):
         raise RuntimeError(f"expected {len(sources)} translations, got {len(hypotheses)}")

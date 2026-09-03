@@ -17,8 +17,8 @@ import cv2
 import numpy as np
 
 from goat_model.constants import SEED
-from tqdm import tqdm
 from goat_model.ocr.engine import OCRBackend
+from goat_model.utils import LogProgress
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
@@ -68,8 +68,8 @@ def run_ocr(
 
     setup_seed(seed)
     records: list[dict] = []
-    print(f"[ocr-eval] {len(assets)} images, size={img_size}", flush=True)
-    for asset in tqdm(assets, desc="ocr-eval", unit="img"):
+    prog = LogProgress(len(assets), "ocr-eval", unit="img", interval_s=10.0)
+    for asset in assets:
         image = _read_rgb(asset.image)
         image = preprocess(image, img_size)
         gt_text = read_gt(asset.gt)
@@ -86,6 +86,8 @@ def run_ocr(
                 "domain": asset.domain,
             }
         )
+        prog.update()
+    prog.close()
     return records
 
 
