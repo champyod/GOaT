@@ -8,6 +8,7 @@ validation CER tracking and result writing.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import torch
@@ -132,13 +133,31 @@ def run_ocr_finetune(
     test_ds = _build_dataset(data_root / "test", processor, img_size)
     test_refs = [t for t in test_ds["text"]]
 
+    partial_path = result_path.with_name(result_path.stem + ".partial.json")
     grid_results = {}
     best = None
+    if partial_path.is_file():
+        try:
+            saved = json.loads(partial_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            saved = {}
+        if saved.get("seed") == seed and saved.get("selected") == selected_model:
+            grid_results = saved.get("grid_results", {})
+            for v in grid_results.values():
+                key = {k: v[k] for k in ("lr", "batch_size")}
+                if best is None or v["cer"] < best[0]:
+                    best = (v["cer"], key)
+            if grid_results:
+                print(f"[ocr-train] resuming {len(grid_results)} configs from {partial_path}", flush=True)
     total = len(OCR_GRID_LEARNING_RATES) * len(OCR_GRID_BATCH_SIZES)
     done = 0
     for lr in OCR_GRID_LEARNING_RATES:
         for batch in OCR_GRID_BATCH_SIZES:
             done += 1
+            cfg_key = f"lr{lr}_bs{batch}"
+            if cfg_key in grid_results:
+                print(f"[ocr-train] skip done {cfg_key}", flush=True)
+                continue
             print(f"[ocr-train] [{done}/{total}] lr={lr} bs={batch} — loading model", flush=True)
             setup_seed(seed)
             model = VisionEncoderDecoderModel.from_pretrained(THAITROCR_MODEL_ID)
@@ -184,12 +203,15 @@ def run_ocr_finetune(
             torch.cuda.empty_cache()
 
             key = {"lr": lr, "batch_size": batch}
-            grid_results[f"lr{lr}_bs{batch}"] = {**key, "cer": val_cer, "model": str(out_dir)}
+            grid_results[cfg_key] = {**key, "cer": val_cer, "model": str(out_dir)}
+            write_json(partial_path, {"seed": seed, "selected": selected_model, "grid_results": grid_results})
             print(f"config lr{lr} bs{batch}: CER {val_cer}", flush=True)
             if best is None or val_cer < best[0]:
                 best = (val_cer, key)
 
+    assert grid_results, "no grid config evaluated"
     assert best is not None, "no grid config evaluated"
+    partial_path.unlink(missing_ok=True)
     write_json(
         result_path,
         {

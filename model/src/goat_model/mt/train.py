@@ -91,12 +91,30 @@ def run_mt_finetune(
         return {"bleu": round(corpus_bleu(decoded_labels, decoded_preds), 4)}
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    partial_path = result_path.with_name(result_path.stem + ".partial.json")
     grid_results: dict = {}
     best = None
+    if partial_path.is_file():
+        try:
+            saved = json.loads(partial_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            saved = {}
+        if saved.get("seed") == seed and saved.get("selected") == selected:
+            grid_results = saved.get("grid_results", {})
+            for v in grid_results.values():
+                key = {k: v[k] for k in ("rank", "alpha", "lr")}
+                if best is None or v["flores_bleu"] > best[0]:
+                    best = (v["flores_bleu"], key)
+            if grid_results:
+                print(f"[mt-train] resuming {len(grid_results)} configs from {partial_path}", flush=True)
 
     for r in LORA_RANKS:
         for alpha in LORA_ALPHAS:
             for lr in LORA_LEARNING_RATES:
+                cfg_key = f"r{r}_alpha{alpha}_lr{lr}"
+                if cfg_key in grid_results:
+                    print(f"[mt-train] skip done {cfg_key}", flush=True)
+                    continue
                 print(f"[mt-train] config {r}/{alpha}/{lr} — loading base", flush=True)
                 setup_seed(seed)
                 base = AutoModelForSeq2SeqLM.from_pretrained(model_id).to(device)
@@ -126,11 +144,13 @@ def run_mt_finetune(
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 key = {"rank": r, "alpha": alpha, "lr": lr}
-                grid_results[f"r{r}_alpha{alpha}_lr{lr}"] = {**key, "flores_bleu": flores_bleu, "adapter": str(out_dir)}
+                grid_results[cfg_key] = {**key, "flores_bleu": flores_bleu, "adapter": str(out_dir)}
+                write_json(partial_path, {"seed": seed, "selected": selected, "grid_results": grid_results})
                 print(f"config r{r} alpha{alpha} lr{lr}: FLORES BLEU {flores_bleu}", flush=True)
                 if best is None or flores_bleu > best[0]:
                     best = (flores_bleu, key)
 
+    assert grid_results, "no grid config evaluated"
     assert best is not None
     # local-first copy to Drive (paths from constants, never literals)
     try:
@@ -139,5 +159,6 @@ def run_mt_finetune(
         subprocess.run(["fusermount", "-u", "/content/drive"], check=False)
         shutil.copytree(Path(ART_MT).parent, DRIVE_PATHS["results"].parent / "artifacts", dirs_exist_ok=True)
 
+    partial_path.unlink(missing_ok=True)
     write_json(result_path, {"selected": selected, "base_model": model_id, "target_modules": list(LORA_TARGET_MODULES), "epochs": list(LORA_EPOCHS), "grid_results": grid_results, "winner": best[1], "winner_flores_bleu": best[0]})
     print(f"wrote {result_path}", flush=True)
