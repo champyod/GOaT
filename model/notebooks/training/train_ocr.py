@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """OCR fine-tuning: Grid Search over LR/batch/epochs + early stopping, then ONNX export.
 
-Placeholder wiring - the actual training callbacks depend on whether the
-selected backend is PaddleOCR or a TrOCR (transformers) trainer. Fill the
-TODO once the selection experiment pins the winner.
+Reads the selection winner; only ThaiTrOCR is fine-tuned (full weights),
+PP-OCRv5-mobile stays frozen. All training logic lives in goat_model.ocr.train.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
-from goat_model.utils import setup_seed, write_json
+from goat_model.utils import setup_seed
 
 
 def main() -> None:

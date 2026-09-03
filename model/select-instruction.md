@@ -12,7 +12,7 @@ Each step is one file: `notebooks/<mainstep>/<step>.py` — run by shell (`uv ru
 | `notebooks/training/train_mt` | `results/mt_training.json` + `artifacts/mt_lora/` |
 | `notebooks/training/train_ocr` | `results/ocr_training.json` + `artifacts/ocr/` |
 
-`notebooks/selection.ipynb` is the orchestrator — it `%run`s `notebooks/<mainstep>/<step>.py` with Drive args in order. No per-step `.ipynb`; one `.py` per step.
+`notebooks/selection.ipynb` (steps 6–8: download + selection) and `notebooks/training.ipynb` (steps 9–10: training) are the orchestrators — each `%run`s `notebooks/<mainstep>/<step>.py` with Drive args in order. No per-step `.ipynb`; one `.py` per step.
 
 ## Way 1: CLI (all from terminal, close-safe)
 
@@ -22,7 +22,7 @@ colab drivemount -s goat
 colab install -s goat -r requirements.txt
 ```
 
-Same package set is also in `selection.ipynb` `%pip` cells as fallback, so the run works whether or not the install step was run. All Drive paths, repeats, and seed come from `src/goat_model/constants.py` (`DRIVE_ROOT`, `DRIVE_PATHS`, `SEED`, `MT_N_RUNS`, `OCR_N_RUNS`) — never hardcoded.
+Same package set is also in both notebooks' `%pip -r requirements.txt` cells as fallback, so the run works whether or not the install step was run. All Drive paths, repeats, and seed come from `src/goat_model/constants.py` (`DRIVE_ROOT`, `DRIVE_PATHS`, `SEED`, `MT_N_RUNS`, `OCR_N_RUNS`) — never hardcoded.
 
 Open your console and paste (one block at a time):
 
@@ -48,6 +48,12 @@ Then launch (paste in console). Close the console whenever — `nohup ... &` det
 nohup bash /content/GOaT/model/notebooks/selection.sh > /tmp/goat_log.txt 2>&1 &
 ```
 
+After selection finishes, launch training (paste in console):
+
+```bash
+nohup bash /content/GOaT/model/notebooks/training.sh > /tmp/goat_training_log.txt 2>&1 &
+```
+
 Check progress (fresh console, paste):
 
 ```bash
@@ -61,7 +67,7 @@ If any command ever fails with `module 'jupyter_kernel_client' has no attribute 
 uv pip install --python ~/.local/share/uv/tools/google-colab-cli/bin/python "jupyter-kernel-client==0.15.0"
 ```
 
-`notebooks/selection.sh` is the shell runner covering both notebooks (`selection.ipynb` steps 6–8, `training.ipynb` steps 9–10 — same order, same args). All three call only step files with Drive args from constants:
+`notebooks/selection.sh` (twin of `selection.ipynb`) and `notebooks/training.sh` (twin of `training.ipynb`) call only step files with Drive args from constants:
 
 ```bash
 uv run python notebooks/data/download_data.py --dataset scb-mt --out-dir "$DRIVE/datasets/mt"
@@ -70,8 +76,11 @@ uv run python notebooks/data/download_data.py --dataset thaiocrbench --out-dir "
 uv run python notebooks/data/download_data.py --dataset thai-ocr-evaluation --out-dir "$DRIVE/datasets/ocr/thai-ocr-evaluation"
 uv run python notebooks/selection/select_mt.py --mt-test-dir "$DRIVE/datasets/mt/test" --output "$DRIVE/results/mt_selection.json" --repeats "$REPEATS_MT" --seed "$SEED"
 uv run python notebooks/selection/select_ocr.py --ocr-eval-dir "$DRIVE/datasets/ocr" --output "$DRIVE/results/ocr_selection.json" --repeats "$REPEATS_OCR" --seed "$SEED"
-uv run python notebooks/training/train_mt.py --mt-dir "$DRIVE/datasets/mt" --selection "$DRIVE/results/mt_selection.json" --output "$DRIVE/results/mt_training.json" --out-root /content/artifacts/mt_lora --seed "$SEED"
-uv run python notebooks/training/train_ocr.py --selection "$DRIVE/results/ocr_selection.json" --data-root "$DRIVE/data" --output "$DRIVE/results/ocr_training.json" --out-root /content/artifacts/ocr --seed "$SEED"
+```
+
+```bash
+uv run python notebooks/training/train_mt.py --mt-dir "$DRIVE/datasets/mt" --selection "$DRIVE/results/mt_selection.json" --output "$DRIVE/results/mt_training.json" --out-root "$ART_MT" --seed "$SEED"
+uv run python notebooks/training/train_ocr.py --selection "$DRIVE/results/ocr_selection.json" --data-root "$DRIVE/data" --output "$DRIVE/results/ocr_training.json" --out-root "$ART_OCR" --seed "$SEED"
 ```
 
 Results at `GOaT/results/` on Drive. Stop: `colab stop -s goat`.
@@ -80,7 +89,7 @@ Results at `GOaT/results/` on Drive. Stop: `colab stop -s goat`.
 
 1. Open `GOaT/` in VS Code
 2. `Select Kernel` > `Colab` > `New Colab Server` > `T4`
-3. Open `model/notebooks/selection.ipynb` > Run All
+3. Open `model/notebooks/selection.ipynb` > Run All, then `model/notebooks/training.ipynb` > Run All
 
 Or open any `model/notebooks/<mainstep>/<step>.py` and Run File for that step alone.
 

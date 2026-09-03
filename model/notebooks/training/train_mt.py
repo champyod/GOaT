@@ -15,8 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
-from goat_model.mt.engine import NLLB_HF_IDS
-from goat_model.utils import setup_seed, write_json
+from goat_model.utils import setup_seed
 
 
 def main() -> None:
