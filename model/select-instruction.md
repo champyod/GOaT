@@ -45,19 +45,32 @@ git -C /content/GOaT pull --ff-only
 Then launch (paste in console). Close the console whenever — `nohup ... &` detaches and the keep-alive daemon holds the VM:
 
 ```bash
+mkdir -p /content/drive/MyDrive/GOaT/logs
 nohup bash /content/GOaT/model/notebooks/selection.sh > /tmp/goat_log.txt 2>&1 &
+nohup bash -c 'while true; do cp /tmp/goat_log.txt /content/drive/MyDrive/GOaT/logs/goat_log.txt; sleep 300; done' > /dev/null 2>&1 &
 ```
 
-After selection finishes, launch training (paste in console):
+Weights cache lives at `GOaT/hf_cache/` on Drive (`HF_HOME`/`HF_HUB_CACHE` exported by both `.sh` runners) — first run downloads (gated sets still need `HF_TOKEN`), reruns reuse with zero re-download. Slower per-file than SSD, faster than GBs over network.
+
+Logs stay on local SSD (fast) with a copy synced to `GOaT/logs/` every 5 min — never point the live log straight at Drive (`tqdm` rewrites many times per second; each write would become a network roundtrip). After selection finishes, launch training (paste in console):
 
 ```bash
 nohup bash /content/GOaT/model/notebooks/training.sh > /tmp/goat_training_log.txt 2>&1 &
+nohup bash -c 'while true; do cp /tmp/goat_training_log.txt /content/drive/MyDrive/GOaT/logs/goat_training_log.txt; sleep 300; done' > /dev/null 2>&1 &
 ```
 
 Check progress (fresh console, paste):
 
 ```bash
 tail -c 2000 /tmp/goat_log.txt
+tail -c 2000 /tmp/goat_training_log.txt
+```
+
+From anywhere (no VM needed), read the Drive copies (≤5 min stale):
+
+```bash
+tail -n 50 /content/drive/MyDrive/GOaT/logs/goat_log.txt
+tail -n 50 /content/drive/MyDrive/GOaT/logs/goat_training_log.txt
 ```
 
 Or without console: `colab log -s goat`. Re-running is safe — every step skips when its output JSON already exists, so no step burns GPU twice.
@@ -84,6 +97,33 @@ uv run python notebooks/training/train_ocr.py --selection "$DRIVE/results/ocr_se
 ```
 
 Results at `GOaT/results/` on Drive. Stop: `colab stop -s goat`.
+
+## Resume
+
+**Same VM** (session alive, run died): just relaunch — steps skip finished outputs, datasets re-verify in place:
+
+```bash
+export HF_TOKEN=hf_paste_yours_here
+nohup bash /content/GOaT/model/notebooks/selection.sh > /tmp/goat_log.txt 2>&1 &
+```
+
+**New VM** (session lost, `404/401`): re-provision, then everything resumes from Drive state:
+
+```bash
+colab new -s goat --gpu T4
+colab drivemount -s goat
+colab console -s goat
+```
+
+```bash
+[ -d /content/GOaT/.git ] || git clone --depth 1 https://github.com/champyod/GOaT.git /content/GOaT
+git -C /content/GOaT pull --ff-only
+ls /content/drive/MyDrive/GOaT/results 2>&1
+export HF_TOKEN=hf_paste_yours_here
+mkdir -p /content/drive/MyDrive/GOaT/logs
+nohup bash /content/GOaT/model/notebooks/selection.sh > /tmp/goat_log.txt 2>&1 &
+nohup bash -c 'while true; do cp /tmp/goat_log.txt /content/drive/MyDrive/GOaT/logs/goat_log.txt; sleep 300; done' > /dev/null 2>&1 &
+```
 
 ## Way 2: VS Code (all from editor, click run)
 
