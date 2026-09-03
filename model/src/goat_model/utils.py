@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import random
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,3 +37,44 @@ def read_sentences(path: Path) -> list[str]:
 def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+class LogProgress:
+    """TTY-aware progress: tqdm bar on interactive terminals, newline
+    heartbeat (every ``interval_s``) in log files where ``\\r`` bars
+    would stack into one unreadable line."""
+
+    def __init__(self, total: int, desc: str, unit: str = "it", interval_s: float = 10.0) -> None:
+        self.total = total
+        self.desc = desc
+        self.unit = unit
+        self.interval = interval_s
+        self.n = 0
+        self.t0 = time.monotonic()
+        self.last = 0.0
+        self.bar = None
+        if sys.stdout.isatty():
+            from tqdm import tqdm
+
+            self.bar = tqdm(total=total, desc=desc, unit=unit)
+
+    def update(self, k: int = 1) -> None:
+        self.n += k
+        if self.bar is not None:
+            self.bar.update(k)
+            return
+        now = time.monotonic()
+        if now - self.last >= self.interval or self.n >= self.total:
+            self.last = now
+            el = now - self.t0
+            rate = self.n / el if el > 0 else 0.0
+            eta = (self.total - self.n) / rate if rate > 0 else -1.0
+            print(
+                f"[{self.desc}] {self.n}/{self.total} {self.unit} "
+                f"elapsed={el:.0f}s eta={eta:.0f}s rate={rate:.1f}/s",
+                flush=True,
+            )
+
+    def close(self) -> None:
+        if self.bar is not None:
+            self.bar.close()
