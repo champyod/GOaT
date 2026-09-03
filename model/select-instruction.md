@@ -34,22 +34,13 @@ colab console -s goat
 [ -d /content/GOaT/.git ] || git clone --depth 1 https://github.com/champyod/GOaT.git /content/GOaT
 ```
 
-`git clone` pulls GitHub state, which does NOT include unpushed local work. Sync the 10 pipeline files from laptop to VM (repeat after every local edit):
+Pushed code needs no manual upload — pull it on the VM (paste in console):
 
 ```bash
-colab upload -s goat model/notebooks/selection.sh /content/GOaT/model/notebooks/selection.sh
-colab upload -s goat model/notebooks/selection.ipynb /content/GOaT/model/notebooks/selection.ipynb
-colab upload -s goat model/notebooks/data/download_data.py /content/GOaT/model/notebooks/data/download_data.py
-colab upload -s goat model/notebooks/selection/select_mt.py /content/GOaT/model/notebooks/selection/select_mt.py
-colab upload -s goat model/notebooks/selection/select_ocr.py /content/GOaT/model/notebooks/selection/select_ocr.py
-colab upload -s goat model/notebooks/training/train_mt.py /content/GOaT/model/notebooks/training/train_mt.py
-colab upload -s goat model/notebooks/training/train_ocr.py /content/GOaT/model/notebooks/training/train_ocr.py
-colab upload -s goat model/src/goat_model/mt/train.py /content/GOaT/model/src/goat_model/mt/train.py
-colab upload -s goat model/src/goat_model/constants.py /content/GOaT/model/src/goat_model/constants.py
-colab upload -s goat model/src/goat_model/ocr/train.py /content/GOaT/model/src/goat_model/ocr/train.py
+git -C /content/GOaT pull --ff-only
 ```
 
-(`upload` fails with 500 if the remote parent dir is missing — `mkdir -p` it in the console first.)
+`git pull` covers every pushed file (both notebooks, `requirements.txt`, all step files).
 
 Then launch (paste in console). Close the console whenever — `nohup ... &` detaches and the keep-alive daemon holds the VM:
 
@@ -70,7 +61,7 @@ If any command ever fails with `module 'jupyter_kernel_client' has no attribute 
 uv pip install --python ~/.local/share/uv/tools/google-colab-cli/bin/python "jupyter-kernel-client==0.15.0"
 ```
 
-`notebooks/selection.sh` is the shell twin of `selection.ipynb` (same stem, same steps, same order, same args). Both call only step files with Drive args from constants:
+`notebooks/selection.sh` is the shell runner covering both notebooks (`selection.ipynb` steps 6–8, `training.ipynb` steps 9–10 — same order, same args). All three call only step files with Drive args from constants:
 
 ```bash
 uv run python notebooks/data/download_data.py --dataset scb-mt --out-dir "$DRIVE/datasets/mt"
