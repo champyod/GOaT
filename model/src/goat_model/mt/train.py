@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from tqdm import tqdm
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 from transformers import (
@@ -97,13 +98,14 @@ def run_mt_finetune(
     for r in LORA_RANKS:
         for alpha in LORA_ALPHAS:
             for lr in LORA_LEARNING_RATES:
+                print(f"[mt-train] config {r}/{alpha}/{lr} — loading base", flush=True)
                 setup_seed(seed)
                 base = AutoModelForSeq2SeqLM.from_pretrained(model_id).to(device)
                 peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, r=r, lora_alpha=alpha, target_modules=list(LORA_TARGET_MODULES), lora_dropout=0.1, bias="none")
                 model = get_peft_model(base, peft_config)
                 collator = DataCollatorForSeq2Seq(tokenizer, model=model)
                 out_dir = out_root / f"r{r}_alpha{alpha}_lr{lr}"
-                args = Seq2SeqTrainingArguments(output_dir=str(out_dir), learning_rate=lr, per_device_train_batch_size=MT_BATCH_SIZE, num_train_epochs=LORA_EPOCHS[1], optim="adamw_torch", eval_strategy="epoch", save_strategy="epoch", save_total_limit=1, load_best_model_at_end=True, metric_for_best_model="eval_bleu", greater_is_better=True, predict_with_generate=True, seed=seed)
+                args = Seq2SeqTrainingArguments(output_dir=str(out_dir), learning_rate=lr, per_device_train_batch_size=MT_BATCH_SIZE, num_train_epochs=LORA_EPOCHS[1], optim="adamw_torch", eval_strategy="epoch", save_strategy="epoch", save_total_limit=1, load_best_model_at_end=True, metric_for_best_model="eval_bleu", greater_is_better=True, predict_with_generate=True, seed=seed, logging_steps=10, disable_tqdm=False)
                 trainer = Seq2SeqTrainer(model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds, tokenizer=tokenizer, data_collator=collator, compute_metrics=compute_bleu)
                 trainer.train(resume_from_checkpoint=True)
                 model.save_pretrained(out_dir)
@@ -111,8 +113,9 @@ def run_mt_finetune(
                 ft_model = PeftModel.from_pretrained(AutoModelForSeq2SeqLM.from_pretrained(model_id).to(device), out_dir)
                 ft_model.eval()
                 hyps: list[str] = []
+                print(f"[mt-train] infer FLORES {len(flores_src)} sents, bs={MT_BATCH_SIZE}", flush=True)
                 with torch.inference_mode():
-                    for i in range(0, len(flores_src), MT_BATCH_SIZE):
+                    for i in tqdm(range(0, len(flores_src), MT_BATCH_SIZE), desc=f"infer r{r} a{alpha} lr{lr}", unit="batch"):
                         batch = tokenizer(flores_src[i : i + MT_BATCH_SIZE], return_tensors="pt", padding=True, truncation=True).to(device)
                         gen = ft_model.generate(**batch, forced_bos_token_id=tokenizer.convert_tokens_to_ids(LANG_CODES["th"]), num_beams=4, max_length=MT_MAX_LENGTH)
                         hyps.extend(tokenizer.batch_decode(gen, skip_special_tokens=True))
@@ -122,7 +125,7 @@ def run_mt_finetune(
                     torch.cuda.empty_cache()
                 key = {"rank": r, "alpha": alpha, "lr": lr}
                 grid_results[f"r{r}_alpha{alpha}_lr{lr}"] = {**key, "flores_bleu": flores_bleu, "adapter": str(out_dir)}
-                print(f"config r{r} alpha{alpha} lr{lr}: FLORES BLEU {flores_bleu}")
+                print(f"config r{r} alpha{alpha} lr{lr}: FLORES BLEU {flores_bleu}", flush=True)
                 if best is None or flores_bleu > best[0]:
                     best = (flores_bleu, key)
 
@@ -135,4 +138,4 @@ def run_mt_finetune(
         shutil.copytree(Path(ART_MT).parent, DRIVE_PATHS["results"].parent / "artifacts", dirs_exist_ok=True)
 
     write_json(result_path, {"selected": selected, "base_model": model_id, "target_modules": list(LORA_TARGET_MODULES), "epochs": list(LORA_EPOCHS), "grid_results": grid_results, "winner": best[1], "winner_flores_bleu": best[0]})
-    print(f"wrote {result_path}")
+    print(f"wrote {result_path}", flush=True)

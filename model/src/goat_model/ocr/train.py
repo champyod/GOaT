@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
+from tqdm import tqdm
 from datasets import Dataset
 from PIL import Image as PILImage
 from transformers import (
@@ -81,8 +82,9 @@ def _infer_cer(
     refs: list[str],
 ) -> float:
     hyps: list[str] = []
+    print(f"[ocr-train] infer test {len(test_ds)} images, bs={batch_size}", flush=True)
     with torch.inference_mode():
-        for i in range(0, len(test_ds), batch_size):
+        for i in tqdm(range(0, len(test_ds), batch_size), desc=f"infer bs{batch_size}", unit="batch"):
             px = torch.stack(
                 [torch.tensor(x) for x in test_ds[i : i + batch_size]["pixel_values"]]
             ).to(model.device)
@@ -130,8 +132,12 @@ def run_ocr_finetune(
 
     grid_results = {}
     best = None
+    total = len(OCR_GRID_LEARNING_RATES) * len(OCR_GRID_BATCH_SIZES)
+    done = 0
     for lr in OCR_GRID_LEARNING_RATES:
         for batch in OCR_GRID_BATCH_SIZES:
+            done += 1
+            print(f"[ocr-train] [{done}/{total}] lr={lr} bs={batch} — loading model", flush=True)
             setup_seed(seed)
             model = VisionEncoderDecoderModel.from_pretrained(THAITROCR_MODEL_ID)
             model.config.decoder_start_token_id = processor.tokenizer.cls_token_id
@@ -156,6 +162,8 @@ def run_ocr_finetune(
                 early_stopping_patience=OCR_EARLY_STOP_PATIENCE,
                 predict_with_generate=True,
                 seed=seed,
+                logging_steps=10,
+                disable_tqdm=False,
             )
             trainer = Seq2SeqTrainer(
                 model=model,
@@ -175,7 +183,7 @@ def run_ocr_finetune(
 
             key = {"lr": lr, "batch_size": batch}
             grid_results[f"lr{lr}_bs{batch}"] = {**key, "cer": val_cer, "model": str(out_dir)}
-            print(f"config lr{lr} bs{batch}: CER {val_cer}")
+            print(f"config lr{lr} bs{batch}: CER {val_cer}", flush=True)
             if best is None or val_cer < best[0]:
                 best = (val_cer, key)
 
@@ -191,4 +199,4 @@ def run_ocr_finetune(
             "winner_cer": best[0],
         },
     )
-    print(f"wrote {result_path}")
+    print(f"wrote {result_path}", flush=True)
