@@ -1,7 +1,8 @@
 #!/bin/bash
 set -e
-# GOaT selection — shell runner covering notebooks/selection.ipynb (steps 6-8)
-# and notebooks/training.ipynb (steps 9-10), same order, same args.
+# GOaT selection — shell twin of notebooks/selection.ipynb (steps 6-8:
+# data download + MT/OCR selection), same order, same args.
+# Training lives in notebooks/training.sh (twin of training.ipynb).
 # Each step is one pure python call; Drive paths passed as args, same as the ipynb Args cell.
 # Usage:
 #   bash notebooks/selection.sh [DRIVE_ROOT]

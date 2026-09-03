@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
 from goat_model.data import dataset_revisions
+from tqdm import tqdm
 from goat_model.metrics import cohens_d, paired_t_test
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
@@ -47,9 +48,10 @@ def main() -> None:
             assets = evaluate.discover_assets(dataset_dir)
             backend = get_ocr(model, device="cpu", seed=args.seed)
             img_size = c.OCR_IMG_SIZE[model]
+            print(f"[select-ocr] {model}/{dataset} — {args.repeats} repeats, {len(assets)} imgs", flush=True)
             runs = [
                 evaluate.run_ocr(backend, assets, img_size, seed=args.seed)
-                for _ in range(args.repeats)
+                for _ in tqdm(range(args.repeats), desc=f"select-ocr {model}/{dataset}", unit="repeat")
             ]
             summary = evaluate.aggregate_records(runs)
             stats[dataset] = summary
@@ -83,10 +85,10 @@ def main() -> None:
     }
     write_json(args.output, results)
 
-    print(f"ThaiTrOCR mean CER: {thai_mean:.4f} | PP-OCRv5-mobile: {pp_mean:.4f}")
-    print(f"paired t-test p={test['p_value']:.4f} significant={test['significant']}")
-    print(f"SELECTED: {decision}")
-    print(f"wrote {args.output}")
+    print(f"ThaiTrOCR mean CER: {thai_mean:.4f} | PP-OCRv5-mobile: {pp_mean:.4f}", flush=True)
+    print(f"paired t-test p={test['p_value']:.4f} significant={test['significant']}", flush=True)
+    print(f"SELECTED: {decision}", flush=True)
+    print(f"wrote {args.output}", flush=True)
 
 
 if __name__ == "__main__":

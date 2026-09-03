@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from goat_model.constants import SEED
+from tqdm import tqdm
 from goat_model.mt.engine import MTBackend
 
 
@@ -51,7 +52,8 @@ def run_mt(
     setup_seed(seed)
     hypotheses: list[str] = []
     per_batch_ms: list[float] = []
-    for i in range(0, len(sources), batch_size):
+    print(f"[mt-eval] {len(sources)} sents, bs={batch_size}", flush=True)
+    for i in tqdm(range(0, len(sources), batch_size), desc="mt-eval", unit="batch"):
         batch = sources[i : i + batch_size]
         result = backend.translate(batch)
         hypotheses.extend(result.translations)

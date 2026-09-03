@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
 from goat_model.data import dataset_revisions
+from tqdm import tqdm
 from goat_model.metrics import cohens_d, paired_t_test, summarize
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
@@ -63,7 +64,8 @@ def main() -> None:
         )
         bleu_series[model] = []
         latency_series[model] = []
-        for _ in range(args.repeats):
+        print(f"[select-mt] {model} — {args.repeats} repeats", flush=True)
+        for rep in tqdm(range(args.repeats), desc=f"select-mt {model}", unit="repeat"):
             run = evaluate.run_mt(
                 backend, sources, refs, batch_size=c.MT_BATCH_SIZE, seed=args.seed
             )
@@ -110,11 +112,12 @@ def main() -> None:
         m = results["models"][model]
         print(
             f"{model}: BLEU {m['bleu']['mean']:.2f}±{m['bleu']['std']:.2f} "
-            f"| {m['avg_s_per_sentence']['mean'] * 1000:.0f}±{m['avg_s_per_sentence']['std'] * 1000:.0f} ms/sentence"
+            f"| {m['avg_s_per_sentence']['mean'] * 1000:.0f}±{m['avg_s_per_sentence']['std'] * 1000:.0f} ms/sentence",
+            flush=True
         )
-    print(f"paired t-test p={test['p_value']:.4f} significant={test['significant']}")
-    print(f"SELECTED: {selected}")
-    print(f"wrote {args.output}")
+    print(f"paired t-test p={test['p_value']:.4f} significant={test['significant']}", flush=True)
+    print(f"SELECTED: {selected}", flush=True)
+    print(f"wrote {args.output}", flush=True)
 
 
 if __name__ == "__main__":

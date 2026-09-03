@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 from goat_model.constants import SEED
+from tqdm import tqdm
 from goat_model.ocr.engine import OCRBackend
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
@@ -67,7 +68,8 @@ def run_ocr(
 
     setup_seed(seed)
     records: list[dict] = []
-    for asset in assets:
+    print(f"[ocr-eval] {len(assets)} images, size={img_size}", flush=True)
+    for asset in tqdm(assets, desc="ocr-eval", unit="img"):
         image = _read_rgb(asset.image)
         image = preprocess(image, img_size)
         gt_text = read_gt(asset.gt)
