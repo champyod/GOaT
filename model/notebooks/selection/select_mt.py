@@ -15,11 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
 from goat_model.data import dataset_revisions
-from tqdm import tqdm
 from goat_model.metrics import cohens_d, paired_t_test, summarize
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
-from goat_model.utils import setup_seed, write_json
+from goat_model.utils import LogProgress, setup_seed, write_json
 
 
 def main() -> None:
@@ -68,14 +67,17 @@ def main() -> None:
         )
         bleu_series[model] = []
         latency_series[model] = []
-        print(f"[select-mt] {model} — {args.repeats} repeats", flush=True)
-        for rep in tqdm(range(args.repeats), desc=f"select-mt {model}", unit="repeat"):
+        print(f"[select-mt] {model} — loading weights (first run downloads GBs)", flush=True)
+        prog = LogProgress(args.repeats, f"select-mt {model}", unit="repeat", interval_s=30.0)
+        for rep in range(args.repeats):
             run = evaluate.run_mt(
                 backend, sources, refs, batch_size=c.MT_BATCH_SIZE, seed=args.seed
             )
             bleu_series[model].append(run["bleu"])
             latency_series[model].append(run["average_ms_per_sentence"] / 1000.0)
-            last_by_model[model] = run
+            prog.update()
+        prog.close()
+        last_by_model[model] = run
         bleu_mean, bleu_std = summarize(bleu_series[model])
         lat_mean, lat_std = summarize(latency_series[model])
         results["models"][model] = {

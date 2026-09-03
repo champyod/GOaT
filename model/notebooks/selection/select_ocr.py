@@ -16,11 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
 from goat_model.data import dataset_revisions
-from tqdm import tqdm
 from goat_model.metrics import cohens_d, paired_t_test
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
-from goat_model.utils import setup_seed, write_json
+from goat_model.utils import LogProgress, setup_seed, write_json
 
 
 def main() -> None:
@@ -52,11 +51,13 @@ def main() -> None:
             assets = evaluate.discover_assets(dataset_dir)
             backend = get_ocr(model, device=device, seed=args.seed)
             img_size = c.OCR_IMG_SIZE[model]
-            print(f"[select-ocr] {model}/{dataset} — {args.repeats} repeats, {len(assets)} imgs", flush=True)
-            runs = [
-                evaluate.run_ocr(backend, assets, img_size, seed=args.seed)
-                for _ in tqdm(range(args.repeats), desc=f"select-ocr {model}/{dataset}", unit="repeat")
-            ]
+            print(f"[select-ocr] {model}/{dataset} — loading weights (first run downloads GBs)", flush=True)
+            prog = LogProgress(args.repeats, f"select-ocr {model}/{dataset}", unit="repeat", interval_s=30.0)
+            runs = []
+            for _ in range(args.repeats):
+                runs.append(evaluate.run_ocr(backend, assets, img_size, seed=args.seed))
+                prog.update()
+            prog.close()
             summary = evaluate.aggregate_records(runs)
             stats[dataset] = summary
             cer_by_model.setdefault(model, []).extend(rec["cer"] for run in runs for rec in run)
