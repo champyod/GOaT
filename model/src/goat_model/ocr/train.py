@@ -58,7 +58,8 @@ def _build_dataset(split_dir: Path, processor: TrOCRProcessor, img_size: int) ->
             "labels": processor(ex["text"], return_tensors="pt").input_ids[0],
         }
 
-    return ds.map(preprocess, remove_columns=["image", "text"])
+    # keep "text": run_ocr_finetune reads test refs from it after mapping
+    return ds.map(preprocess, remove_columns=["image"])
 
 
 def _compute_cer(eval_preds, processor: TrOCRProcessor) -> dict:
