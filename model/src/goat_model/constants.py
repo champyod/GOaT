@@ -66,6 +66,10 @@ OCR_FONTS = (
     "Sriracha",
 )
 OCR_WIKI_LANGS = ("th", "en")  # Thai 50% / English 50% from Wikipedia
+OCR_TEXT_RATIO = 0.5  # weight of the Thai corpus relative to English
+OCR_NOISE_SIGMA = (10.0, 30.0)
+OCR_SIZE = 512
+OCR_SYN_PREFIX = "syn"
 OCR_EARLY_STOP_METRIC = "eval_cer"
 
 # ---------------------------------------------------------------------------
