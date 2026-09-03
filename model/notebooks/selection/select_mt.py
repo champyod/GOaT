@@ -30,11 +30,15 @@ def main() -> None:
     parser.add_argument("--tgt", choices=("th", "en"), default="th")
     parser.add_argument("--repeats", type=int, default=c.MT_N_RUNS)
     parser.add_argument("--mt-test-dir", type=Path, default=c.MT_TEST)
+    parser.add_argument("--device", default="auto", help="auto=cuda if available else cpu")
     parser.add_argument("--output", type=Path, default=c.RESULTS / "mt_selection.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
     args = parser.parse_args()
 
     setup_seed(args.seed)
+    import torch
+    device = args.device if args.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[select-mt] device={device}", flush=True)
     src_file = args.mt_test_dir / f"flores200.{args.src}"
     ref_file = args.mt_test_dir / f"flores200.{args.tgt}"
     domain_file = args.mt_test_dir / "flores200.domains"
@@ -59,7 +63,7 @@ def main() -> None:
             beam=c.MT_BEAM_SIZE,
             max_length=c.MT_MAX_LENGTH,
             length_penalty=c.MT_LENGTH_PENALTY,
-            device="cpu",
+            device=device,
             seed=args.seed,
         )
         bleu_series[model] = []

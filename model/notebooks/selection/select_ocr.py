@@ -27,11 +27,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="OCR selection experiment (CER decision rule).")
     parser.add_argument("--repeats", type=int, default=c.OCR_N_RUNS)
     parser.add_argument("--ocr-eval-dir", type=Path, default=c.OCR_EVAL)
+    parser.add_argument("--device", default="auto", help="auto=cuda if available else cpu")
     parser.add_argument("--output", type=Path, default=c.RESULTS / "ocr_selection.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
     args = parser.parse_args()
 
     setup_seed(args.seed)
+    import torch
+    device = args.device if args.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[select-ocr] device={device}", flush=True)
     results: dict = {
         "runs": args.repeats,
         "seed": args.seed,
@@ -46,7 +50,7 @@ def main() -> None:
         for dataset in c.OCR_DATASETS:
             dataset_dir = args.ocr_eval_dir / dataset
             assets = evaluate.discover_assets(dataset_dir)
-            backend = get_ocr(model, device="cpu", seed=args.seed)
+            backend = get_ocr(model, device=device, seed=args.seed)
             img_size = c.OCR_IMG_SIZE[model]
             print(f"[select-ocr] {model}/{dataset} — {args.repeats} repeats, {len(assets)} imgs", flush=True)
             runs = [
