@@ -25,6 +25,8 @@ from transformers import (
 )
 
 from goat_model.constants import (
+    ART_MT,
+    DRIVE_PATHS,
     LANG_CODES,
     LORA_ALPHAS,
     LORA_EPOCHS,
@@ -125,12 +127,12 @@ def run_mt_finetune(
                     best = (flores_bleu, key)
 
     assert best is not None
-    # local-first copy to Drive
+    # local-first copy to Drive (paths from constants, never literals)
     try:
-        shutil.copytree(Path("/content/artifacts"), Path("/content/drive/MyDrive/GOaT/artifacts"), dirs_exist_ok=True)
+        shutil.copytree(Path(ART_MT).parent, DRIVE_PATHS["results"].parent / "artifacts", dirs_exist_ok=True)
     except OSError:
         subprocess.run(["fusermount", "-u", "/content/drive"], check=False)
-        shutil.copytree(Path("/content/artifacts"), Path("/content/drive/MyDrive/GOaT/artifacts"), dirs_exist_ok=True)
+        shutil.copytree(Path(ART_MT).parent, DRIVE_PATHS["results"].parent / "artifacts", dirs_exist_ok=True)
 
     write_json(result_path, {"selected": selected, "base_model": model_id, "target_modules": list(LORA_TARGET_MODULES), "epochs": list(LORA_EPOCHS), "grid_results": grid_results, "winner": best[1], "winner_flores_bleu": best[0]})
     print(f"wrote {result_path}")

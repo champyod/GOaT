@@ -11,6 +11,15 @@ PROJECT="/content/GOaT/model"
 DRIVE="${1:-/content/drive/MyDrive/GOaT}"
 cd "$PROJECT"
 
+# Install (dual path, same set): primary `colab install -s goat -r requirements.txt`
+# from laptop once; fallback below (uv sync) still runs so sh works when skipped.
+# Mirrors ipynb %pip cell — both install the same extras.
+SEED="$(PYTHONPATH=src python3 -c 'from goat_model.constants import SEED; print(SEED)')"
+REPEATS_MT="$(PYTHONPATH=src python3 -c 'from goat_model.constants import MT_N_RUNS; print(MT_N_RUNS)')"
+REPEATS_OCR="$(PYTHONPATH=src python3 -c 'from goat_model.constants import OCR_N_RUNS; print(OCR_N_RUNS)')"
+ART_MT="$(PYTHONPATH=src python3 -c 'from goat_model.constants import ART_MT; print(ART_MT)')"
+ART_OCR="$(PYTHONPATH=src python3 -c 'from goat_model.constants import ART_OCR; print(ART_OCR)')"
+
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
@@ -22,10 +31,10 @@ uv run python notebooks/data/download_data.py --dataset scb-mt --out-dir "$DRIVE
 uv run python notebooks/data/download_data.py --dataset flores200 --out-dir "$DRIVE/datasets/mt/test"
 uv run python notebooks/data/download_data.py --dataset thaiocrbench --out-dir "$DRIVE/datasets/ocr/thaiocrbench"
 uv run python notebooks/data/download_data.py --dataset thai-ocr-evaluation --out-dir "$DRIVE/datasets/ocr/thai-ocr-evaluation"
-uv run python notebooks/selection/select_mt.py --mt-test-dir "$DRIVE/datasets/mt/test" --output "$DRIVE/results/mt_selection.json" --repeats 5 --seed 42
-uv run python notebooks/selection/select_ocr.py --ocr-eval-dir "$DRIVE/datasets/ocr" --output "$DRIVE/results/ocr_selection.json" --repeats 5 --seed 42
-uv run python notebooks/training/train_mt.py --mt-dir "$DRIVE/datasets/mt" --selection "$DRIVE/results/mt_selection.json" --output "$DRIVE/results/mt_training.json" --out-root /content/artifacts/mt_lora --seed 42
-uv run python notebooks/training/train_ocr.py --selection "$DRIVE/results/ocr_selection.json" --data-root "$DRIVE/data" --output "$DRIVE/results/ocr_training.json" --out-root /content/artifacts/ocr --seed 42
+uv run python notebooks/selection/select_mt.py --mt-test-dir "$DRIVE/datasets/mt/test" --output "$DRIVE/results/mt_selection.json" --repeats "$REPEATS_MT" --seed "$SEED"
+uv run python notebooks/selection/select_ocr.py --ocr-eval-dir "$DRIVE/datasets/ocr" --output "$DRIVE/results/ocr_selection.json" --repeats "$REPEATS_OCR" --seed "$SEED"
+uv run python notebooks/training/train_mt.py --mt-dir "$DRIVE/datasets/mt" --selection "$DRIVE/results/mt_selection.json" --output "$DRIVE/results/mt_training.json" --out-root "$ART_MT" --seed "$SEED"
+uv run python notebooks/training/train_ocr.py --selection "$DRIVE/results/ocr_selection.json" --data-root "$DRIVE/data" --output "$DRIVE/results/ocr_training.json" --out-root "$ART_OCR" --seed "$SEED"
 
 echo "Done"
 ls -lh "$DRIVE/results/" 2>&1

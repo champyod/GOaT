@@ -29,7 +29,7 @@ def main() -> None:
     parser.add_argument("--tgt", choices=("th", "en"), default="th")
     parser.add_argument("--repeats", type=int, default=c.MT_N_RUNS)
     parser.add_argument("--mt-test-dir", type=Path, default=c.MT_TEST)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path, default=c.RESULTS / "mt_selection.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
     args = parser.parse_args()
 

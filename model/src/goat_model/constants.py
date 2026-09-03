@@ -14,6 +14,32 @@ MODEL_ROOT = Path(__file__).resolve().parents[2]
 DATA = MODEL_ROOT / "data"
 RESULTS = MODEL_ROOT / "results"
 
+# ---------------------------------------------------------------------------
+# Colab / Drive production paths (single source of truth).
+# Every Drive path / artifact dir in notebooks/*.py, selection.ipynb Args cell,
+# and notebooks/selection.sh MUST import these — never hardcode literals.
+# ---------------------------------------------------------------------------
+DRIVE_ROOT = Path("/content/drive/MyDrive/GOaT")
+
+ART_MT = Path("/content/artifacts/mt_lora")
+ART_OCR = Path("/content/artifacts/ocr")
+
+DRIVE_PATHS = {
+    "mt": DRIVE_ROOT / "datasets" / "mt",
+    "mt_test": DRIVE_ROOT / "datasets" / "mt" / "test",
+    "ocr_eval": DRIVE_ROOT / "datasets" / "ocr",
+    "ocr_thaiocrbench": DRIVE_ROOT / "datasets" / "ocr" / "thaiocrbench",
+    "ocr_thai_eval": DRIVE_ROOT / "datasets" / "ocr" / "thai-ocr-evaluation",
+    "results": DRIVE_ROOT / "results",
+    "data_root": DRIVE_ROOT / "data",
+    "mt_selection": DRIVE_ROOT / "results" / "mt_selection.json",
+    "ocr_selection": DRIVE_ROOT / "results" / "ocr_selection.json",
+    "mt_training": DRIVE_ROOT / "results" / "mt_training.json",
+    "ocr_training": DRIVE_ROOT / "results" / "ocr_training.json",
+    "art_mt": ART_MT,
+    "art_ocr": ART_OCR,
+}
+
 SYNTHETIC = DATA / "synthetic"
 REAL = DATA / "real"
 TRAIN = DATA / "train"
