@@ -19,6 +19,11 @@ cd "$PROJECT"
 export HF_HOME="$DRIVE/hf_cache"
 export HF_HUB_CACHE="$DRIVE/hf_cache"
 
+# Kill third-party \r progress bars (datasets, Trainer) in batch runs:
+# our LogProgress already prints newline heartbeats when stdout is not a TTY,
+# so logs read correctly with plain `tail`, no `tr`/`grep` post-processing.
+export TQDM_DISABLE=1
+
 # Install (dual path, same set): primary `colab install -s goat -r requirements.txt`
 # from laptop once; fallback below (uv sync) still runs so sh works when skipped.
 # Mirrors ipynb %pip cell — both install the same extras.
