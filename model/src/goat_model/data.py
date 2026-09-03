@@ -52,14 +52,25 @@ def download_flores200(out_dir: Path) -> Path:
 
     ds = load_dataset("facebook/flores", "all", split="devtest")
 
-    th = [row["sentence"] for row in ds if row["id"] == "tha_Thai"]
-    en = [row["sentence"] for row in ds if row["id"] == "eng_Latn"]
-    if len(th) != len(en):
+    # Wide format: one row per sentence ID, one `sentence_<lang>` column
+    # per language (verified 2026-09-04: `id` is int32, not a lang code).
+    th_col = f"sentence_{c.LANG_CODES['th']}"
+    en_col = f"sentence_{c.LANG_CODES['en']}"
+    for col in (th_col, en_col):
+        if col not in ds.column_names:
+            raise ValueError(f"flores200: expected column {col!r}, got {ds.column_names[:5]}...")
+    th = [row[th_col] for row in ds]
+    en = [row[en_col] for row in ds]
+    if not th or len(th) != len(en):
         raise ValueError(f"parallel corpus broken: {len(th)} th vs {len(en)} en")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "flores200.th").write_text("\n".join(th) + "\n", encoding="utf-8")
     (out_dir / "flores200.en").write_text("\n".join(en) + "\n", encoding="utf-8")
+    if "domain" in ds.column_names:
+        (out_dir / "flores200.domains").write_text(
+            "\n".join(str(row["domain"]) for row in ds) + "\n", encoding="utf-8"
+        )
     print(f"wrote {len(th)} th + {len(en)} en sentences to {out_dir}")
     return out_dir
 
