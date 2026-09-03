@@ -136,7 +136,8 @@ def run_ocr_finetune(
             model = VisionEncoderDecoderModel.from_pretrained(THAITROCR_MODEL_ID)
             model.config.decoder_start_token_id = processor.tokenizer.cls_token_id
             model.config.pad_token_id = processor.tokenizer.pad_token_id
-            model = model.to("cuda")
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model = model.to(device)
 
             out_dir = out_root / f"lr{lr}_bs{batch}"
             args = Seq2SeqTrainingArguments(
@@ -178,6 +179,7 @@ def run_ocr_finetune(
             if best is None or val_cer < best[0]:
                 best = (val_cer, key)
 
+    assert best is not None, "no grid config evaluated"
     write_json(
         result_path,
         {

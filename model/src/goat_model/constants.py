@@ -56,7 +56,7 @@ AUG_GAUSSIAN_SIGMA = 5.0
 # OCR fine-tuning (step 10). Only ThaiTrOCR (the HF-trainable candidate) is
 # fine-tuned, with full weights; the PP-OCRv5-mobile pipeline stays frozen.
 THAITROCR_MODEL_ID = "openthaigpt/thai-trocr"
-OCR_REAL_SCREEN_DIR = "PLACEHOLDER"  # real 500 screens not captured yet
+OCR_REAL_SCREEN_DIR = ""  # empty => synthetic-only; set to real screens dir when captured (500 images)
 OCR_SYNTHETIC_N = 10_000
 OCR_FONTS = (
     "TH Sarabun PSK",
