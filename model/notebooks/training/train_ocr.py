@@ -22,7 +22,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="OCR fine-tuning for ThaiTrOCR (selection winner).")
     parser.add_argument("--selection", type=Path, default=c.RESULTS / "ocr_selection.json")
     parser.add_argument("--data-root", type=Path, default=c.DATA / "ocr")
-    parser.add_argument("--out-root", type=Path, default=Path("/content/artifacts/ocr"))
+    parser.add_argument("--out-root", type=Path, default=c.ART_OCR)
     parser.add_argument("--output", type=Path, default=c.RESULTS / "ocr_training.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
     args = parser.parse_args()

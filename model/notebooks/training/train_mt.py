@@ -24,7 +24,7 @@ def main() -> None:
     parser.add_argument("--mt-dir", type=Path, default=c.DATA / "mt")
     parser.add_argument("--selection", type=Path, default=c.RESULTS / "mt_selection.json")
     parser.add_argument("--output", type=Path, default=c.RESULTS / "mt_training.json")
-    parser.add_argument("--out-root", type=Path, default=Path("/content/artifacts/mt_lora"))
+    parser.add_argument("--out-root", type=Path, default=c.ART_MT)
     parser.add_argument("--seed", type=int, default=c.SEED)
     args = parser.parse_args()
 

@@ -26,7 +26,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="OCR selection experiment (CER decision rule).")
     parser.add_argument("--repeats", type=int, default=c.OCR_N_RUNS)
     parser.add_argument("--ocr-eval-dir", type=Path, default=c.OCR_EVAL)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path, default=c.RESULTS / "ocr_selection.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
     args = parser.parse_args()
 
