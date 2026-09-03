@@ -14,7 +14,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from tqdm import tqdm
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 from transformers import (
@@ -41,7 +40,7 @@ from goat_model.constants import (
 from goat_model.metrics import corpus_bleu
 from goat_model.mt.engine import NLLB_HF_IDS
 from goat_model.mt.evaluate import load_pairs
-from goat_model.utils import setup_seed, write_json
+from goat_model.utils import LogProgress, setup_seed, write_json
 
 
 def run_mt_finetune(
@@ -113,12 +112,15 @@ def run_mt_finetune(
                 ft_model = PeftModel.from_pretrained(AutoModelForSeq2SeqLM.from_pretrained(model_id).to(device), out_dir)
                 ft_model.eval()
                 hyps: list[str] = []
-                print(f"[mt-train] infer FLORES {len(flores_src)} sents, bs={MT_BATCH_SIZE}", flush=True)
+                batches = range(0, len(flores_src), MT_BATCH_SIZE)
+                prog = LogProgress(len(batches), f"mt-infer r{r} a{alpha} lr{lr}", unit="batch", interval_s=1.0)
                 with torch.inference_mode():
-                    for i in tqdm(range(0, len(flores_src), MT_BATCH_SIZE), desc=f"infer r{r} a{alpha} lr{lr}", unit="batch"):
+                    for i in batches:
                         batch = tokenizer(flores_src[i : i + MT_BATCH_SIZE], return_tensors="pt", padding=True, truncation=True).to(device)
                         gen = ft_model.generate(**batch, forced_bos_token_id=tokenizer.convert_tokens_to_ids(LANG_CODES["th"]), num_beams=4, max_length=MT_MAX_LENGTH)
                         hyps.extend(tokenizer.batch_decode(gen, skip_special_tokens=True))
+                        prog.update()
+                prog.close()
                 flores_bleu = corpus_bleu(flores_ref, hyps)
                 del ft_model, base, model
                 if torch.cuda.is_available():

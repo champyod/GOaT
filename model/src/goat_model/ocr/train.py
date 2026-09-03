@@ -11,7 +11,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
-from tqdm import tqdm
 from datasets import Dataset
 from PIL import Image as PILImage
 from transformers import (
@@ -33,7 +32,7 @@ from goat_model.constants import (
     THAITROCR_MODEL_ID,
 )
 from goat_model.metrics import cer
-from goat_model.utils import setup_seed, write_json
+from goat_model.utils import LogProgress, setup_seed, write_json
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
@@ -82,14 +81,17 @@ def _infer_cer(
     refs: list[str],
 ) -> float:
     hyps: list[str] = []
-    print(f"[ocr-train] infer test {len(test_ds)} images, bs={batch_size}", flush=True)
+    batches = range(0, len(test_ds), batch_size)
+    prog = LogProgress(len(batches), "ocr-infer", unit="batch", interval_s=1.0)
     with torch.inference_mode():
-        for i in tqdm(range(0, len(test_ds), batch_size), desc=f"infer bs{batch_size}", unit="batch"):
+        for i in batches:
             px = torch.stack(
                 [torch.tensor(x) for x in test_ds[i : i + batch_size]["pixel_values"]]
             ).to(model.device)
             gen = model.generate(px, max_length=128)
             hyps.extend(processor.batch_decode(gen, skip_special_tokens=True))
+            prog.update()
+    prog.close()
     return sum(cer(a, b) for a, b in zip(refs, hyps)) / max(len(hyps), 1)
 
 
