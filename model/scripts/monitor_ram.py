@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RAM monitoring over a GOaT session (analysis.typ).
+"""RAM monitoring over a GOaT session.
 
 Samples the target process RSS at a fixed rate (default 1 Hz) and reports
 the idle mean±std and the active peak. Default target is this process;

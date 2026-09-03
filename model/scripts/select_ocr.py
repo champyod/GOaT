@@ -2,7 +2,7 @@
 """OCR model selection: PP-OCRv5-mobile vs ThaiTrOCR.
 
 Runs both models on both public datasets for `--repeats` runs, reports
-mean±std + 95% CI, then applies the decision rule (hypothesis 2 / methodology):
+mean±std + 95% CI, then applies the decision rule:
 pick ThaiTrOCR iff its CER <= 0.10, otherwise pick the lowest CER model.
 """
 

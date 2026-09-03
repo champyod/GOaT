@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Synthetic OCR data generation with SynthTIGER (10k images, 512x512).
 
-Parameters follow methodology.typ: 50/50 Thai/English from Wikipedia, 5 fonts
+Parameters: 50/50 Thai/English from Wikipedia, 5 fonts
 (TH Sarabun PSK, Noto Sans Thai, Kanit, Prompt, Sriracha), Gaussian noise
 sigma 10-30. SynthTIGER configs are data files, not stable Python APIs, so the
 exact corpus/font wiring is left as a TODO once SynthTIGER is pinned.
