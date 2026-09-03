@@ -13,6 +13,12 @@ PROJECT="/content/GOaT/model"
 DRIVE="${1:-/content/drive/MyDrive/GOaT}"
 cd "$PROJECT"
 
+# Model + dataset weights cache on Drive: first run downloads (needs
+# HF_TOKEN for gated sets), reruns reuse with no re-download. Local SSD
+# would be faster per-file, but persistence across VMs wins by GBs.
+export HF_HOME="$DRIVE/hf_cache"
+export HF_HUB_CACHE="$DRIVE/hf_cache"
+
 # Install (dual path, same set): primary `colab install -s goat -r requirements.txt`
 # from laptop once; fallback below (uv sync) still runs so sh works when skipped.
 # Mirrors ipynb %pip cell — both install the same extras.
