@@ -55,6 +55,7 @@ def main() -> None:
     parser.add_argument("--src", choices=("th", "en"), default="en")
     parser.add_argument("--tgt", choices=("th", "en"), default="th")
     parser.add_argument("--repeats", type=int, default=c.MT_N_RUNS)
+    parser.add_argument("--batch", type=int, default=c.MT_BATCH_SIZE, help="eval batch size (steps = ceil(len(test)/batch))")
     parser.add_argument("--mt-test-dir", type=Path, default=c.MT_TEST)
     parser.add_argument("--device", default="auto", help="auto=cuda if available else cpu")
     parser.add_argument("--force", action="store_true", help="ignore checkpoints, rerun all repeats")
@@ -109,7 +110,7 @@ def main() -> None:
         prog.n = done
         for rep in range(done, args.repeats):
             run = evaluate.run_mt(
-                backend, sources, refs, batch_size=c.MT_BATCH_SIZE, seed=args.seed
+                backend, sources, refs, batch_size=args.batch, seed=args.seed
             )
             bleu_series[model].append(run["bleu"])
             latency_series[model].append(run["average_ms_per_sentence"] / 1000.0)
