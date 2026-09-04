@@ -18,7 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 ocr = [
     "paddleocr>=3.0",
-    "paddlepaddle>=3.0",
+    "paddlepaddle==3.2.*",
     "onnxruntime>=1.19",
     "transformers>=4.46",
     "torch>=2.5",
@@ -35,7 +35,7 @@ train = [
     "accelerate>=1.0",
     "datasets>=3.0",
     "torch>=2.5",
-    "paddlepaddle>=3.0",
+    "paddlepaddle==3.2.*",
 ]
 
 [dependency-groups]

@@ -81,11 +81,7 @@ def main() -> None:
         for dataset in c.OCR_DATASETS:
             dataset_dir = args.ocr_eval_dir / dataset
             assets = evaluate.discover_assets(dataset_dir)
-            # PP-OCRv5-mobile stays on CPU: PaddleX 3.x text detection hits an
-            # unimplemented OneDNN GPU kernel (ConvertPirAttribute2RuntimeAttribute).
-            # Safe: the OCR rule is CER-only, latency plays no part in the decision.
-            be_device = "cpu" if model == "PP-OCRv5-mobile" else device
-            backend = get_ocr(model, device=be_device, seed=args.seed)
+            backend = get_ocr(model, device=device, seed=args.seed)
             img_size = c.OCR_IMG_SIZE[model]
             print(f"[select-ocr] {model}/{dataset} — loading weights (first run downloads GBs)", flush=True)
             key = f"{model}/{dataset}"
