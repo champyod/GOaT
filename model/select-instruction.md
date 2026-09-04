@@ -62,7 +62,7 @@ nohup bash -c 'while true; do cp /tmp/goat_training_log.txt /content/drive/MyDri
 Watch everything with one line (log + CPU/MEM/disk/GPU, paste in console, `Ctrl+C` stops the view only):
 
 ```bash
-watch -n 3 'tail -n 6 /tmp/goat_log.txt; echo ---; free -h | head -2; df -h / /tmp | tail -2; nvidia-smi --query-gpu=utilization.gpu,memory.used,temperature.gpu,power.draw --format=csv,noheader; ps -o pcpu,pmem,etime,args -p $(pgrep -f "select_mt|select_ocr|train_mt|train_ocr" | head -1)'
+watch -n 3 'tail -n 30 /tmp/goat_log.txt; echo ---; free -h | head -2; df -h / /tmp | tail -2; nvidia-smi --query-gpu=utilization.gpu,memory.used,temperature.gpu,power.draw --format=csv,noheader; ps -o pcpu,pmem,etime,args -p $(pgrep -f "select_mt|select_ocr|train_mt|train_ocr" | head -1)'
 ```
 
 Training run: same line with `/tmp/goat_training_log.txt` in place of `/tmp/goat_log.txt` (resource half already matches all four step names; both watches can run side by side).
