@@ -59,12 +59,28 @@ nohup bash /content/GOaT/model/notebooks/training.sh > /tmp/goat_training_log.tx
 nohup bash -c 'while true; do cp /tmp/goat_training_log.txt /content/drive/MyDrive/GOaT/logs/goat_training_log.txt; sleep 300; done' > /dev/null 2>&1 &
 ```
 
-Check progress (fresh console, paste):
+Watch everything with one line (log + CPU/MEM/disk/GPU, paste in console, `Ctrl+C` stops the view only):
 
 ```bash
-tail -c 2000 /tmp/goat_log.txt
-tail -c 2000 /tmp/goat_training_log.txt
+watch -n 3 'tail -n 6 /tmp/goat_log.txt; echo ---; free -h | head -2; df -h / /tmp | tail -2; nvidia-smi --query-gpu=utilization.gpu,memory.used,temperature.gpu,power.draw --format=csv,noheader; ps -o pcpu,pmem,etime,args -p $(pgrep -f "select_mt|select_ocr|train_mt|train_ocr" | head -1)'
 ```
+
+Keep the host alive (laptop terminal — the keep-alive daemon dies with sleep/WiFi drops, and the VM follows). Bash:
+
+```bash
+while true; do colab sessions >/dev/null 2>&1; colab status -s goat 2>&1 | head -3; sleep 30; done
+```
+
+Fish:
+
+```fish
+while true
+  colab sessions >/dev/null 2>&1; colab status -s goat 2>/dev/null | head -5
+  sleep 30
+end
+```
+
+Plus `systemd-inhibit --what=idle sleep infinity &` against idle suspend.
 
 From anywhere (no VM needed), read the Drive copies (≤5 min stale):
 
@@ -100,9 +116,10 @@ Results at `GOaT/results/` on Drive. Stop: `colab stop -s goat`.
 
 ## Resume
 
-**Same VM** (session alive, run died): just relaunch — steps skip finished outputs, datasets re-verify in place:
+**Same VM** (session alive, run died): pull first (picks up anything pushed since launch), then relaunch — steps skip finished outputs, datasets re-verify in place:
 
 ```bash
+git -C /content/GOaT pull --ff-only
 export HF_TOKEN=hf_paste_yours_here
 nohup bash /content/GOaT/model/notebooks/selection.sh > /tmp/goat_log.txt 2>&1 &
 ```
