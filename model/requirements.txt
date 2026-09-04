@@ -12,7 +12,8 @@ tqdm>=4.66
 psutil>=6.0
 matplotlib>=3.11.1
 paddleocr>=3.0
-paddlepaddle==3.2.*  # 3.3.x breaks PaddleX det, PaddlePaddle/Paddle#77340
+--extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/
+paddlepaddle-gpu==3.2.*  # gpu wheel; 3.3.x breaks PaddleX det, PaddlePaddle/Paddle#77340
 onnxruntime>=1.19
 transformers>=4.46
 torch>=2.5

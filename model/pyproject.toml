@@ -18,7 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 ocr = [
     "paddleocr>=3.0",
-    "paddlepaddle==3.2.*",
+    "paddlepaddle-gpu==3.2.*",
     "onnxruntime>=1.19",
     "transformers>=4.46",
     "torch>=2.5",
@@ -35,7 +35,7 @@ train = [
     "accelerate>=1.0",
     "datasets>=3.0",
     "torch>=2.5",
-    "paddlepaddle==3.2.*",
+    "paddlepaddle-gpu==3.2.*",
 ]
 
 [dependency-groups]
@@ -66,3 +66,11 @@ extend-exclude = ["notebooks"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[[tool.uv.index]]
+name = "paddlepaddle"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
+explicit = true
+
+[tool.uv.sources]
+paddlepaddle-gpu = { index = "paddlepaddle" }
