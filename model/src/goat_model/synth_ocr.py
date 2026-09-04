@@ -38,6 +38,28 @@ def _download(url: str, dst: Path) -> Path:
     return dst
 
 
+
+def _urlopen_json(req, timeout: int = 30, tries: int = 6):
+    """GET ``req`` as JSON with exponential backoff on HTTP 429."""
+    import time
+    import urllib.error
+
+    delay = 5.0
+    for attempt in range(tries):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as err:
+            if err.code != 429 or attempt == tries - 1:
+                raise
+            retry_after = err.headers.get("Retry-After") if err.headers else None
+            wait = float(retry_after) if retry_after else delay
+            print(f"wikipedia 429 - retry in {wait:.0f}s (attempt {attempt + 1}/{tries})", flush=True)
+            time.sleep(wait)
+            delay *= 2
+    raise SystemExit("wikipedia kept returning 429 - rerun later to resume")
+
+
 def fetch_wikipedia_corpus(
     out_dir: Path,
     langs: tuple[str, ...],
@@ -54,6 +76,7 @@ def fetch_wikipedia_corpus(
     """
     import json
     import re
+    import time
     import urllib.parse
 
     out_dir = Path(out_dir)
@@ -75,8 +98,8 @@ def fetch_wikipedia_corpus(
         while len(lines) < n_lines and requests < 2000:
             requests += 1
             req = urllib.request.Request(url, headers={"User-Agent": "GOaT/1.0"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            data = _urlopen_json(req, timeout=30)
+            time.sleep(0.5)
             for page in data["query"]["pages"].values():
                 text = page.get("extract", "")
                 for raw in text.splitlines():
