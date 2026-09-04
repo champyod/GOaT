@@ -36,6 +36,7 @@ train = [
     "datasets>=3.0",
     "torch>=2.5",
     "paddlepaddle-gpu==3.2.*",
+    "synthtiger @ git+https://github.com/clovaai/synthtiger.git",
 ]
 
 [dependency-groups]

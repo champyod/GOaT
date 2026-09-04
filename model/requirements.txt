@@ -1,5 +1,5 @@
 # GOaT model runtime — generated from model/pyproject.toml
-# (base dependencies + ocr + mt + train extras, unpinned lower bounds).
+# (base dependencies + ocr + mt + train extras; paddle pinned, see below).
 # Single source for installs: `colab install -s goat -r requirements.txt`
 # and selection.ipynb `%pip install -r requirements.txt`. Keep in sync
 # with pyproject.toml when extras change.
