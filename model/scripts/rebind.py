@@ -17,7 +17,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import sys
 import time
 
 # Run with the CLI venv python so colab_cli resolves:
