@@ -38,39 +38,91 @@ def _download(url: str, dst: Path) -> Path:
     return dst
 
 
-def fetch_wikipedia_corpus(out_dir: Path, langs: tuple[str, ...]) -> dict[str, Path]:
-    """Fetch a line-per-line plain-text corpus for each requested Wikipedia.
+def fetch_wikipedia_corpus(
+    out_dir: Path,
+    langs: tuple[str, ...],
+    n_lines: int = 20_000,
+) -> dict[str, Path]:
+    """Download a line-per-line plain-text corpus for each requested Wikipedia.
 
-    Uses the Wikimedia "plain text extract" convention. Values in ``langs`` are
-    Wikipedia language codes (``th``, ``en``). Returns a map of language code to
-    the corpus file, one sentence per line.
+    Queries the MediaWiki API for random pages with ``prop=extracts`` and
+    ``explaintext``, which returns clean plain text; section headers and empty
+    lines are dropped and every remaining line is written to ``wiki_{lang}.txt``.
+    Values in ``langs`` are Wikipedia language codes (``th``, ``en``). Skips a
+    language when its corpus file already exists; returns a map of language code
+    to the corpus file, one sentence per line.
     """
+    import json
+    import re
+    import urllib.parse
+
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     corpus: dict[str, Path] = {}
     for lang in langs:
         dst = out_dir / f"wiki_{lang}.txt"
-        if not dst.is_file():
-            raise FileNotFoundError(
-                f"corpus {dst} missing: place the {lang} Wikipedia plain-text "
-                "corpus there before generation (download + clean upstream)"
-            )
+        if dst.is_file():
+            corpus[lang] = dst
+            continue
+        seen: set[str] = set()
+        lines: list[str] = []
+        query = (
+            "action=query&format=json&generator=random&grnnamespace=0"
+            "&grnlimit=10&prop=extracts&explaintext=1"
+        )
+        url = f"https://{lang}.wikipedia.org/w/api.php?" + query
+        requests = 0
+        while len(lines) < n_lines and requests < 2000:
+            requests += 1
+            req = urllib.request.Request(url, headers={"User-Agent": "GOaT/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            for page in data["query"]["pages"].values():
+                text = page.get("extract", "")
+                for raw in text.splitlines():
+                    line = raw.strip()
+                    if len(line) < 4 or re.match(r"^=+\s", line) or line in seen:
+                        continue
+                    seen.add(line)
+                    lines.append(line)
+                    if len(lines) >= n_lines:
+                        break
+        dst.write_text("\n".join(lines) + "\n", encoding="utf-8")
         corpus[lang] = dst
     return corpus
 
 
 def download_ocr_fonts(out_dir: Path, names: tuple[str, ...]) -> Path:
-    """Ensure each named font is present as a ``.ttf`` under ``out_dir``.
+    """Fetch each named font family as ``.ttf`` under ``out_dir``.
 
-    Fonts must be manually staged (downloaded from their licensed source) into
-    ``out_dir`` before generation; this only reports which are missing.
+    Downloads the Regular (and Bold when the family ships one) TTF from the
+    google/fonts GitHub repository into ``out_dir`` as
+    ``<family>-<Weight>.ttf``, skipping a family already present. Uses only the
+    standard library (``urllib`` and ``urllib.parse.quote`` for bracket names).
     """
+    import urllib.parse
+
+    base = "https://raw.githubusercontent.com/google/fonts/main/"
+    sources: dict[str, tuple[str, tuple[str, ...]]] = {
+        "TH Sarabun PSK": ("ofl/sarabun", ("Sarabun-Regular.ttf", "Sarabun-Bold.ttf")),
+        "Noto Sans Thai": ("ofl/notosansthai", ("NotoSansThai[wdth,wght].ttf",)),
+        "Kanit": ("ofl/kanit", ("Kanit-Regular.ttf", "Kanit-Bold.ttf")),
+        "Prompt": ("ofl/prompt", ("Prompt-Regular.ttf", "Prompt-Bold.ttf")),
+        "Sriracha": ("ofl/sriracha", ("Sriracha-Regular.ttf",)),
+    }
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    present: list[str] = []
     for name in names:
-        if any(out_dir.glob(name + ".ttf")) or any(out_dir.glob(name + ".otf")):
-            present.append(name)
+        if name not in sources:
+            raise ValueError(f"no google/fonts source mapped for {name!r}")
+        if any(out_dir.glob(name + "*")):
+            continue
+        repo_dir, repo_files = sources[name]
+        for repo_file in repo_files:
+            weight = "Bold" if "Bold" in repo_file else "Regular"
+            dst = out_dir / f"{name}-{weight}.ttf"
+            url = base + repo_dir + "/" + urllib.parse.quote(repo_file)
+            _download(url, dst)
     return out_dir
 
 
