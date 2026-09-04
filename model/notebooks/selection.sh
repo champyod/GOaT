@@ -56,6 +56,9 @@ fi
 
 uv sync --extra ocr --extra mt --extra train
 
+# Full opencv-python (via synthtiger) needs system libGL; install only when cv2 fails to import.
+PYTHONPATH=src uv run python -c "import cv2" 2>/dev/null || (apt-get update -qq && apt-get install -y -q libgl1 libglib2.0-0)
+
 uv run python notebooks/data/download_data.py --dataset scb-mt --out-dir "$MT_DATA"
 uv run python notebooks/data/download_data.py --dataset flores200 --out-dir "$MT_TEST_DIR"
 uv run python notebooks/data/download_data.py --dataset thaiocrbench --out-dir "$OCR_EVAL_DIR/thaiocrbench"
