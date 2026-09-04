@@ -54,6 +54,7 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=c.OCR_N_RUNS)
     parser.add_argument("--ocr-eval-dir", type=Path, default=c.OCR_EVAL)
     parser.add_argument("--device", default="auto", help="auto=cuda if available else cpu")
+    parser.add_argument("--force", action="store_true", help="ignore checkpoints, rerun all repeats")
     parser.add_argument("--output", type=Path, default=c.RESULTS / "ocr_selection.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
     args = parser.parse_args()
@@ -72,7 +73,7 @@ def main() -> None:
 
     cer_by_model: dict[str, list[float]] = {}
     partial_path = _partial_path(args.output)
-    saved = _load_partial(partial_path, args.seed, args.repeats)
+    saved = {} if args.force else _load_partial(partial_path, args.seed, args.repeats)
     saved_runs = saved.get("runs_data", {})
     if saved:
         print(f"[select-ocr] resuming from {partial_path}", flush=True)

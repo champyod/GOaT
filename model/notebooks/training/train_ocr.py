@@ -24,9 +24,13 @@ def main() -> None:
     parser.add_argument("--out-root", type=Path, default=c.ART_OCR)
     parser.add_argument("--output", type=Path, default=c.RESULTS / "ocr_training.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
+    parser.add_argument("--force", action="store_true", help="ignore existing results, retrain")
     args = parser.parse_args()
 
     setup_seed(args.seed)
+    if args.force:
+        args.output.unlink(missing_ok=True)
+        args.output.with_name(args.output.stem + ".partial.json").unlink(missing_ok=True)
     from goat_model.ocr.train import run_ocr_finetune
     import json
 

@@ -57,6 +57,7 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=c.MT_N_RUNS)
     parser.add_argument("--mt-test-dir", type=Path, default=c.MT_TEST)
     parser.add_argument("--device", default="auto", help="auto=cuda if available else cpu")
+    parser.add_argument("--force", action="store_true", help="ignore checkpoints, rerun all repeats")
     parser.add_argument("--output", type=Path, default=c.RESULTS / "mt_selection.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
     args = parser.parse_args()
@@ -81,7 +82,7 @@ def main() -> None:
     latency_series: dict[str, list[float]] = {}
     last_by_model: dict[str, dict] = {}
     partial_path = _partial_path(args.output)
-    saved = _load_partial(partial_path, args.seed, args.repeats)
+    saved = {} if args.force else _load_partial(partial_path, args.seed, args.repeats)
     saved_bleu = saved.get("bleu_series", {})
     saved_lat = saved.get("latency_series", {})
     saved_hyp = saved.get("last_hyp", {})
