@@ -67,17 +67,20 @@ watch -n 3 'tail -n 30 /tmp/goat_log.txt; echo ---; free -h | head -2; df -h / /
 
 Training run: same line with `/tmp/goat_training_log.txt` in place of `/tmp/goat_log.txt` (resource half already matches all four step names; both watches can run side by side).
 
-Keep the host alive (laptop terminal — the keep-alive daemon dies with sleep/WiFi drops, and the VM follows). Bash:
+Keep the host alive (laptop terminal — the keep-alive daemon dies with sleep/WiFi drops, and the VM follows). Use ping + sessions + status together: the `exec` ping refreshes idle, `sessions` shows server truth including `[?]` orphans, and `status` shows the local view. Bash:
 
 ```bash
-while true; do colab sessions >/dev/null 2>&1; colab status -s goat 2>&1 | head -3; sleep 30; done
+while true; do echo "--- $(date '+%H:%M:%S') ---"; colab exec -s goat <<< "print('ping')" >/dev/null 2>&1; colab sessions; colab status -s goat 2>&1 | head -5; sleep 30; done
 ```
 
 Fish:
 
 ```fish
 while true
-  colab sessions >/dev/null 2>&1; colab status -s goat 2>/dev/null | head -5
+  echo "--- "(date "+%H:%M:%S")" ---"
+  echo "print('ping')" | colab exec -s goat >/dev/null 2>&1
+  colab sessions
+  colab status -s goat 2>/dev/null | head -5
   sleep 30
 end
 ```
