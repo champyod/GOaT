@@ -62,6 +62,9 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=c.RESULTS / "mt_selection.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
     args = parser.parse_args()
+    if not args.force and args.output.is_file():
+        print(f"skipped - already selected: {args.output} (use --force to rerun)", flush=True)
+        return
 
     setup_seed(args.seed)
     import torch
