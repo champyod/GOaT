@@ -95,11 +95,14 @@ def fetch_wikipedia_corpus(
         )
         url = f"https://{lang}.wikipedia.org/w/api.php?" + query
         requests = 0
+        print(f"[wiki-{lang}] target={n_lines} lines", flush=True)
         while len(lines) < n_lines and requests < 2000:
             requests += 1
             req = urllib.request.Request(url, headers={"User-Agent": "GOaT/1.0"})
             data = _urlopen_json(req, timeout=30)
             time.sleep(0.5)
+            if requests % 20 == 0 or len(lines) >= n_lines:
+                print(f"[wiki-{lang}] req={requests} lines={len(lines)}/{n_lines}", flush=True)
             for page in data["query"]["pages"].values():
                 text = page.get("extract", "")
                 for raw in text.splitlines():
