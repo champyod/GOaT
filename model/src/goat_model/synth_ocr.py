@@ -330,8 +330,7 @@ def generate_synthtiger(
                 cnt = sum(1 for _ in gen_root.rglob("*.jpg"))
             except Exception:
                 cnt = 0
-            if cnt > prog.n:
-                prog.update(cnt - prog.n)
+            prog.update(max(0, cnt - prog.n))
 
     th = threading.Thread(target=_watch, daemon=True)
     th.start()
