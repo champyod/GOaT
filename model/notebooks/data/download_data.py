@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import traceback
 import sys
 from pathlib import Path
 
@@ -45,41 +47,59 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=None, help="override output directory")
     parser.add_argument("--force", action="store_true", help="re-download even when outputs exist")
     args = parser.parse_args()
+    _err_out = getattr(args, "out_dir", None)
+    try:
 
-    if args.dataset == "flores200":
-        out = args.out_dir or c.MT_TEST
-        if not args.force and (out / "flores200.th").is_file() and (out / "flores200.en").is_file():
-            print(f"skipped - already downloaded: {out}")
-        else:
-            download_flores200(out)
-    elif args.dataset == "scb-mt":
-        out = args.out_dir or c.DATA / "mt"
-        parts = [f"{n}.{e}" for n in ("train", "val", "test") for e in ("th", "en")]
-        if not args.force and all((out / f).is_file() for f in parts):
-            print(f"skipped - already downloaded: {out}")
-        else:
-            download_scbmt(out)
-    elif args.dataset == "thaiocrbench":
-        if args.ingest:
-            ingest_manual("thaiocrbench", args.ingest)
-        else:
-            out = args.out_dir or c.OCR_EVAL / "thaiocrbench"
-            if not args.force and _has_images(out):
+        if args.dataset == "flores200":
+            out = args.out_dir or c.MT_TEST
+            if not args.force and (out / "flores200.th").is_file() and (out / "flores200.en").is_file():
                 print(f"skipped - already downloaded: {out}")
             else:
-                download_thaiocrbench(out)
-    elif args.dataset == "thai-ocr-evaluation":
-        if args.ingest:
-            ingest_manual("thai-ocr-evaluation", args.ingest)
-        else:
-            out = args.out_dir or c.OCR_EVAL / "thai-ocr-evaluation"
-            if not args.force and _has_images(out):
+                download_flores200(out)
+        elif args.dataset == "scb-mt":
+            out = args.out_dir or c.DATA / "mt"
+            parts = [f"{n}.{e}" for n in ("train", "val", "test") for e in ("th", "en")]
+            if not args.force and all((out / f).is_file() for f in parts):
                 print(f"skipped - already downloaded: {out}")
             else:
-                download_thaiocr_evaluation(out)
+                download_scbmt(out)
+        elif args.dataset == "thaiocrbench":
+            if args.ingest:
+                ingest_manual("thaiocrbench", args.ingest)
+            else:
+                out = args.out_dir or c.OCR_EVAL / "thaiocrbench"
+                if not args.force and _has_images(out):
+                    print(f"skipped - already downloaded: {out}")
+                else:
+                    download_thaiocrbench(out)
+        elif args.dataset == "thai-ocr-evaluation":
+            if args.ingest:
+                ingest_manual("thai-ocr-evaluation", args.ingest)
+            else:
+                out = args.out_dir or c.OCR_EVAL / "thai-ocr-evaluation"
+                if not args.force and _has_images(out):
+                    print(f"skipped - already downloaded: {out}")
+                else:
+                    download_thaiocr_evaluation(out)
 
 
-    print(f"[wrapper] {Path(__file__).name} done", flush=True)
+        print(f"[wrapper] {Path(__file__).name} done", flush=True)
+
+
+    except Exception as err:
+        tb = traceback.format_exc()
+        inp = getattr(args, "out_dir", "?")
+        print(f"[error] download_data failed | in={inp} out={_err_out} | {err}", flush=True)
+        print(tb, flush=True)
+        if _err_out is not None:
+            try:
+                _err_path = str(_err_out) + ".error.json"
+                from pathlib import Path as _P
+                _P(_err_path).write_text(json.dumps({"error": str(err), "kind": "download_data", "input": str(inp), "output": str(_err_out)}, indent=2))
+                print(f"[error] wrote {{_err_path}}", flush=True)
+            except Exception:
+                pass
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
