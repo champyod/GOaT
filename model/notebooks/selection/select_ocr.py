@@ -59,6 +59,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=c.RESULTS / "ocr_selection.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
     args = parser.parse_args()
+    print(f"[args] {args}", flush=True)
     _err_out = args.output
     try:
         if not args.force and args.output.is_file():

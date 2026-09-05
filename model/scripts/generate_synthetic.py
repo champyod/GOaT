@@ -34,6 +34,7 @@ def main() -> None:
     parser.add_argument("--sigma-max", type=float, default=c.OCR_NOISE_SIGMA[1])
     parser.add_argument("--seed", type=int, default=c.SEED)
     args = parser.parse_args()
+    print(f"[args] {args}", flush=True)
 
     if (args.out / "manifest.json").is_file():
         print(f"skipped - synthetic dataset already exists: {args.out}")

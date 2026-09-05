@@ -47,6 +47,7 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=None, help="override output directory")
     parser.add_argument("--force", action="store_true", help="re-download even when outputs exist")
     args = parser.parse_args()
+    print(f"[args] {args}", flush=True)
     _err_out = getattr(args, "out_dir", None)
     try:
 
