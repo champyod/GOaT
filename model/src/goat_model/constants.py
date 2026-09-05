@@ -84,6 +84,7 @@ AUG_GAUSSIAN_SIGMA = 5.0
 THAITROCR_MODEL_ID = "openthaigpt/thai-trocr"
 OCR_REAL_SCREEN_DIR = ""  # empty => synthetic-only; set to real screens dir when captured (500 images)
 OCR_SYNTHETIC_N = 10_000
+OCR_SYNTHETIC_REPO_ID = "KunanonKhai/Synthetic-GOaT-OCR"
 OCR_FONTS = (
     "TH Sarabun PSK",
     "Noto Sans Thai",

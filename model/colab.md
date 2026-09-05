@@ -42,9 +42,9 @@ Isolated rerun of one script:
 ```bash
 uv run python scripts/generate_synthetic.py --out $DATA_ROOT/synthetic --debug
 ```
-# synth runs fully local: Drive gen/fonts/corpus copy to /tmp/synth_* first,
-# workers read /tmp only, bg sync + final sync push results back to Drive.
-# --debug forwards -v to synthtiger so per-sample tracebacks land in synth_gen.log.
+# generate_synthetic downloads the 10k SynthTIGER images from the HF
+# dataset (KunanonKhai/Synthetic-GOaT-OCR), flattens them, then 70/15/15
+# splits into $DATA_ROOT/{train,val,test} for train_ocr.
 # train_mt skips when mt_training.json already exists (already-trained guard).
 
 ## Common

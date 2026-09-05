@@ -275,6 +275,7 @@ def _build_manifest(out_dir: Path) -> dict[str, str]:
         if not raw.strip():
             continue
         image_key, label = raw.split("\t", 1)
+        image_key = image_key.replace("\\", "/")
         manifest[image_key] = label
     (out_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"

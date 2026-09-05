@@ -21,7 +21,7 @@ model/
     mt/  evaluate.py      corpus + per-domain BLEU, throughput, latency
   scripts/
     download_data.py      flores200 / scb-mt auto; Thai OCR datasets manual ingest
-    generate_synthetic.py SynthTIGER 10k images (TODO wiring)
+    generate_synthetic.py downloads 10k synthetic images from HF, then 70/15/15 split
     split_data.py         stratified 70/15/15 -> data/{train,val,test}
     eval_ocr.py           CER / word accuracy / latency  (proposal CLI)
     eval_mt.py            BLEU / throughput / latency    (proposal CLI)
