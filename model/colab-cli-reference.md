@@ -145,7 +145,7 @@ colab console -s goat
 # then paste:
 [ -d /content/GOaT/.git ] || git clone --depth 1 https://github.com/champyod/GOaT.git /content/GOaT
 mkdir -p /content/GOaT/model/notebooks/selection
-nohup bash /content/GOaT/model/notebooks/selection.sh /content/drive/MyDrive/GOaT > /tmp/goat_log.txt 2>&1 &
+nohup bash /content/GOaT/model/notebooks/selection.sh /content/drive/MyDrive/GOaT --debug > /tmp/goat_log.txt 2>&1 &
 tail -c 2000 /tmp/goat_log.txt
 ```
 

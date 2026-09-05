@@ -66,6 +66,7 @@ def main() -> None:
         seed=args.seed,
         text_ratio=c.OCR_TEXT_RATIO,
         noise_sigma=(args.sigma_min, args.sigma_max),
+        debug=args.debug,
     )
     flatten_synthetic(gen_dir, manifest, args.out, prefix=c.OCR_SYN_PREFIX)
     print(f"generated {len(manifest)} synthetic images -> {args.out}")

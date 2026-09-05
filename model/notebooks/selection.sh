@@ -5,23 +5,27 @@ set -e
 # Training lives in notebooks/training.sh (twin of training.ipynb).
 # Each step is one pure python call; Drive paths passed as args, same as the ipynb Args cell.
 # Usage:
-#   bash notebooks/selection.sh [DRIVE_ROOT] [--test]
+#   bash notebooks/selection.sh [DRIVE_ROOT] [--test] [--debug]
 #   bash notebooks/selection.sh --test
-#   nohup bash /content/GOaT/model/notebooks/selection.sh /content/drive/MyDrive/GOaT > /tmp/goat_log.txt 2>&1 &
+#   nohup bash /content/GOaT/model/notebooks/selection.sh /content/drive/MyDrive/GOaT --debug > /tmp/goat_log.txt 2>&1 &
 # Defaults to Drive; pass a local path for local runs.
 # --test runs the MT comparison as 3x3 (3 repeats x 3 steps, batch=338)
 # instead of the full 5x64 (5 repeats x 64 steps, batch=16); OCR untouched.
 
 PROJECT="/content/GOaT/model"
 TEST=0
+DEBUG=0
 DRIVE=""
 for arg in "$@"; do
   case "$arg" in
     --test) TEST=1 ;;
+    --debug) DEBUG=1 ;;
     *) [ -z "$DRIVE" ] && DRIVE="$arg" ;;
   esac
 done
 DRIVE="${DRIVE:-/content/drive/MyDrive/GOaT}"
+DEBUG_ARGS=""
+if [ "$DEBUG" = 1 ]; then DEBUG_ARGS="--debug"; fi
 cd "$PROJECT"
 
 # Model + dataset weights cache on Drive: first run downloads (needs
@@ -59,17 +63,17 @@ uv sync --extra ocr --extra mt --extra train
 # Full opencv-python (via synthtiger) needs system libGL; install only when cv2 fails to import.
 PYTHONPATH=src uv run python -c "import cv2" 2>/dev/null || (apt-get update -qq && apt-get install -y -q libgl1 libglib2.0-0)
 
-uv run python notebooks/data/download_data.py --dataset scb-mt --out-dir "$MT_DATA"
-uv run python notebooks/data/download_data.py --dataset flores200 --out-dir "$MT_TEST_DIR"
-uv run python notebooks/data/download_data.py --dataset thaiocrbench --out-dir "$OCR_EVAL_DIR/thaiocrbench"
-uv run python notebooks/data/download_data.py --dataset thai-ocr-evaluation --out-dir "$OCR_EVAL_DIR/thai-ocr-evaluation"
+uv run python notebooks/data/download_data.py --dataset scb-mt --out-dir "$MT_DATA" $DEBUG_ARGS
+uv run python notebooks/data/download_data.py --dataset flores200 --out-dir "$MT_TEST_DIR" $DEBUG_ARGS
+uv run python notebooks/data/download_data.py --dataset thaiocrbench --out-dir "$OCR_EVAL_DIR/thaiocrbench" $DEBUG_ARGS
+uv run python notebooks/data/download_data.py --dataset thai-ocr-evaluation --out-dir "$OCR_EVAL_DIR/thai-ocr-evaluation" $DEBUG_ARGS
 if [ "$TEST" = 1 ]; then
   MT_ARGS="--repeats 3 --batch 338"
 else
   MT_ARGS="--repeats $REPEATS_MT"
 fi
-uv run python notebooks/selection/select_mt.py --mt-test-dir "$MT_TEST_DIR" --output "$RESULTS/mt_selection.json" $MT_ARGS --seed "$SEED"
-uv run python notebooks/selection/select_ocr.py --ocr-eval-dir "$OCR_EVAL_DIR" --output "$RESULTS/ocr_selection.json" --repeats "$REPEATS_OCR" --seed "$SEED"
+uv run python notebooks/selection/select_mt.py --mt-test-dir "$MT_TEST_DIR" --output "$RESULTS/mt_selection.json" $MT_ARGS --seed "$SEED" $DEBUG_ARGS
+uv run python notebooks/selection/select_ocr.py --ocr-eval-dir "$OCR_EVAL_DIR" --output "$RESULTS/ocr_selection.json" --repeats "$REPEATS_OCR" --seed "$SEED" $DEBUG_ARGS
 
 echo "Done"
 ls -lh "$RESULTS/" 2>&1

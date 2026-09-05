@@ -3,12 +3,21 @@ set -e
 # GOaT training — shell twin of notebooks/training.ipynb (same stem, same steps).
 # Each step is one pure python call; Drive paths passed as args, same as the ipynb Args cell.
 # Usage:
-#   bash notebooks/training.sh [DRIVE_ROOT]
-#   nohup bash /content/GOaT/model/notebooks/training.sh /content/drive/MyDrive/GOaT > /tmp/goat_training_log.txt 2>&1 &
+#   bash notebooks/training.sh [DRIVE_ROOT] [--debug]
+#   nohup bash /content/GOaT/model/notebooks/training.sh /content/drive/MyDrive/GOaT --debug > /tmp/goat_training_log.txt 2>&1 &
 # Defaults to Drive; pass a local path for local runs.
 
 PROJECT="/content/GOaT/model"
-DRIVE="${1:-/content/drive/MyDrive/GOaT}"
+DEBUG_ARGS=""
+DRIVE=""
+for arg in "$@"; do
+  case "$arg" in
+    --debug) DEBUG_ARGS="--debug" ;;
+    -*) echo "Unknown flag: $arg" >&2; exit 2 ;;
+    *) if [ -z "$DRIVE" ]; then DRIVE="$arg"; fi ;;
+  esac
+done
+DRIVE="${DRIVE:-/content/drive/MyDrive/GOaT}"
 cd "$PROJECT"
 
 # Model + dataset weights cache on Drive: first run downloads (needs
@@ -40,11 +49,11 @@ fi
 uv sync --extra ocr --extra mt --extra train
 
 # Full opencv-python (via synthtiger) needs system libGL; install only when cv2 fails to import.
-PYTHONPATH=src uv run python -c "import cv2" 2>/dev/null || (apt-get update -qq && apt-get install -y -q libgl1 libglib2.0-0)
+PYTHONPATH=src uv run python -c "import cv2" $DEBUG_ARGS 2>/dev/null || (apt-get update -qq && apt-get install -y -q libgl1 libglib2.0-0)
 
-uv run python notebooks/training/train_mt.py --mt-dir "$MT_DATA" --selection "$RESULTS/mt_selection.json" --output "$RESULTS/mt_training.json" --out-root "$ART_MT" --seed "$SEED"
-uv run python scripts/generate_synthetic.py --out "$DATA_ROOT/synthetic"
-uv run python notebooks/training/train_ocr.py --selection "$RESULTS/ocr_selection.json" --data-root "$DATA_ROOT" --output "$RESULTS/ocr_training.json" --out-root "$ART_OCR" --seed "$SEED"
+uv run python notebooks/training/train_mt.py --mt-dir "$MT_DATA" --selection "$RESULTS/mt_selection.json" --output "$RESULTS/mt_training.json" --out-root "$ART_MT" --seed "$SEED" $DEBUG_ARGS
+uv run python scripts/generate_synthetic.py --out "$DATA_ROOT/synthetic" $DEBUG_ARGS
+uv run python notebooks/training/train_ocr.py --selection "$RESULTS/ocr_selection.json" --data-root "$DATA_ROOT" --output "$RESULTS/ocr_training.json" --out-root "$ART_OCR" --seed "$SEED" $DEBUG_ARGS
 
 echo "Done"
 ls -lh "$RESULTS/" 2>&1

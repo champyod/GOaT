@@ -22,6 +22,11 @@ from PIL import Image
 from goat_model.constants import MODEL_ROOT
 from goat_model.utils import log_call, LogProgress
 
+#: Watchdog bound (seconds) for the SynthTIGER subprocess. A silent
+#: per-sample retry-loop hang becomes a fast ``TimeoutExpired`` instead
+#: of a ``0/N`` stall with no error.
+SYNTH_GEN_TIMEOUT_S = 7200.0
+
 
 def apply_gaussian_noise(image: Image.Image, sigma: float, rng=None) -> Image.Image:
     """Add zero-mean Gaussian noise with the given per-channel ``sigma``."""
@@ -277,6 +282,39 @@ def _build_manifest(out_dir: Path) -> dict[str, str]:
     return manifest
 
 
+def _preflight_local(
+    corpus_paths: list[Path],
+    corpus_weights: list[float],
+    font_dir: Path,
+    probes: int = 5,
+) -> None:
+    """Fail fast when workers would spin forever on unusable inputs.
+
+    Mirrors worker startup (template ``__init__``) plus per-sample
+    ``corpus.sample()`` / ``font.sample()`` so a zero-font or zero-text
+    config raises here with a clear message instead of hanging ``0/N``
+    inside SynthTIGER's silent retry loop.
+    """
+    from synthtiger import components
+
+    corpus = components.BaseCorpus(
+        paths=[str(p) for p in corpus_paths],
+        weights=list(corpus_weights),
+        min_length=1,
+        max_length=25,
+    )
+    for _ in range(probes):
+        corpus.data(corpus.sample())
+    font = components.BaseFont(
+        paths=[str(font_dir)],
+        weights=[1],
+        size=[24, 48],
+        bold=0.0,
+    )
+    for _ in range(probes):
+        font.sample()
+
+
 @log_call
 def generate_synthtiger(
     out_dir: Path,
@@ -288,6 +326,8 @@ def generate_synthtiger(
     seed: int = 42,
     text_ratio: float = 0.5,
     noise_sigma: tuple[float, float] = (10.0, 30.0),
+    debug: bool = False,
+    timeout_s: float = SYNTH_GEN_TIMEOUT_S,
 ) -> dict[str, str]:
     """Render ``n`` synthetic document images plus their transcriptions.
 
@@ -302,6 +342,10 @@ def generate_synthtiger(
         text_ratio: Weight of the Thai corpus relative to English.
         noise_sigma: Inclusive Gaussian noise sigma range applied to each
             generated image after rendering (methodology 10-30).
+        debug: Forward ``-v`` to the SynthTIGER subprocess so swallowed
+            per-sample tracebacks land in ``synth_gen.log``.
+        timeout_s: Watchdog bound on the SynthTIGER subprocess. A silent
+            retry-loop hang becomes a fast ``TimeoutExpired`` instead.
 
     Returns:
         Manifest mapping image key to ground-truth transcription.
@@ -340,11 +384,6 @@ def generate_synthtiger(
         seed = seed + existing
         n = n - existing
         print(f"[synth-gen] resume {existing} existing, generating {n} remaining (seed offset) local={gen_root}", flush=True)
-    cfg = out_dir / "config_multiline.yaml"
-    corpus_paths = [thai_corpus, english_corpus]
-    corpus_weights = [text_ratio, 1.0 - text_ratio]
-    _write_config(cfg, corpus_paths, corpus_weights, font_dir, text_ratio, seed)
-
     vendored = MODEL_ROOT / "assets" / "synthtiger_templates" / "multiline" / "template.py"
     if vendored.is_file():
         template = str(vendored)
@@ -357,7 +396,7 @@ def generate_synthtiger(
     import threading
 
     stop_evt = threading.Event()
-    gen_root = out_dir
+    gen_root = local_gen  # count where the subprocess -o writes, not Drive
     prog = LogProgress(n, "synth-gen", unit="imgs", interval_s=10.0, in_path=str(thai_corpus), out_path=str(out_dir))
     def _watch():
         while not stop_evt.wait(10.0):
@@ -366,11 +405,12 @@ def generate_synthtiger(
                 cnt += sum(1 for _ in gen_root.rglob("*.png"))
             except Exception:
                 cnt = 0
-            # problem logger: last synthtiger lines if stuck at 0
+            # problem logger: head + tail of synthtiger log if stuck at 0
             if cnt == 0:
                 try:
-                    lines = Path(synth_log).read_text().splitlines()[-3:]
+                    lines = Path(synth_log).read_text().splitlines()
                     if lines:
+                        print(f"[synth-gen] log head: {' | '.join(lines[:3])}", flush=True)
                         print(f"[synth-gen] log tail: {' | '.join(lines[-2:])}", flush=True)
                 except Exception:
                     pass
@@ -399,6 +439,12 @@ def generate_synthtiger(
         font_dir = local_font_dir
     except Exception as e:
         print(f"[synth-gen] local copy failed {e}, using Drive paths", flush=True)
+    # Config AFTER the local swap so workers read local /tmp paths, never Drive.
+    cfg = out_dir / "config_multiline.yaml"
+    corpus_paths = [thai_corpus, english_corpus]
+    corpus_weights = [text_ratio, 1.0 - text_ratio]
+    _write_config(cfg, corpus_paths, corpus_weights, font_dir, text_ratio, seed)
+    _preflight_local(corpus_paths, corpus_weights, font_dir)
     print(f"[synth-gen] start n={n} workers={workers} template={Path(template).name} cfg={cfg.name} out={local_gen} -> {drive_gen} | in={thai_corpus.name},{english_corpus.name} fonts={font_dir}", flush=True)
     synth_log = out_dir / "synth_gen.log"
     # bg sync Drive every 30s while generating
@@ -416,29 +462,38 @@ def generate_synthtiger(
                 print(f"[synth-gen] bg sync failed {e}", flush=True)
     _bg_th = _th2.Thread(target=_bg_sync, daemon=True)
     _bg_th.start()
+    cmd = [
+        sys.executable,
+        "-m",
+        "synthtiger",
+        "-o",
+        str(local_gen),
+        "-c",
+        str(n),
+        "-w",
+        str(workers),
+        "-s",
+        str(seed),
+    ]
+    if debug:
+        cmd.append("-v")  # surface swallowed per-sample tracebacks in synth_gen.log
+    cmd += [template, "Multiline", str(cfg)]
     try:
         with open(synth_log, "w", encoding="utf-8") as log_fh:
             subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "synthtiger",
-                    "-o",
-                    str(local_gen),
-                    "-c",
-                    str(n),
-                    "-w",
-                    str(workers),
-                    "-s",
-                    str(seed),
-                    template,
-                    "Multiline",
-                    str(cfg),
-                ],
+                cmd,
                 check=True,
                 stdout=log_fh,
                 stderr=subprocess.STDOUT,
+                timeout=timeout_s,
             )
+    except subprocess.TimeoutExpired:
+        print(f"[error] synth-gen timed out after {timeout_s}s log={synth_log} | out={out_dir}", flush=True)
+        try:
+            print(Path(synth_log).read_text()[-4000:], flush=True)
+        except Exception:
+            pass
+        raise
     except subprocess.CalledProcessError as err:
         print(f"[error] synth-gen failed code={err.returncode} log={synth_log} | out={out_dir}", flush=True)
         try:
