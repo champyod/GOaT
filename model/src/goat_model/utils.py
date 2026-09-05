@@ -44,11 +44,13 @@ class LogProgress:
     heartbeat (every ``interval_s``) in log files where ``\\r`` bars
     would stack into one unreadable line."""
 
-    def __init__(self, total: int, desc: str, unit: str = "it", interval_s: float = 10.0) -> None:
+    def __init__(self, total: int, desc: str, unit: str = "it", interval_s: float = 10.0, in_path: str | None = None, out_path: str | None = None) -> None:
         self.total = total
         self.desc = desc
         self.unit = unit
         self.interval = interval_s
+        self.in_path = in_path
+        self.out_path = out_path
         self.n = 0
         self.t0 = time.monotonic()
         self.last = 0.0
@@ -69,9 +71,12 @@ class LogProgress:
             el = now - self.t0
             rate = self.n / el if el > 0 else 0.0
             eta = (self.total - self.n) / rate if rate > 0 else -1.0
+            suffix = ""
+            if self.in_path or self.out_path:
+                suffix = f" | in={self.in_path or '?'} out={self.out_path or '?'}"
             print(
                 f"[{self.desc}] {self.n}/{self.total} {self.unit} "
-                f"elapsed={el:.0f}s eta={eta:.0f}s rate={rate:.1f}/s",
+                f"elapsed={el:.0f}s eta={eta:.0f}s rate={rate:.1f}/s{suffix}",
                 flush=True,
             )
 

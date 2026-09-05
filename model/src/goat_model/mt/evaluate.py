@@ -53,7 +53,7 @@ def run_mt(
     hypotheses: list[str] = []
     per_batch_ms: list[float] = []
     batches = range(0, len(sources), batch_size)
-    prog = LogProgress(len(batches), "mt-eval", unit="batch", interval_s=10.0)
+    prog = LogProgress(len(batches), "mt-eval", unit="batch", interval_s=10.0, out_path=f"{len(sources)} sents")
     for i in batches:
         batch = sources[i : i + batch_size]
         result = backend.translate(batch)

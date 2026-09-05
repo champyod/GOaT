@@ -68,7 +68,7 @@ def run_ocr(
 
     setup_seed(seed)
     records: list[dict] = []
-    prog = LogProgress(len(assets), "ocr-eval", unit="img", interval_s=10.0)
+    prog = LogProgress(len(assets), "ocr-eval", unit="img", interval_s=10.0, in_path=str(assets[0].image.parent) if assets else "?", out_path=f"{len(assets)} imgs")
     for asset in assets:
         image = _read_rgb(asset.image)
         image = preprocess(image, img_size)

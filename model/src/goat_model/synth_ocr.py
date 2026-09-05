@@ -106,7 +106,7 @@ def fetch_wikipedia_corpus(
         )
         url = f"https://{lang}.wikipedia.org/w/api.php?" + query
         requests = 0
-        prog = LogProgress(n_lines, f"wiki-{lang}", unit="lines", interval_s=5.0)
+        prog = LogProgress(n_lines, f"wiki-{lang}", unit="lines", interval_s=5.0, in_path=f"wiki {lang} API", out_path=str(dst))
         prog.n = len(lines)
         while len(lines) < n_lines and requests < 2000:
             requests += 1
@@ -334,7 +334,7 @@ def generate_synthtiger(
 
     stop_evt = threading.Event()
     gen_root = out_dir
-    prog = LogProgress(n, "synth-gen", unit="imgs", interval_s=10.0)
+    prog = LogProgress(n, "synth-gen", unit="imgs", interval_s=10.0, in_path=str(thai_corpus), out_path=str(out_dir))
     def _watch():
         while not stop_evt.wait(10.0):
             try:
