@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 
 import numpy as np
+from goat_model.utils import LogProgress
 
 from goat_model import constants as c
 
@@ -59,6 +60,7 @@ def download_flores200(out_dir: Path) -> Path:
     for col in (th_col, en_col):
         if col not in ds.column_names:
             raise ValueError(f"flores200: expected column {col!r}, got {ds.column_names[:5]}...")
+    print(f"[flores] {len(ds)} rows -> {out_dir.name}", flush=True)
     th = [row[th_col] for row in ds]
     en = [row[en_col] for row in ds]
     if not th or len(th) != len(en):
@@ -121,13 +123,16 @@ def download_scbmt(
     }
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    prog = LogProgress(len(splits), "scbmt-write", unit="split", interval_s=5.0)
     for name, sel in splits.items():
         sub = ds.select(sel.tolist())
         th = [row["translation"]["th"] for row in sub]
         en = [row["translation"]["en"] for row in sub]
         (out_dir / f"{name}.th").write_text("\n".join(th) + "\n", encoding="utf-8")
         (out_dir / f"{name}.en").write_text("\n".join(en) + "\n", encoding="utf-8")
-        print(f"wrote {name} ({len(sel)} pairs) -> {out_dir}/{name}.{{th,en}}")
+        print(f"wrote {name} ({len(sel)} pairs) -> {out_dir}/{name}.{{th,en}} | in=scb-mt out={out_dir.name}", flush=True)
+        prog.update()
+    prog.close()
     return out_dir
 
 
@@ -167,14 +172,22 @@ def _export_image_gt(items, out_dir: Path) -> Path:
     images_dir.mkdir(parents=True, exist_ok=True)
     gt_dir.mkdir(parents=True, exist_ok=True)
 
+    prog = LogProgress(0, f"export {out_dir.name}", unit="imgs", interval_s=5.0)
+    # unknown total upfront (generator), use heartbeat via manual prints
     count = 0
+    last = 0
     for stem, image, text in items:
         image.save(images_dir / f"{stem}.png")
         (gt_dir / f"{stem}.txt").write_text(text, encoding="utf-8")
         count += 1
+        if count - last >= 50:
+            prog.total = count + 50  # keep eta meaningful
+            prog.update(count - last)
+            last = count
+    prog.close()
     if not count:
         raise SystemExit(f"no exportable rows for {out_dir.name}")
-    print(f"wrote {count} images+gt to {out_dir}")
+    print(f"wrote {count} images+gt to {out_dir} | in={out_dir.name} out={out_dir}", flush=True)
     return out_dir
 
 

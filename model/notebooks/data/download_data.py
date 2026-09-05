@@ -34,6 +34,7 @@ def _has_images(out_dir: Path) -> bool:
 
 
 def main() -> None:
+    print(f"[wrapper] {Path(__file__).name} start", flush=True)
     parser = argparse.ArgumentParser(description="Download/ingest GOaT datasets.")
     parser.add_argument(
         "--dataset",
@@ -76,6 +77,9 @@ def main() -> None:
                 print(f"skipped - already downloaded: {out}")
             else:
                 download_thaiocr_evaluation(out)
+
+
+    print(f"[wrapper] {Path(__file__).name} done", flush=True)
 
 
 if __name__ == "__main__":
