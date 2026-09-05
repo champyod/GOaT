@@ -27,6 +27,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=c.RESULTS / "ocr_training.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
     parser.add_argument("--force", action="store_true", help="ignore existing results, retrain")
+    parser.add_argument("--debug", action="store_true", help="verbose per-action logs")
     args = parser.parse_args()
     print(f"[args] {args}", flush=True)
     _err_out = args.output

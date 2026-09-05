@@ -33,6 +33,7 @@ def main() -> None:
     parser.add_argument("--sigma-min", type=float, default=c.OCR_NOISE_SIGMA[0])
     parser.add_argument("--sigma-max", type=float, default=c.OCR_NOISE_SIGMA[1])
     parser.add_argument("--seed", type=int, default=c.SEED)
+    parser.add_argument("--debug", action="store_true", help="verbose per-action logs")
     args = parser.parse_args()
     print(f"[args] {args}", flush=True)
 

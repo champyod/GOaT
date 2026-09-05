@@ -46,6 +46,7 @@ def main() -> None:
     parser.add_argument("--ingest", type=Path, help="manual source dir of images+gt")
     parser.add_argument("--out-dir", type=Path, default=None, help="override output directory")
     parser.add_argument("--force", action="store_true", help="re-download even when outputs exist")
+    parser.add_argument("--debug", action="store_true", help="verbose per-action logs")
     args = parser.parse_args()
     print(f"[args] {args}", flush=True)
     _err_out = getattr(args, "out_dir", None)

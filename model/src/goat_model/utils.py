@@ -83,3 +83,22 @@ class LogProgress:
     def close(self) -> None:
         if self.bar is not None:
             self.bar.close()
+
+def log_call(fn):
+    import functools, traceback, os, sys
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        debug = "--debug" in sys.argv or os.environ.get("GOAT_DEBUG") == "1"
+        if debug:
+            print(f"[enter] {fn.__name__} args={args} kwargs={kwargs}", flush=True)
+        try:
+            res = fn(*args, **kwargs)
+            if debug:
+                print(f"[exit] {fn.__name__} -> {type(res).__name__ if res is not None else 'None'}", flush=True)
+            return res
+        except Exception as e:
+            if debug:
+                print(f"[error] {fn.__name__} {e}", flush=True)
+                print(traceback.format_exc(), flush=True)
+            raise
+    return wrapper
