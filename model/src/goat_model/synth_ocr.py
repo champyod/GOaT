@@ -342,6 +342,14 @@ def generate_synthtiger(
                 cnt += sum(1 for _ in gen_root.rglob("*.png"))
             except Exception:
                 cnt = 0
+            # problem logger: last synthtiger lines if stuck at 0
+            if cnt == 0:
+                try:
+                    lines = Path(synth_log).read_text().splitlines()[-3:]
+                    if lines:
+                        print(f"[synth-gen] log tail: {' | '.join(lines[-2:])}", flush=True)
+                except Exception:
+                    pass
             prog.update(max(0, cnt - prog.n))
 
     th = threading.Thread(target=_watch, daemon=True)
