@@ -305,17 +305,36 @@ def generate_synthtiger(
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    # Professional resume: count existing jpgs + gt lines atomically
-    gen_root = out_dir / "gen"
+    drive_gen = out_dir / "gen"
+    local_gen = Path("/tmp/synth_gen")
+    # resume source = Drive (persist), but local wins if exists (VM speed)
+    # sync Drive -> local first if local empty
+    if drive_gen.is_dir() and not any(local_gen.rglob("*.jpg")):
+        import shutil as _sh
+        try:
+            if local_gen.exists():
+                _sh.rmtree(local_gen)
+            _sh.copytree(drive_gen, local_gen)
+            print(f"[synth-gen] copied {drive_gen} -> {local_gen} for fast resume", flush=True)
+        except Exception as e:
+            print(f"[synth-gen] copy failed {e}, fresh local", flush=True)
+            local_gen.mkdir(parents=True, exist_ok=True)
+    else:
+        local_gen.mkdir(parents=True, exist_ok=True)
+    gen_root = local_gen
     existing = sum(1 for _ in gen_root.rglob("*.jpg")) if gen_root.is_dir() else 0
+    # also count Drive if local empty but Drive has (fallback)
+    if existing == 0 and drive_gen.is_dir():
+        existing = sum(1 for _ in drive_gen.rglob("*.jpg"))
+        if existing > 0:
+            print(f"[synth-gen] drive has {existing}, local empty - will resume from drive count", flush=True)
     if existing >= n:
-        print(f"[synth-gen] skip {existing}/{n} already exists -> {gen_root}", flush=True)
+        print(f"[synth-gen] skip {existing}/{n} already exists -> {drive_gen}", flush=True)
         return _build_manifest(out_dir)
     if existing > 0:
-        # Use offset seed to keep determinism for remaining batch
         seed = seed + existing
         n = n - existing
-        print(f"[synth-gen] resume {existing} existing, generating {n} remaining (seed offset)", flush=True)
+        print(f"[synth-gen] resume {existing} existing, generating {n} remaining (seed offset) local={gen_root}", flush=True)
     cfg = out_dir / "config_multiline.yaml"
     corpus_paths = [thai_corpus, english_corpus]
     corpus_weights = [text_ratio, 1.0 - text_ratio]
@@ -354,8 +373,23 @@ def generate_synthtiger(
 
     th = threading.Thread(target=_watch, daemon=True)
     th.start()
-    print(f"[synth-gen] start n={n} workers={workers} template={Path(template).name} cfg={cfg.name} out={out_dir / 'gen'} | in={thai_corpus.name},{english_corpus.name} fonts={font_dir}", flush=True)
+    print(f"[synth-gen] start n={n} workers={workers} template={Path(template).name} cfg={cfg.name} out={local_gen} -> {drive_gen} | in={thai_corpus.name},{english_corpus.name} fonts={font_dir}", flush=True)
     synth_log = out_dir / "synth_gen.log"
+    # bg sync Drive every 30s while generating
+    import threading as _th2
+    _sync_stop = threading.Event()
+    def _bg_sync():
+        import shutil as _sh2, time as _tm
+        while not _sync_stop.wait(30.0):
+            try:
+                if local_gen.is_dir():
+                    if drive_gen.exists():
+                        _sh2.rmtree(drive_gen)
+                    _sh2.copytree(local_gen, drive_gen)
+            except Exception as e:
+                print(f"[synth-gen] bg sync failed {e}", flush=True)
+    _bg_th = _th2.Thread(target=_bg_sync, daemon=True)
+    _bg_th.start()
     try:
         with open(synth_log, "w", encoding="utf-8") as log_fh:
             subprocess.run(
@@ -364,7 +398,7 @@ def generate_synthtiger(
                     "-m",
                     "synthtiger",
                     "-o",
-                    str(out_dir / "gen"),
+                    str(local_gen),
                     "-c",
                     str(n),
                     "-w",
@@ -389,6 +423,17 @@ def generate_synthtiger(
     finally:
         stop_evt.set()
         th.join(timeout=1.0)
+        _sync_stop.set()
+        _bg_th.join(timeout=1.0)
+        # final sync local -> drive
+        try:
+            import shutil as _sh3
+            if drive_gen.exists():
+                _sh3.rmtree(drive_gen)
+            _sh3.copytree(local_gen, drive_gen)
+            print(f"[synth-gen] final sync {local_gen} -> {drive_gen}", flush=True)
+        except Exception as e:
+            print(f"[synth-gen] final sync failed {e}", flush=True)
         try:
             final_cnt = sum(1 for _ in gen_root.rglob("*.jpg"))
             final_cnt += sum(1 for _ in gen_root.rglob("*.png"))
