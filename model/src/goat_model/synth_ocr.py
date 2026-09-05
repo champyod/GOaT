@@ -373,6 +373,27 @@ def generate_synthtiger(
 
     th = threading.Thread(target=_watch, daemon=True)
     th.start()
+    # Local copy fonts + corpus for speed (Drive -> /tmp, local wins)
+    import shutil as _shf
+    local_font_dir = Path("/tmp/synth_fonts")
+    local_corpus_dir = Path("/tmp/synth_corpus")
+    try:
+        if not local_font_dir.is_dir() or not any(local_font_dir.glob("*.ttf")):
+            if local_font_dir.exists():
+                _shf.rmtree(local_font_dir)
+            _shf.copytree(font_dir, local_font_dir)
+            print(f"[synth-gen] fonts {font_dir} -> {local_font_dir}", flush=True)
+        if not local_corpus_dir.is_dir():
+            local_corpus_dir.mkdir(parents=True, exist_ok=True)
+        for src in [thai_corpus, english_corpus]:
+            dst = local_corpus_dir / Path(src).name
+            if not dst.is_file() or dst.stat().st_size != Path(src).stat().st_size:
+                _shf.copy2(src, dst)
+        thai_corpus = local_corpus_dir / Path(thai_corpus).name
+        english_corpus = local_corpus_dir / Path(english_corpus).name
+        font_dir = local_font_dir
+    except Exception as e:
+        print(f"[synth-gen] local copy failed {e}, using Drive paths", flush=True)
     print(f"[synth-gen] start n={n} workers={workers} template={Path(template).name} cfg={cfg.name} out={local_gen} -> {drive_gen} | in={thai_corpus.name},{english_corpus.name} fonts={font_dir}", flush=True)
     synth_log = out_dir / "synth_gen.log"
     # bg sync Drive every 30s while generating
