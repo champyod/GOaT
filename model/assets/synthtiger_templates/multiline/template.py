@@ -11,6 +11,19 @@ from PIL import Image
 
 from synthtiger import components, layers, templates
 
+from PIL import ImageFont
+
+if not hasattr(ImageFont.FreeTypeFont, "getsize"):
+    # Pillow>=10 removed FreeTypeFont.getsize but SynthTIGER's TextLayer
+    # still calls font.getsize(text, direction=...). Emulate with getbbox
+    # width/height (the migration Pillow documents). No-op on Pillow<10.
+    # Lives here because workers import this template module on startup.
+    def _getsize(self, text, direction=None):
+        left, top, right, bottom = self.getbbox(text, direction=direction)
+        return (right - left, bottom - top)
+
+    setattr(ImageFont.FreeTypeFont, "getsize", _getsize)
+
 
 class Multiline(templates.Template):
     def __init__(self, config=None):
