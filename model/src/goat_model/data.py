@@ -12,7 +12,7 @@ import shutil
 from pathlib import Path
 
 import numpy as np
-from goat_model.utils import LogProgress
+from goat_model.utils import log_call, LogProgress
 
 from goat_model import constants as c
 
@@ -44,6 +44,7 @@ def dataset_revisions() -> dict[str, str | None]:
     return revisions
 
 
+@log_call
 def download_flores200(out_dir: Path) -> Path:
     """Download FLORES-200 devtest th/en as parallel one-sentence-per-line files."""
     try:
@@ -77,6 +78,7 @@ def download_flores200(out_dir: Path) -> Path:
     return out_dir
 
 
+@log_call
 def download_scbmt(
     out_dir: Path,
     sample: int = c.SCBMT_SAMPLE,
@@ -165,6 +167,7 @@ def ingest_manual(dataset: str, source: Path, ocr_root: Path = c.OCR_EVAL) -> Pa
     return dst
 
 
+@log_call
 def _export_image_gt(items, out_dir: Path) -> Path:
     """Write (stem, PIL image, text) triples into the images/ + gt/ canonical layout."""
     images_dir = out_dir / "images"
@@ -191,6 +194,7 @@ def _export_image_gt(items, out_dir: Path) -> Path:
     return out_dir
 
 
+@log_call
 def download_thaiocr_evaluation(out_dir: Path) -> Path:
     """openthaigpt/thai-ocr-evaluation test split (104 imgs): image/text -> canonical layout."""
     try:
@@ -203,6 +207,7 @@ def download_thaiocr_evaluation(out_dir: Path) -> Path:
     return _export_image_gt(items, out_dir)
 
 
+@log_call
 def download_thaiocrbench(out_dir: Path) -> Path:
     """scb10x/ThaiOCRBench test split: whole-image transcription tasks -> canonical layout.
 
@@ -225,6 +230,7 @@ def download_thaiocrbench(out_dir: Path) -> Path:
     return _export_image_gt(items, out_dir)
 
 
+@log_call
 def split_ocr(
     synthetic_dir: Path = c.SYNTHETIC,
     real_dir: Path = c.REAL,
@@ -279,7 +285,7 @@ def split_ocr(
             manifest[dest.name].append(img.name)
         counts[key] = len(items)
 
-    from goat_model.utils import write_json
+    from goat_model.utils import log_call, write_json
 
     write_json(out_root / "split_manifest.json", {"seed": seed, "counts": counts, "files": manifest})
 

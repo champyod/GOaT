@@ -18,7 +18,7 @@ import numpy as np
 
 from goat_model.constants import SEED
 from goat_model.ocr.engine import OCRBackend
-from goat_model.utils import LogProgress
+from goat_model.utils import log_call, LogProgress
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
@@ -30,6 +30,7 @@ class OCRAsset:
     domain: str | None = None
 
 
+@log_call
 def discover_assets(root: Path) -> list[OCRAsset]:
     images_dir = root / "images"
     gt_dir = root / "gt"
@@ -57,6 +58,7 @@ def _read_rgb(path: Path) -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 
+@log_call
 def run_ocr(
     backend: OCRBackend,
     assets: list[OCRAsset],
@@ -64,7 +66,7 @@ def run_ocr(
     seed: int = SEED,
 ) -> list[dict]:
     from goat_model.metrics import cer, word_accuracy
-    from goat_model.utils import read_gt, setup_seed
+    from goat_model.utils import log_call, read_gt, setup_seed
 
     setup_seed(seed)
     records: list[dict] = []
@@ -91,6 +93,7 @@ def run_ocr(
     return records
 
 
+@log_call
 def aggregate_records(runs: list[list[dict]]) -> dict:
     from goat_model.metrics import bootstrap_ci, summarize
 

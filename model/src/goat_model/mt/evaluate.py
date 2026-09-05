@@ -16,13 +16,13 @@ from pathlib import Path
 
 from goat_model.constants import SEED
 from goat_model.mt.engine import MTBackend
-from goat_model.utils import LogProgress
+from goat_model.utils import log_call, LogProgress
 
 
 def load_pairs(
     src: Path, ref: Path, domains: Path | None = None
 ) -> tuple[list[str], list[str], list[str | None]]:
-    from goat_model.utils import read_sentences
+    from goat_model.utils import log_call, read_sentences
 
     sources = read_sentences(src)
     refs = read_sentences(ref)
@@ -41,13 +41,14 @@ def load_pairs(
     return sources, refs, tags
 
 
+@log_call
 def run_mt(
     backend: MTBackend, sources: list[str], refs: list[str], batch_size: int = 16, seed: int = SEED
 ) -> dict:
     import numpy as np
 
     from goat_model.metrics import corpus_bleu
-    from goat_model.utils import setup_seed
+    from goat_model.utils import log_call, setup_seed
 
     setup_seed(seed)
     hypotheses: list[str] = []
@@ -78,11 +79,12 @@ def run_mt(
     }
 
 
+@log_call
 def per_domain_bleu(
     refs: list[str], hypotheses: list[str], tags: list[str | None], seed: int = SEED
 ) -> dict[str, float]:
     from goat_model.metrics import corpus_bleu
-    from goat_model.utils import setup_seed
+    from goat_model.utils import log_call, setup_seed
 
     setup_seed(seed)
     grouped_refs: dict[str, list[str]] = {}

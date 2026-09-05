@@ -33,7 +33,7 @@ from goat_model.constants import (
     THAITROCR_MODEL_ID,
 )
 from goat_model.metrics import cer
-from goat_model.utils import LogProgress, setup_seed, write_json
+from goat_model.utils import log_call, LogProgress, setup_seed, write_json
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
@@ -97,6 +97,7 @@ def _infer_cer(
     return sum(cer(a, b) for a, b in zip(refs, hyps)) / max(len(hyps), 1)
 
 
+@log_call
 def run_ocr_finetune(
     data_root: Path,
     out_root: Path,

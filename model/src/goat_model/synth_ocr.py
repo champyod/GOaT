@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 from goat_model.constants import MODEL_ROOT
-from goat_model.utils import LogProgress
+from goat_model.utils import log_call, LogProgress
 
 
 def apply_gaussian_noise(image: Image.Image, sigma: float, rng=None) -> Image.Image:
@@ -62,6 +62,7 @@ def _urlopen_json(req, timeout: int = 30, tries: int = 6):
     raise SystemExit("wikipedia kept returning 429 - rerun later to resume")
 
 
+@log_call
 def fetch_wikipedia_corpus(
     out_dir: Path,
     langs: tuple[str, ...],
@@ -137,6 +138,7 @@ def fetch_wikipedia_corpus(
     return corpus
 
 
+@log_call
 def download_ocr_fonts(out_dir: Path, names: tuple[str, ...]) -> Path:
     """Fetch each named font family as ``.ttf`` under ``out_dir``.
 
@@ -157,7 +159,7 @@ def download_ocr_fonts(out_dir: Path, names: tuple[str, ...]) -> Path:
     }
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    from goat_model.utils import LogProgress as _LP
+    from goat_model.utils import log_call, LogProgress as _LP
     fonts_prog = _LP(len(names), "fonts", unit="fonts", interval_s=5.0)
     for name in names:
         if name not in sources:
@@ -177,6 +179,7 @@ def download_ocr_fonts(out_dir: Path, names: tuple[str, ...]) -> Path:
     return out_dir
 
 
+@log_call
 def flatten_synthetic(
     gen_dir: Path,
     manifest: dict[str, str],
@@ -255,6 +258,7 @@ def _write_config(
     out.write_text("\n".join(lines), encoding="utf-8")
 
 
+@log_call
 def _build_manifest(out_dir: Path) -> dict[str, str]:
     """Map each generated image to its ground-truth transcription."""
     gen = out_dir / "gen"
@@ -273,6 +277,7 @@ def _build_manifest(out_dir: Path) -> dict[str, str]:
     return manifest
 
 
+@log_call
 def generate_synthtiger(
     out_dir: Path,
     thai_corpus: Path,

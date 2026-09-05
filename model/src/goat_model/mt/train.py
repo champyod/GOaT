@@ -40,9 +40,10 @@ from goat_model.constants import (
 from goat_model.metrics import corpus_bleu
 from goat_model.mt.engine import NLLB_HF_IDS
 from goat_model.mt.evaluate import load_pairs
-from goat_model.utils import LogProgress, setup_seed, write_json
+from goat_model.utils import log_call, LogProgress, setup_seed, write_json
 
 
+@log_call
 def run_mt_finetune(
     mt_dir: Path,
     selection_path: Path,
