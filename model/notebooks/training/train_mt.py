@@ -41,6 +41,11 @@ def main() -> None:
         try:
             import peft  # noqa: F401
         except ImportError as err:
+            if err.name not in (None, "peft"):
+                raise RuntimeError(
+                    f"peft is installed but its import chain is broken at {err.name!r} ({err})"
+                    " - re-sync will not help, fix the env (e.g. torch/CUDA/NCCL mismatch)"
+                ) from err
             raise RuntimeError("peft not installed - re-run `uv sync --extra train`") from err
 
         from goat_model.mt.train import run_mt_finetune
