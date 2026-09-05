@@ -147,6 +147,7 @@ colab console -s goat
 mkdir -p /content/GOaT/model/notebooks/selection
 nohup bash /content/GOaT/model/notebooks/selection.sh /content/drive/MyDrive/GOaT --debug > /tmp/goat_log.txt 2>&1 &
 tail -c 2000 /tmp/goat_log.txt
+# --debug fans out: sh forwards to every python call; log_call prints [enter]/[exit]/[error] each.
 ```
 
 ### 1.4 `drivemount` — human-interactive
