@@ -305,6 +305,17 @@ def generate_synthtiger(
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Professional resume: count existing jpgs + gt lines atomically
+    gen_root = out_dir / "gen"
+    existing = sum(1 for _ in gen_root.rglob("*.jpg")) if gen_root.is_dir() else 0
+    if existing >= n:
+        print(f"[synth-gen] skip {existing}/{n} already exists -> {gen_root}", flush=True)
+        return _build_manifest(out_dir)
+    if existing > 0:
+        # Use offset seed to keep determinism for remaining batch
+        seed = seed + existing
+        n = n - existing
+        print(f"[synth-gen] resume {existing} existing, generating {n} remaining (seed offset)", flush=True)
     cfg = out_dir / "config_multiline.yaml"
     corpus_paths = [thai_corpus, english_corpus]
     corpus_weights = [text_ratio, 1.0 - text_ratio]
