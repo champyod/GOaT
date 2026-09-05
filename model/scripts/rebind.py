@@ -81,53 +81,65 @@ def refresh(name: str, endpoint: str | None, pick: int | None = None) -> Session
     return entry
 
 
-def watch(name: str, interval: float, force: bool) -> None:
-    """Force-select a session, hold the binding until it vanishes, then
-    re-show the selector. Sessions data refreshes every ``interval``."""
+def watch(name: str, interval: float, force: bool | None = None) -> None:
+    """Simple: last_chose = None; for all time if last_chose in sessions -> span, else selector."""
     import datetime
 
-    bound: str | None = None
+    last_chose: str | None = None
     picked_at = 0.0
-    first = True
     try:
         while True:
             _, assignments = _cli_state.sync_sessions()
-            alive = bound is not None and any(a.endpoint == bound for a in assignments)
+            alive = last_chose is not None and any(a.endpoint == last_chose for a in assignments)
             if alive:
                 age = time.monotonic() - picked_at
                 ts = datetime.datetime.now().strftime("%H:%M:%S")
-                print(f"[{ts}] {name} -> {bound} alive ({age:.0f}s held)", flush=True)
+                print(f"[{ts}] {name} -> {last_chose} alive ({age:.0f}s held)", flush=True)
             else:
-                if bound is not None:
-                    print(f"{name} -> {bound} gone from server", flush=True)
-                bound = None
-                stored = None if (first and force) else _cli_state.store.get(name)
-                if stored is not None:
-                    for a in assignments:
-                        if a.endpoint == stored.endpoint:
-                            bound = stored.endpoint
-                            picked_at = time.monotonic()
-                            print(f"keeping existing binding {name} -> {bound}", flush=True)
-                            break
-                if bound is None:
-                    bound_endpoints = {s.endpoint for s in _cli_state.store.list().values()}
-                    orphans = _orphans(assignments, bound_endpoints)
-                    if not orphans:
-                        print("no orphan on server - waiting", flush=True)
+                if last_chose is not None:
+                    print(f"{name} -> {last_chose} gone", flush=True)
+                last_chose = None
+                bound_endpoints = {s.endpoint for s in _cli_state.store.list().values()}
+                # selector always when not alive, even if candidate exists
+                orphans = _orphans(assignments, bound_endpoints) if assignments else []
+                # if last_chose was None, orphans includes all; if alive case already handled
+                # show selector from orphans; if no orphans but assignments exist, show all assignments as candidates
+                cands = orphans if orphans else assignments
+                if not cands:
+                    print("no session on server - waiting", flush=True)
+                else:
+                    for i, a in enumerate(cands):
+                        print(f"  [{i}] {a.endpoint} ({a.accelerator} / {a.variant})", flush=True)
+                    if len(cands) == 1:
+                        print("one candidate - picking it", flush=True)
+                        picked = cands[0]
                     else:
-                        picked = _pick_orphan(orphans, None)
-                        entry = refresh(name, picked.endpoint, None)
-                        bound = entry.endpoint
-                        picked_at = time.monotonic()
-            first = False
+                        raw = input(f"pick [0..{len(cands) - 1}] (Enter keeps [0]): ").strip()
+                        if raw == "":
+                            picked = cands[0]
+                        elif not raw.isdigit() or not 0 <= int(raw) < len(cands):
+                            raise SystemExit("no selection made")
+                        else:
+                            picked = cands[int(raw)]
+                    entry = SessionState(
+                        name=name,
+                        token=picked.runtime_proxy_info.token,
+                        url=picked.runtime_proxy_info.url,
+                        endpoint=picked.endpoint,
+                        variant=picked.variant.name,
+                        accelerator=picked.accelerator.value,
+                    )
+                    _cli_state.store.add(entry)
+                    last_chose = picked.endpoint
+                    picked_at = time.monotonic()
+                    print(f"bound {name} -> {last_chose}", flush=True)
             time.sleep(interval)
     except KeyboardInterrupt:
         print("watch stopped", flush=True)
 
 
 def select(name: str, pick: int | None) -> SessionState:
-    """Selector by default: current binding first, then orphans.
-    Empty Enter keeps [0]. Returns the saved entry."""
+    """Selector: last_chose None -> show selector; if last_chose in sessions -> keep, else selector."""
     _, assignments = _cli_state.sync_sessions()
     cands: list[tuple[str, object]] = []
     stored = _cli_state.store.get(name)
