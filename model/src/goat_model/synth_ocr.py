@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from goat_model.utils import LogProgress
 
 
 def apply_gaussian_noise(image: Image.Image, sigma: float, rng=None) -> Image.Image:
@@ -87,22 +88,31 @@ def fetch_wikipedia_corpus(
         if dst.is_file():
             corpus[lang] = dst
             continue
+        part = out_dir / f"wiki_{lang}.partial.txt"
         seen: set[str] = set()
         lines: list[str] = []
+        if part.is_file():
+            for raw in part.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if line and line not in seen:
+                    seen.add(line)
+                    lines.append(line)
+            if lines:
+                print(f"[wiki-{lang}] resuming {len(lines)}/{n_lines} lines from {part.name}", flush=True)
         query = (
             "action=query&format=json&generator=random&grnnamespace=0"
             "&grnlimit=10&prop=extracts&explaintext=1"
         )
         url = f"https://{lang}.wikipedia.org/w/api.php?" + query
         requests = 0
-        print(f"[wiki-{lang}] target={n_lines} lines", flush=True)
+        prog = LogProgress(n_lines, f"wiki-{lang}", unit="lines", interval_s=5.0)
+        prog.n = len(lines)
         while len(lines) < n_lines and requests < 2000:
             requests += 1
             req = urllib.request.Request(url, headers={"User-Agent": "GOaT/1.0"})
             data = _urlopen_json(req, timeout=30)
             time.sleep(0.5)
-            if requests % 20 == 0 or len(lines) >= n_lines:
-                print(f"[wiki-{lang}] req={requests} lines={len(lines)}/{n_lines}", flush=True)
+            batch_new: list[str] = []
             for page in data["query"]["pages"].values():
                 text = page.get("extract", "")
                 for raw in text.splitlines():
@@ -111,9 +121,16 @@ def fetch_wikipedia_corpus(
                         continue
                     seen.add(line)
                     lines.append(line)
+                    batch_new.append(line)
                     if len(lines) >= n_lines:
                         break
-        dst.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            if batch_new:
+                with part.open("a", encoding="utf-8") as fh:
+                    fh.write("".join(ln + "\n" for ln in batch_new))
+                prog.update(len(batch_new))
+        prog.close()
+        dst.write_text("\n".join(lines[:n_lines]) + "\n", encoding="utf-8")
+        part.unlink(missing_ok=True)
         corpus[lang] = dst
     return corpus
 
@@ -285,8 +302,13 @@ def generate_synthtiger(
     corpus_weights = [text_ratio, 1.0 - text_ratio]
     _write_config(cfg, corpus_paths, corpus_weights, font_dir, text_ratio, seed)
 
-    template_dir = Path(synthtiger.__file__).resolve().parents[1]
-    template = str(template_dir / "examples" / "multiline" / "template.py")
+    pkg_dir = Path(synthtiger.__file__).resolve().parent
+    template = str(pkg_dir / "examples" / "multiline" / "template.py")
+    if not Path(template).is_file():
+        raise SystemExit(
+            f"synthtiger template missing: {template} "
+            "(wheel lacks examples/ - vendor it under model/assets)"
+        )
 
     subprocess.run(
         [
