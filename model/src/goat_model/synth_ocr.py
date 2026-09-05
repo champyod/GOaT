@@ -333,46 +333,57 @@ def generate_synthtiger(
     import threading
 
     stop_evt = threading.Event()
-    gen_root = out_dir / "gen"
+    gen_root = out_dir
     prog = LogProgress(n, "synth-gen", unit="imgs", interval_s=10.0)
     def _watch():
         while not stop_evt.wait(10.0):
             try:
                 cnt = sum(1 for _ in gen_root.rglob("*.jpg"))
+                cnt += sum(1 for _ in gen_root.rglob("*.png"))
             except Exception:
                 cnt = 0
             prog.update(max(0, cnt - prog.n))
 
     th = threading.Thread(target=_watch, daemon=True)
     th.start()
-    print(f"[synth-gen] start n={n} workers={workers} template={Path(template).name} cfg={cfg.name} out={out_dir / 'gen'}", flush=True)
+    print(f"[synth-gen] start n={n} workers={workers} template={Path(template).name} cfg={cfg.name} out={out_dir / 'gen'} | in={thai_corpus.name},{english_corpus.name} fonts={font_dir}", flush=True)
+    synth_log = out_dir / "synth_gen.log"
     try:
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "synthtiger",
-                "-o",
-                str(out_dir / "gen"),
-                "-c",
-                str(n),
-                "-w",
-                str(workers),
-                "-s",
-                str(seed),
-                template,
-                "Multiline",
-                str(cfg),
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
-        )
+        with open(synth_log, "w", encoding="utf-8") as log_fh:
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "synthtiger",
+                    "-o",
+                    str(out_dir / "gen"),
+                    "-c",
+                    str(n),
+                    "-w",
+                    str(workers),
+                    "-s",
+                    str(seed),
+                    template,
+                    "Multiline",
+                    str(cfg),
+                ],
+                check=True,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+            )
+    except subprocess.CalledProcessError as err:
+        print(f"[error] synth-gen failed code={err.returncode} log={synth_log} | out={out_dir}", flush=True)
+        try:
+            print(Path(synth_log).read_text()[-2000:], flush=True)
+        except Exception:
+            pass
+        raise
     finally:
         stop_evt.set()
         th.join(timeout=1.0)
         try:
             final_cnt = sum(1 for _ in gen_root.rglob("*.jpg"))
+            final_cnt += sum(1 for _ in gen_root.rglob("*.png"))
         except Exception:
             final_cnt = 0
         if final_cnt > prog.n:
