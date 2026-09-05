@@ -130,6 +130,7 @@ def fetch_wikipedia_corpus(
                     fh.write("".join(ln + "\n" for ln in batch_new))
                 prog.update(len(batch_new))
         prog.close()
+        print(f"[wiki-{lang}] done {len(lines[:n_lines])}/{n_lines} -> {dst.name} (src wiki API)", flush=True)
         dst.write_text("\n".join(lines[:n_lines]) + "\n", encoding="utf-8")
         part.unlink(missing_ok=True)
         corpus[lang] = dst
@@ -172,6 +173,7 @@ def download_ocr_fonts(out_dir: Path, names: tuple[str, ...]) -> Path:
             _download(url, dst)
         fonts_prog.update()
     fonts_prog.close()
+    print(f"[fonts] {len(list(out_dir.glob('*.ttf')))} ttf -> {out_dir}", flush=True)
     return out_dir
 
 
@@ -333,6 +335,7 @@ def generate_synthtiger(
 
     th = threading.Thread(target=_watch, daemon=True)
     th.start()
+    print(f"[synth-gen] start n={n} workers={workers} template={Path(template).name} cfg={cfg.name} out={out_dir / 'gen'}", flush=True)
     try:
         subprocess.run(
             [
@@ -352,6 +355,8 @@ def generate_synthtiger(
                 str(cfg),
             ],
             check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
         )
     finally:
         stop_evt.set()
