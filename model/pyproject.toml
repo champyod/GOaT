@@ -62,6 +62,11 @@ goat-model = "goat_model:main"
 # Default `uv sync` installs only base + dev deps (lightweight, CI-safe).
 # Heavy ML runtimes are opt-in: `uv sync --extra ocr --extra mt --extra train`.
 package = true
+# Single CUDA track: torch 2.7.1 needs nccl-cu12 2.26.2 but paddlepaddle-gpu
+# pins 2.25.1. NCCL is backward compatible (binaries built on older libs run
+# on newer ones), so force the newer lib: paddle keeps working, torch gets
+# the symbols (e.g. ncclCommResume) its build requires.
+override-dependencies = ["nvidia-nccl-cu12==2.26.2"]
 
 [tool.ruff]
 line-length = 100
