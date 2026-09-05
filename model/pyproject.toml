@@ -21,20 +21,20 @@ ocr = [
     "paddlepaddle-gpu==3.2.*",
     "onnxruntime>=1.19",
     "transformers>=4.46",
-    "torch>=2.5",
+    "torch==2.7.1",  # pin cu12 track: torch 2.13+ pulls nvidia-nccl-cu13 which collides with paddlepaddle-gpu cu126 in one venv
 ]
 mt = [
     "transformers>=4.46",
     "ctranslate2>=4.4",
     "sentencepiece>=0.2",
     "datasets>=3.0",
-    "torch>=2.5",
+    "torch==2.7.1",  # pin cu12 track: torch 2.13+ pulls nvidia-nccl-cu13 which collides with paddlepaddle-gpu cu126 in one venv
 ]
 train = [
     "peft>=0.13",
     "accelerate>=1.0",
     "datasets>=3.0",
-    "torch>=2.5",
+    "torch==2.7.1",  # pin cu12 track: torch 2.13+ pulls nvidia-nccl-cu13 which collides with paddlepaddle-gpu cu126 in one venv
     "paddlepaddle-gpu==3.2.*",
     "synthtiger @ git+https://github.com/clovaai/synthtiger.git",
 ]
