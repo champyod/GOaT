@@ -25,7 +25,27 @@ from colab_cli.common import state as _cli_state  # noqa: E402
 from colab_cli.state import SessionState  # noqa: E402
 
 
-def _fresh_assignment(endpoint: str | None, name: str):
+def _orphans(assignments, bound: set[str]) -> list:
+    return [a for a in assignments if a.endpoint not in bound]
+
+
+def _pick_orphan(orphans: list, pick: int | None):
+    for i, a in enumerate(orphans):
+        print(f"  [{i}] {a.endpoint} ({a.accelerator} / {a.variant})", flush=True)
+    if len(orphans) == 1 and pick is None:
+        print("one orphan - adopting it", flush=True)
+        return orphans[0]
+    if pick is not None:
+        if 0 <= pick < len(orphans):
+            return orphans[pick]
+        raise SystemExit(f"--pick {pick} out of range 0..{len(orphans) - 1}")
+    raw = input(f"pick orphan [0..{len(orphans) - 1}]: ").strip()
+    if not raw.isdigit() or not 0 <= int(raw) < len(orphans):
+        raise SystemExit("no selection made")
+    return orphans[int(raw)]
+
+
+def _fresh_assignment(endpoint: str | None, name: str, pick: int | None):
     _, assignments = _cli_state.sync_sessions()
     if endpoint:
         for a in assignments:
@@ -33,16 +53,20 @@ def _fresh_assignment(endpoint: str | None, name: str):
                 return a
         raise SystemExit(f"endpoint {endpoint} not on server; check `colab sessions`")
     stored = _cli_state.store.get(name)
-    if stored is None:
-        raise SystemExit(f"no local entry {name!r}; pass --endpoint to adopt")
-    for a in assignments:
-        if a.endpoint == stored.endpoint:
-            return a
-    raise SystemExit(f"{name}ᴹs endpoint gone from server; VM is dead, re-provision")
+    if stored is not None:
+        for a in assignments:
+            if a.endpoint == stored.endpoint:
+                return a
+        raise SystemExit(f"{name}'s endpoint gone from server; VM is dead, re-provision")
+    bound = {s.endpoint for s in _cli_state.store.list().values()}
+    orphans = _orphans(assignments, bound)
+    if not orphans:
+        raise SystemExit("no orphan on server; VM is dead, re-provision")
+    return _pick_orphan(orphans, pick)
 
 
-def refresh(name: str, endpoint: str | None) -> SessionState:
-    a = _fresh_assignment(endpoint, name)
+def refresh(name: str, endpoint: str | None, pick: int | None = None) -> SessionState:
+    a = _fresh_assignment(endpoint, name, pick)
     entry = SessionState(
         name=name,
         token=a.runtime_proxy_info.token,
@@ -56,18 +80,68 @@ def refresh(name: str, endpoint: str | None) -> SessionState:
     return entry
 
 
+def watch(name: str, interval: float, force: bool) -> None:
+    """Force-select a session, hold the binding until it vanishes, then
+    re-show the selector. Sessions data refreshes every ``interval``."""
+    import datetime
+
+    bound: str | None = None
+    picked_at = 0.0
+    first = True
+    try:
+        while True:
+            _, assignments = _cli_state.sync_sessions()
+            alive = bound is not None and any(a.endpoint == bound for a in assignments)
+            if alive:
+                age = time.monotonic() - picked_at
+                ts = datetime.datetime.now().strftime("%H:%M:%S")
+                print(f"[{ts}] {name} -> {bound} alive ({age:.0f}s held)", flush=True)
+            else:
+                if bound is not None:
+                    print(f"{name} -> {bound} gone from server", flush=True)
+                bound = None
+                stored = None if (first and force) else _cli_state.store.get(name)
+                if stored is not None:
+                    for a in assignments:
+                        if a.endpoint == stored.endpoint:
+                            bound = stored.endpoint
+                            picked_at = time.monotonic()
+                            print(f"keeping existing binding {name} -> {bound}", flush=True)
+                            break
+                if bound is None:
+                    bound_endpoints = {s.endpoint for s in _cli_state.store.list().values()}
+                    orphans = _orphans(assignments, bound_endpoints)
+                    if not orphans:
+                        print("no orphan on server - waiting", flush=True)
+                    else:
+                        picked = _pick_orphan(orphans, None)
+                        entry = refresh(name, picked.endpoint, None)
+                        bound = entry.endpoint
+                        picked_at = time.monotonic()
+            first = False
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("watch stopped", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Refresh or adopt a CLI session binding.")
     parser.add_argument("name")
     parser.add_argument("--endpoint", default=None, help="adopt this orphan endpoint")
+    parser.add_argument("--pick", type=int, default=None, help="orphan index when several exist")
     parser.add_argument("--loop", action="store_true", help="refresh forever")
-    parser.add_argument("--interval", type=float, default=2700.0, help="seconds between refreshes")
+    parser.add_argument("--watch", action="store_true", help="force-select, hold, re-show selector")
+    parser.add_argument("--force", action="store_true", help="with --watch: select even if bound")
+    parser.add_argument("--interval", type=float, default=None, help="seconds between refreshes")
     args = parser.parse_args()
-    refresh(args.name, args.endpoint)
+    if args.watch:
+        watch(args.name, args.interval if args.interval is not None else 5.0, args.force)
+        return
+    refresh(args.name, args.endpoint, args.pick)
     while args.loop:
-        time.sleep(args.interval)
+        time.sleep(args.interval if args.interval is not None else 2700.0)
         try:
-            refresh(args.name, None)
+            refresh(args.name, None, None)
         except SystemExit as err:
             print(f"rebind: {err}", flush=True)
 
