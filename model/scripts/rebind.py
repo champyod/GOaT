@@ -9,10 +9,11 @@ Two modes (both use the CLI's own state store + server truth):
 - adopt: rebind a pruned name to a live ``[?]`` orphan endpoint.
 
 Usage:
-    rebind.py NAME                  # one-shot refresh
+    rebind.py NAME                  # selector (current first, Enter keeps it)
+    rebind.py NAME --no-select      # silent refresh, no prompt
     rebind.py NAME --loop           # refresh every 45 min forever
-    rebind.py NAME --endpoint EPT   # adopt orphan (post-prune recovery)
-    rebind.py NAME --loop --interval 2700
+    rebind.py NAME --endpoint EPT   # adopt orphan directly
+    rebind.py NAME --pick N         # non-interactive index
 """
 from __future__ import annotations
 
@@ -124,11 +125,57 @@ def watch(name: str, interval: float, force: bool) -> None:
         print("watch stopped", flush=True)
 
 
+def select(name: str, pick: int | None) -> SessionState:
+    """Selector by default: current binding first, then orphans.
+    Empty Enter keeps [0]. Returns the saved entry."""
+    _, assignments = _cli_state.sync_sessions()
+    cands: list[tuple[str, object]] = []
+    stored = _cli_state.store.get(name)
+    if stored is not None:
+        live = next((a for a in assignments if a.endpoint == stored.endpoint), None)
+        if live is not None:
+            cands.append(("current", live))
+    bound = {s.endpoint for s in _cli_state.store.list().values()}
+    cands.extend(("orphan", a) for a in _orphans(assignments, bound))
+    if not cands:
+        raise SystemExit("nothing on server; VM is dead, re-provision")
+    for i, (tag, a) in enumerate(cands):
+        print(f"  [{i}] {tag} {a.endpoint} ({a.accelerator} / {a.variant})", flush=True)
+    if pick is not None:
+        if 0 <= pick < len(cands):
+            chosen = cands[pick][1]
+        else:
+            raise SystemExit(f"--pick {pick} out of range 0..{len(cands) - 1}")
+    elif len(cands) == 1:
+        print("one candidate - keeping it", flush=True)
+        chosen = cands[0][1]
+    else:
+        raw = input(f"pick [0..{len(cands) - 1}] (Enter keeps [0]): ").strip()
+        if raw == "":
+            chosen = cands[0][1]
+        elif not raw.isdigit() or not 0 <= int(raw) < len(cands):
+            raise SystemExit("no selection made")
+        else:
+            chosen = cands[int(raw)][1]
+    entry = SessionState(
+        name=name,
+        token=chosen.runtime_proxy_info.token,
+        url=chosen.runtime_proxy_info.url,
+        endpoint=chosen.endpoint,
+        variant=chosen.variant.name,
+        accelerator=chosen.accelerator.value,
+    )
+    _cli_state.store.add(entry)
+    print(f"bound {name} -> {chosen.endpoint} (fresh token)", flush=True)
+    return entry
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Refresh or adopt a CLI session binding.")
     parser.add_argument("name")
     parser.add_argument("--endpoint", default=None, help="adopt this orphan endpoint")
-    parser.add_argument("--pick", type=int, default=None, help="orphan index when several exist")
+    parser.add_argument("--pick", type=int, default=None, help="index when several exist")
+    parser.add_argument("--no-select", action="store_true", help="skip selector, silent refresh")
     parser.add_argument("--loop", action="store_true", help="refresh forever")
     parser.add_argument("--watch", action="store_true", help="force-select, hold, re-show selector")
     parser.add_argument("--force", action="store_true", help="with --watch: select even if bound")
@@ -136,6 +183,15 @@ def main() -> None:
     args = parser.parse_args()
     if args.watch:
         watch(args.name, args.interval if args.interval is not None else 5.0, args.force)
+        return
+    if not args.no_select and args.endpoint is None:
+        select(args.name, args.pick)
+        while args.loop:
+            time.sleep(args.interval if args.interval is not None else 2700.0)
+            try:
+                refresh(args.name, None, None)
+            except SystemExit as err:
+                print(f"rebind: {err}", flush=True)
         return
     refresh(args.name, args.endpoint, args.pick)
     while args.loop:
