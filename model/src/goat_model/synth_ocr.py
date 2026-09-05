@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from goat_model.constants import MODEL_ROOT
 from goat_model.utils import LogProgress
 
 
@@ -302,13 +303,14 @@ def generate_synthtiger(
     corpus_weights = [text_ratio, 1.0 - text_ratio]
     _write_config(cfg, corpus_paths, corpus_weights, font_dir, text_ratio, seed)
 
-    pkg_dir = Path(synthtiger.__file__).resolve().parent
-    template = str(pkg_dir / "examples" / "multiline" / "template.py")
+    vendored = MODEL_ROOT / "assets" / "synthtiger_templates" / "multiline" / "template.py"
+    if vendored.is_file():
+        template = str(vendored)
+    else:
+        pkg_dir = Path(synthtiger.__file__).resolve().parent
+        template = str(pkg_dir / "examples" / "multiline" / "template.py")
     if not Path(template).is_file():
-        raise SystemExit(
-            f"synthtiger template missing: {template} "
-            "(wheel lacks examples/ - vendor it under model/assets)"
-        )
+        raise SystemExit(f"synthtiger template missing: {template}")
 
     subprocess.run(
         [
