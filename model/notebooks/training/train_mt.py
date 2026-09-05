@@ -36,12 +36,12 @@ def main() -> None:
 
         for part in ("train", "val", "test"):
             if not (args.mt_dir / part).is_dir() and not (args.mt_dir / f"{part}.en").is_file():
-                raise SystemExit(f"run scripts/download_data.py --dataset scb-mt first (missing {args.mt_dir}/{part})")
+                raise RuntimeError(f"run scripts/download_data.py --dataset scb-mt first (missing {args.mt_dir}/{part})")
 
         try:
             import peft  # noqa: F401
         except ImportError as err:
-            raise SystemExit("peft not installed - re-run `uv sync --extra train`") from err
+            raise RuntimeError("peft not installed - re-run `uv sync --extra train`") from err
 
         from goat_model.mt.train import run_mt_finetune
 
