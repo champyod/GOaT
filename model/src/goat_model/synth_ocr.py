@@ -156,10 +156,13 @@ def download_ocr_fonts(out_dir: Path, names: tuple[str, ...]) -> Path:
     }
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    from goat_model.utils import LogProgress as _LP
+    fonts_prog = _LP(len(names), "fonts", unit="fonts", interval_s=5.0)
     for name in names:
         if name not in sources:
             raise ValueError(f"no google/fonts source mapped for {name!r}")
         if any(out_dir.glob(name + "*")):
+            fonts_prog.update()
             continue
         repo_dir, repo_files = sources[name]
         for repo_file in repo_files:
@@ -167,6 +170,8 @@ def download_ocr_fonts(out_dir: Path, names: tuple[str, ...]) -> Path:
             dst = out_dir / f"{name}-{weight}.ttf"
             url = base + repo_dir + "/" + urllib.parse.quote(repo_file)
             _download(url, dst)
+        fonts_prog.update()
+    fonts_prog.close()
     return out_dir
 
 
@@ -312,25 +317,52 @@ def generate_synthtiger(
     if not Path(template).is_file():
         raise SystemExit(f"synthtiger template missing: {template}")
 
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "synthtiger",
-            "-o",
-            str(out_dir / "gen"),
-            "-c",
-            str(n),
-            "-w",
-            str(workers),
-            "-s",
-            str(seed),
-            template,
-            "Multiline",
-            str(cfg),
-        ],
-        check=True,
-    )
+    import threading
+
+    stop_evt = threading.Event()
+    gen_root = out_dir / "gen"
+    prog = LogProgress(n, "synth-gen", unit="imgs", interval_s=10.0)
+    def _watch():
+        while not stop_evt.wait(10.0):
+            try:
+                cnt = sum(1 for _ in gen_root.rglob("*.jpg"))
+            except Exception:
+                cnt = 0
+            if cnt > prog.n:
+                prog.update(cnt - prog.n)
+
+    th = threading.Thread(target=_watch, daemon=True)
+    th.start()
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "synthtiger",
+                "-o",
+                str(out_dir / "gen"),
+                "-c",
+                str(n),
+                "-w",
+                str(workers),
+                "-s",
+                str(seed),
+                template,
+                "Multiline",
+                str(cfg),
+            ],
+            check=True,
+        )
+    finally:
+        stop_evt.set()
+        th.join(timeout=1.0)
+        try:
+            final_cnt = sum(1 for _ in gen_root.rglob("*.jpg"))
+        except Exception:
+            final_cnt = 0
+        if final_cnt > prog.n:
+            prog.update(final_cnt - prog.n)
+        prog.close()
     manifest = _build_manifest(out_dir)
 
     rng = np.random.default_rng(seed)
