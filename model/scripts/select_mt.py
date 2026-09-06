@@ -18,7 +18,7 @@ from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test, summarize
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
-from goat_model.utils import log_call, setup_seed, write_json
+from goat_model.utils import log_call, resolve_device, setup_seed, write_json
 
 
 @log_call
@@ -58,7 +58,7 @@ def main() -> None:
             beam=c.MT_BEAM_SIZE,
             max_length=c.MT_MAX_LENGTH,
             length_penalty=c.MT_LENGTH_PENALTY,
-            device="cpu",
+            device=resolve_device("cuda"),
             seed=args.seed,
         )
         bleu_series[model] = []

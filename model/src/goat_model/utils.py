@@ -169,3 +169,25 @@ def copy_replace(src: Path, dst: Path) -> None:
         except OSError:
             pass
         shutil.copy2(src, dst)
+
+
+def resolve_device(requested: str = "cuda") -> str:
+    """Single device policy: CUDA everywhere, never silent CPU.
+
+    ``"cuda"`` (default) raises RuntimeError when CUDA is unavailable instead
+    of falling back. ``"cpu"`` is allowed only when explicitly requested, with
+    a loud warning. Anything else is treated as CUDA (fail fast).
+    """
+    if requested == "cpu":
+        print("[warn] resolve_device: explicit CPU - expect hours-long runs", flush=True)
+        return "cpu"
+    if not have("torch"):
+        raise RuntimeError("torch not installed - cannot verify CUDA; run `uv sync --extra mt`")
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    raise RuntimeError(
+        f"device {requested!r} requested but CUDA unavailable - fix torch/CUDA "
+        "(never fall back to CPU silently)"
+    )

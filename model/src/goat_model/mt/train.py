@@ -40,7 +40,7 @@ from goat_model.constants import (
 from goat_model.metrics import corpus_bleu
 from goat_model.mt.engine import NLLB_HF_IDS
 from goat_model.mt.evaluate import load_pairs
-from goat_model.utils import log_call, LogProgress, setup_seed, trainer_heartbeat, write_json
+from goat_model.utils import log_call, LogProgress, resolve_device, setup_seed, trainer_heartbeat, write_json
 
 
 @log_call
@@ -91,7 +91,7 @@ def run_mt_finetune(
         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
         return {"bleu": round(corpus_bleu(decoded_labels, decoded_preds), 4)}
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = resolve_device("cuda")
     partial_path = result_path.with_name(result_path.stem + ".partial.json")
     grid_results: dict = {}
     best = None

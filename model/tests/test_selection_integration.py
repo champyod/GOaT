@@ -43,7 +43,7 @@ def test_select_mt_resume():
     def fake_run_mt(backend, sources, refs, batch_size, seed):
         return {"bleu": 30.0, "average_ms_per_sentence": 100.0, "hypotheses": ["h1", "h2"]}
 
-    sys.argv = ["x", "--mt-test-dir", str(mt), "--output", str(out), "--repeats", "2", "--seed", "42"]
+    sys.argv = ["x", "--mt-test-dir", str(mt), "--output", str(out), "--repeats", "2", "--seed", "42", "--device", "cpu"]
     with mock.patch.object(sm, "get_mt", return_value=object()), \
          mock.patch.object(sm, "dataset_revisions", return_value={}), \
          mock.patch("goat_model.mt.evaluate.run_mt", side_effect=fake_run_mt):
