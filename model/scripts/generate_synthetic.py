@@ -23,6 +23,25 @@ from goat_model.synth_ocr import _build_manifest, flatten_synthetic
 from goat_model.utils import log_call
 
 
+def _sync_tree(src: Path, dst: Path) -> tuple[int, int]:
+    """Copy only new/changed files src -> dst (size-compare). Returns (copied, skipped)."""
+    import shutil
+
+    copied = skipped = 0
+    for f in src.rglob("*"):
+        if not f.is_file():
+            continue
+        d = dst / f.relative_to(src)
+        if d.is_file() and d.stat().st_size == f.stat().st_size:
+            skipped += 1
+            continue
+        d.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(f, d)
+        copied += 1
+    print(f"[sync] {copied} copied, {skipped} skipped {src} -> {dst}", flush=True)
+    return copied, skipped
+
+
 @log_call
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download + split synthetic OCR data.")
@@ -58,7 +77,6 @@ def main() -> None:
                 "then this script can fetch the synthetic dataset."
             ) from err
 
-        import shutil
         import threading
         import time
 
@@ -70,12 +88,7 @@ def main() -> None:
         stage_dir.mkdir(parents=True, exist_ok=True)
         if gen_dir.is_dir():
             print(f"[step] synthetic: merging Drive progress {gen_dir} -> {stage_dir} ...", flush=True)
-            for src in gen_dir.rglob("*"):
-                if src.is_file():
-                    dst = stage_dir / src.relative_to(gen_dir)
-                    if not dst.is_file() or dst.stat().st_size != src.stat().st_size:
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(src, dst)
+            _sync_tree(gen_dir, stage_dir)
         try:
             from huggingface_hub import HfApi
             info = HfApi().dataset_info(c.OCR_SYNTHETIC_REPO_ID)
@@ -127,9 +140,8 @@ def main() -> None:
         if last_err is not None:
             raise last_err
         print(f"[step] synthetic: staging {stage_dir} -> {gen_dir} ...", flush=True)
-        if gen_dir.exists():
-            shutil.rmtree(gen_dir)
-        shutil.copytree(stage_dir, gen_dir)
+        gen_dir.mkdir(parents=True, exist_ok=True)
+        _sync_tree(stage_dir, gen_dir)
         manifest = _build_manifest(args.out)
         if not manifest:
             raise SystemExit(
