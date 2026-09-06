@@ -38,7 +38,7 @@ export TQDM_DISABLE=1
 # and the shell logs signal/exit receipt with timestamps (preemption/OOM leaves a mark).
 export PYTHONFAULTHANDLER=1
 trap 'echo "[trap] training.sh got TERM/INT at $(date -u +%FT%TZ)" >&2; exit 143' TERM INT
-trap 'code=$?; echo "[trap] training.sh exiting code=$code at $(date -u +%FT%TZ)" >&2' EXIT
+trap 'code=$?; echo "[trap] training.sh exiting code=$code at $(date -u +%FT%TZ)" >&2; if [ $code -eq 137 ]; then echo "[trap] 137=SIGKILL: likely OOM-killed or VM preempted - check RAM (scripts/monitor_ram.py) and batch sizes" >&2; fi' EXIT
 
 # Install (dual path, same set): primary `colab install -s goat -r requirements.txt`
 # from laptop once; fallback below (uv sync) still runs so sh works when skipped.
