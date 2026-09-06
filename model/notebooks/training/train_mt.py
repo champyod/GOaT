@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
+from goat_model.log import dump as _dump
 from goat_model.log import error as _err
 from goat_model.log import info as _info
 from goat_model.log import warning as _warn
@@ -66,7 +67,7 @@ def main() -> None:
         tb = traceback.format_exc()
         inp = args.mt_dir
         _err("train-mt", "failed", inp=str(inp), out=str(_err_out), error=str(err))
-        print(tb, flush=True)
+        _dump("traceback", tb)
         try:
             _err_path = str(_err_out) + ".error.json"
             from pathlib import Path as _P

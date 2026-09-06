@@ -22,6 +22,7 @@ from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
+from goat_model.log import dump as _dump
 from goat_model.log import error as _err
 from goat_model.log import info as _info
 from goat_model.log import warning as _warn
@@ -160,7 +161,7 @@ def main() -> None:
         tb = traceback.format_exc()
         inp = args.ocr_eval_dir
         _err("select_ocr", "failed", inp=str(inp), out=str(_err_out), error=str(err))
-        print(tb, flush=True)
+        _dump("traceback", tb)
         if _err_out is not None:
             try:
                 _err_path = str(_err_out) + ".error.json"

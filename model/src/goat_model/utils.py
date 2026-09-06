@@ -13,7 +13,7 @@ import numpy as np
 
 def log_call(fn):
     import functools, logging, traceback
-    from goat_model.log import configure, debug as _dbg, error as _err, info as _info
+    from goat_model.log import configure, debug as _dbg, dump as _dump, error as _err, info as _info
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         is_debug = configure().isEnabledFor(logging.DEBUG)
@@ -31,7 +31,7 @@ def log_call(fn):
         except Exception as e:
             _err(fn.__name__, "error", message=str(e))
             if is_debug:
-                print(traceback.format_exc(), flush=True, file=sys.stderr)
+                _dump(fn.__name__, traceback.format_exc(), level="debug")
             raise
     return wrapper
 

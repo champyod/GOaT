@@ -160,3 +160,24 @@ def error(tag: str, msg: object = "", **kv: object) -> None:
 
 def critical(tag: str, msg: object = "", **kv: object) -> None:
     log(logging.CRITICAL, tag, msg, **kv)
+
+
+def dump(tag: str, text: object, level: int | str = logging.ERROR) -> None:
+    """Emit multi-line content (tracebacks, log tails) line-by-line.
+
+    format_line truncates at 500 chars and strips newlines by design, which
+    would destroy tracebacks - so dumps bypass it but still flow through the
+    configured logger (level gating + stdout/stderr split preserved).
+    """
+    if isinstance(level, str):
+        key = level.strip().lower()
+        if key not in _LEVELS:
+            raise ValueError(f"unknown log level {level!r}")
+        level = _LEVELS[key]
+    try:
+        lines = str(text).splitlines() or [""]
+    except Exception:
+        lines = [repr(text)]
+    logger = configure()
+    for line in lines:
+        logger.log(level, f"{tag} | {line.rstrip()}")

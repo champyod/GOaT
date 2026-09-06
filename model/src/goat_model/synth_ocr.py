@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 from goat_model.constants import MODEL_ROOT
+from goat_model.log import dump as _dump
 from goat_model.log import error as _err
 from goat_model.log import info as _info
 from goat_model.log import warning as _warn
@@ -504,14 +505,14 @@ def generate_synthtiger(
     except subprocess.TimeoutExpired:
         _err("synth-gen", "timed out", timeout_s=timeout_s, log=str(synth_log), out=str(out_dir))
         try:
-            print(Path(synth_log).read_text()[-4000:], flush=True)
+            _dump("synth-log", Path(synth_log).read_text()[-4000:])
         except Exception:
             pass
         raise
     except subprocess.CalledProcessError as err:
         _err("synth-gen", "failed", code=err.returncode, log=str(synth_log), out=str(out_dir))
         try:
-            print(Path(synth_log).read_text()[-2000:], flush=True)
+            _dump("synth-log", Path(synth_log).read_text()[-2000:])
         except Exception:
             pass
         raise
