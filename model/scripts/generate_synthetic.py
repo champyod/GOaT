@@ -108,8 +108,9 @@ def main() -> None:
         )
         _info("synthetic", "snapshot download", repo=c.OCR_SYNTHETIC_REPO_ID, dst=str(stage_dir))
         STALL_AFTER = 120.0
+        MAX_ATTEMPTS = 10
         last_err: Exception | None = None
-        for attempt in range(1, 7):
+        for attempt in range(1, MAX_ATTEMPTS + 1):
             dl = {"size": 0, "moved": time.monotonic(), "t0": time.monotonic()}
             ex = ThreadPoolExecutor(max_workers=1)
 
@@ -119,8 +120,8 @@ def main() -> None:
                     repo_type="dataset",
                     local_dir=stage_dir,
                     # 10k small files x default workers bursts the token endpoint
-                    # into 429s; fewer workers downloads slower but steadier.
-                    max_workers=4,
+                    # into 429s; 2 workers after 4-worker bursts still throttled.
+                    max_workers=2,
                 )
 
             fut = ex.submit(_run_snapshot)
@@ -150,7 +151,7 @@ def main() -> None:
                           elapsed=round(now - dl["t0"]), dst=str(stage_dir))
                 if not fut.done() and now - dl["moved"] > STALL_AFTER:
                     _warn("fetch", "stalled - abandoning attempt", stall_s=round(STALL_AFTER),
-                          mb=round(size / 1048576), attempt=f"{attempt}/6")
+                          mb=round(size / 1048576), attempt=f"{attempt}/{MAX_ATTEMPTS}")
                     stalled = True
                     break
             if stalled:
@@ -166,7 +167,7 @@ def main() -> None:
                 if not isinstance(last_err, (ConnectionError, TimeoutError, OSError)) and "429" not in str(last_err):
                     raise last_err
                 wait = 30 * attempt
-                _warn("fetch", "attempt failed", attempt=f"{attempt}/6", error=str(last_err), retry_s=wait)
+                _warn("fetch", "attempt failed", attempt=f"{attempt}/{MAX_ATTEMPTS}", error=str(last_err), retry_s=wait)
                 time.sleep(wait)
         if fetch_prog is not None:
             fetch_prog.close()
