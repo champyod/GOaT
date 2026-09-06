@@ -91,17 +91,29 @@ def main() -> None:
         watcher = threading.Thread(target=_fetch_watch, daemon=True)
         watcher.start()
         print(f"[step] synthetic: snapshot download {c.OCR_SYNTHETIC_REPO_ID} -> {gen_dir} ...", flush=True)
-        try:
-            snapshot_download(
-                repo_id=c.OCR_SYNTHETIC_REPO_ID,
-                repo_type="dataset",
-                local_dir=gen_dir,
-            )
-        finally:
-            stop.set()
-            watcher.join(timeout=1.0)
-            if fetch_prog is not None:
-                fetch_prog.close()
+        last_err: Exception | None = None
+        for attempt in range(1, 7):
+            try:
+                snapshot_download(
+                    repo_id=c.OCR_SYNTHETIC_REPO_ID,
+                    repo_type="dataset",
+                    local_dir=gen_dir,
+                )
+                last_err = None
+                break
+            except Exception as err:
+                if not isinstance(err, (ConnectionError, TimeoutError, OSError)) and "429" not in str(err):
+                    raise
+                last_err = err
+                wait = 30 * attempt
+                print(f"[fetch] attempt {attempt}/6 failed ({err}). retry in {wait}s ...", flush=True)
+                time.sleep(wait)
+        stop.set()
+        watcher.join(timeout=1.0)
+        if fetch_prog is not None:
+            fetch_prog.close()
+        if last_err is not None:
+            raise last_err
         manifest = _build_manifest(args.out)
         if not manifest:
             raise SystemExit(
