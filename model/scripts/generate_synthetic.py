@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from goat_model import constants as c
 from goat_model.data import split_ocr
 from goat_model.synth_ocr import _build_manifest, flatten_synthetic
-from goat_model.utils import copy_replace, log_call
+from goat_model.utils import LogProgress, copy_replace, log_call
 
 
 def _sync_tree(src: Path, dst: Path) -> tuple[int, int]:
@@ -55,11 +55,17 @@ def main() -> None:
     print(f"[step] synthetic: rebuilding manifest from {gen_dir} ...", flush=True)
     manifest = _build_manifest(args.out) if manifest_path.is_file() else {}
     if manifest:
-        print(f"[step] synthetic: verifying {len(manifest)} manifest entries ...", flush=True)
-        bad = [
-            key for key in manifest
-            if not (gen_dir / key).is_file() or (gen_dir / key).stat().st_size == 0
-        ]
+        verify_prog = LogProgress(len(manifest), "verify", unit="entries", interval_s=3.0, in_path=str(gen_dir))
+        bad = []
+        for key in manifest:
+            try:
+                ok = (gen_dir / key).stat().st_size > 0
+            except OSError:
+                ok = False
+            if not ok:
+                bad.append(key)
+            verify_prog.update()
+        verify_prog.close()
         print(f"[step] synthetic: {len(manifest) - len(bad)}/{len(manifest)} entries ok", flush=True)
         if bad:
             print(f"[fetch] {len(bad)} missing/corrupt entries, re-downloading ...", flush=True)
@@ -77,8 +83,6 @@ def main() -> None:
 
         import threading
         import time
-
-        from goat_model.utils import LogProgress
 
         # Stage in /tmp (fast local writes for 10k files), bulk-copy to Drive after.
         # stage_dir persists across runs so snapshot_download resumes partials.
