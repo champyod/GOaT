@@ -14,10 +14,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
+from goat_model.utils import log_call
 
 ARTIFACTS = c.MODEL_ROOT / "artifacts"
 
 
+@log_call
 def export_onnx(src: Path | None) -> Path:
     if src is None or not src.is_file():
         raise SystemExit("OCR model artifact missing - run scripts/train_ocr.py first")
@@ -32,6 +34,7 @@ def export_onnx(src: Path | None) -> Path:
     return out
 
 
+@log_call
 def export_ct2(src: Path | None) -> Path:
     if src is None or not src.is_dir():
         raise SystemExit("MT model artifact missing - run scripts/train_mt.py first")
@@ -46,6 +49,7 @@ def export_ct2(src: Path | None) -> Path:
     return out
 
 
+@log_call
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export trained models to app runtimes.")
     parser.add_argument("--ocr-src", type=Path, default=None, help="trained OCR checkpoint dir")

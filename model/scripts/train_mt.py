@@ -16,9 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
 from goat_model.mt.engine import NLLB_HF_IDS
-from goat_model.utils import setup_seed, write_json
+from goat_model.utils import log_call, setup_seed, write_json
 
 
+@log_call
 def main() -> None:
     parser = argparse.ArgumentParser(description="LoRA fine-tuning for NLLB-600M (selection winner).")
     parser.add_argument("--mt-dir", type=Path, default=c.DATA / "mt")

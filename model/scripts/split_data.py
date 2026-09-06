@@ -10,8 +10,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model.data import split_ocr
+from goat_model.utils import log_call
 
 
+@log_call
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stratified 70/15/15 OCR split.")
     parser.add_argument("--seed", type=int, default=None)

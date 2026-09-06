@@ -19,9 +19,10 @@ from goat_model import constants as c
 from goat_model.metrics import bootstrap_ci, summarize
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
-from goat_model.utils import setup_seed, write_json
+from goat_model.utils import log_call, setup_seed, write_json
 
 
+@log_call
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate an NLLB-200 model on FLORES-200.")
     parser.add_argument("--model", choices=c.MT_MODELS, default="NLLB-200-distilled-600M")

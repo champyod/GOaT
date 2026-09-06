@@ -18,9 +18,10 @@ from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test, summarize
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
-from goat_model.utils import setup_seed, write_json
+from goat_model.utils import log_call, setup_seed, write_json
 
 
+@log_call
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="MT selection experiment (BLEU/latency decision rule)."
