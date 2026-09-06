@@ -12,7 +12,7 @@ from typing import Protocol
 import numpy as np
 
 from goat_model.constants import SEED
-from goat_model.utils import have
+from goat_model.utils import have, log_call
 
 
 @dataclass
@@ -127,6 +127,7 @@ class ThaiTrOCR(OCRBackend):
 BACKENDS = {"PP-OCRv5-mobile": PaddleOCRv5, "ThaiTrOCR": ThaiTrOCR}
 
 
+@log_call
 def get_ocr(model: str, device: str = "cpu", seed: int = SEED) -> OCRBackend:
     if model not in BACKENDS:
         raise ValueError(f"unknown OCR model {model!r}; expected one of {sorted(BACKENDS)}")

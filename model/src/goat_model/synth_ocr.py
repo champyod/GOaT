@@ -28,6 +28,7 @@ from goat_model.utils import log_call, LogProgress
 SYNTH_GEN_TIMEOUT_S = 7200.0
 
 
+@log_call
 def apply_gaussian_noise(image: Image.Image, sigma: float, rng=None) -> Image.Image:
     """Add zero-mean Gaussian noise with the given per-channel ``sigma``."""
     if rng is None:
@@ -38,6 +39,7 @@ def apply_gaussian_noise(image: Image.Image, sigma: float, rng=None) -> Image.Im
     return Image.fromarray(out)
 
 
+@log_call
 def _download(url: str, dst: Path) -> Path:
     """Download ``url`` to ``dst``, creating parent dirs as needed."""
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -46,6 +48,7 @@ def _download(url: str, dst: Path) -> Path:
 
 
 
+@log_call
 def _urlopen_json(req, timeout: int = 30, tries: int = 6):
     """GET ``req`` as JSON with exponential backoff on HTTP 429."""
     import time
@@ -211,6 +214,7 @@ def flatten_synthetic(
     return out_dir
 
 
+@log_call
 def _write_config(
     out: Path,
     corpus_paths: list[Path],
@@ -286,6 +290,7 @@ def _build_manifest(out_dir: Path) -> dict[str, str]:
     return manifest
 
 
+@log_call
 def _preflight_local(
     corpus_paths: list[Path],
     corpus_weights: list[float],

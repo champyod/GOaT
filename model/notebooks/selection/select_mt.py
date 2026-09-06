@@ -21,18 +21,21 @@ from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test, summarize
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
-from goat_model.utils import LogProgress, setup_seed, write_json
+from goat_model.utils import LogProgress, log_call, setup_seed, write_json
 
 
+@log_call
 def _partial_path(output: Path) -> Path:
     return output.with_name(output.stem + ".partial.json")
 
 
+@log_call
 def _model_file(output: Path, model: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9]+", "_", model).strip("_")
     return output.with_name(f"{output.stem}.{safe}.json")
 
 
+@log_call
 def _load_partial(path: Path, seed: int, repeats: int) -> dict:
     if not path.is_file():
         return {}
@@ -45,10 +48,12 @@ def _load_partial(path: Path, seed: int, repeats: int) -> dict:
     return data
 
 
+@log_call
 def _flush_partial(path: Path, seed: int, repeats: int, bleu, lat, hyp) -> None:
     write_json(path, {"seed": seed, "runs": repeats, "bleu_series": bleu, "latency_series": lat, "last_hyp": hyp})
 
 
+@log_call
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="MT selection experiment (BLEU/latency decision rule)."

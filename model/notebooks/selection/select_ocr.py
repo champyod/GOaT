@@ -22,18 +22,21 @@ from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
-from goat_model.utils import LogProgress, setup_seed, write_json
+from goat_model.utils import LogProgress, log_call, setup_seed, write_json
 
 
+@log_call
 def _partial_path(output: Path) -> Path:
     return output.with_name(output.stem + ".partial.json")
 
 
+@log_call
 def _model_file(output: Path, model: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9]+", "_", model).strip("_")
     return output.with_name(f"{output.stem}.{safe}.json")
 
 
+@log_call
 def _load_partial(path: Path, seed: int, repeats: int) -> dict:
     if not path.is_file():
         return {}
@@ -46,10 +49,12 @@ def _load_partial(path: Path, seed: int, repeats: int) -> dict:
     return data
 
 
+@log_call
 def _recs(triples: list) -> list[dict]:
     return [{"cer": c, "word_accuracy": w, "latency_ms": m} for c, w, m in triples]
 
 
+@log_call
 def main() -> None:
     parser = argparse.ArgumentParser(description="OCR selection experiment (CER decision rule).")
     parser.add_argument("--repeats", type=int, default=c.OCR_N_RUNS)

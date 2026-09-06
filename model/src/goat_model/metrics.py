@@ -5,6 +5,7 @@ import numpy as np
 import sacrebleu
 
 from goat_model.constants import SEED
+from goat_model.utils import log_call
 
 
 def cer(reference: str, hypothesis: str) -> float:
@@ -15,15 +16,18 @@ def word_accuracy(reference: str, hypothesis: str) -> float:
     return float(1.0 - jiwer.wer(reference, hypothesis))
 
 
+@log_call
 def corpus_bleu(references: list[str], hypotheses: list[str]) -> float:
     return float(sacrebleu.corpus_bleu(hypotheses, [references]).score)
 
 
+@log_call
 def summarize(runs: list[float]) -> tuple[float, float]:
     arr = np.asarray(runs, dtype=float)
     return float(arr.mean()), float(arr.std(ddof=1))
 
 
+@log_call
 def paired_t_test(a: list[float], b: list[float], alpha: float = 0.05) -> dict:
     from scipy import stats
 
@@ -35,6 +39,7 @@ def paired_t_test(a: list[float], b: list[float], alpha: float = 0.05) -> dict:
     }
 
 
+@log_call
 def cohens_d(a: list[float], b: list[float]) -> float:
     arr_a, arr_b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
     pooled = np.sqrt((arr_a.std(ddof=1) ** 2 + arr_b.std(ddof=1) ** 2) / 2.0)
@@ -43,6 +48,7 @@ def cohens_d(a: list[float], b: list[float]) -> float:
     return float((arr_a.mean() - arr_b.mean()) / pooled)
 
 
+@log_call
 def bootstrap_ci(
     samples: list[float], n_boot: int = 10_000, seed: int = SEED, ci: float = 0.95
 ) -> dict[str, float]:

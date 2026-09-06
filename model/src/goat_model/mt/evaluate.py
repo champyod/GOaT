@@ -19,6 +19,7 @@ from goat_model.mt.engine import MTBackend
 from goat_model.utils import log_call, LogProgress
 
 
+@log_call
 def load_pairs(
     src: Path, ref: Path, domains: Path | None = None
 ) -> tuple[list[str], list[str], list[str | None]]:

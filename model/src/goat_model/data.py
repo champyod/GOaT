@@ -26,6 +26,7 @@ HF_DATASET_REPOS = {
 }
 
 
+@log_call
 def dataset_revisions() -> dict[str, str | None]:
     """Best-effort commit hash of each backing HF repo, for result provenance."""
     try:
@@ -138,6 +139,7 @@ def download_scbmt(
     return out_dir
 
 
+@log_call
 def ingest_manual(dataset: str, source: Path, ocr_root: Path = c.OCR_EVAL) -> Path:
     """Copy a manually downloaded OCR dataset into images/ + gt/ canonical layout."""
     dst = ocr_root / dataset

@@ -11,10 +11,12 @@ from typing import Any
 import numpy as np
 
 
+@log_call
 def have(*packages: str) -> bool:
     return all(importlib.util.find_spec(pkg) is not None for pkg in packages)
 
 
+@log_call
 def setup_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -24,16 +26,19 @@ def setup_seed(seed: int) -> None:
         torch.manual_seed(seed)
 
 
+@log_call
 def read_gt(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
+@log_call
 def read_sentences(path: Path) -> list[str]:
     return [
         line.rstrip("\n") for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
     ]
 
 
+@log_call
 def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

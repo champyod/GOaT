@@ -38,6 +38,7 @@ from goat_model.utils import log_call, LogProgress, setup_seed, write_json
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 
+@log_call
 def _build_dataset(split_dir: Path, processor: TrOCRProcessor, img_size: int) -> Dataset:
     images, texts = [], []
     for img in sorted(split_dir.iterdir()):
@@ -62,6 +63,7 @@ def _build_dataset(split_dir: Path, processor: TrOCRProcessor, img_size: int) ->
     return ds.map(preprocess, remove_columns=["image"])
 
 
+@log_call
 def _compute_cer(eval_preds, processor: TrOCRProcessor) -> dict:
     preds, labels = eval_preds
     if isinstance(preds, tuple):
@@ -75,6 +77,7 @@ def _compute_cer(eval_preds, processor: TrOCRProcessor) -> dict:
     return {"cer": round(mean_cer / max(len(decoded_preds), 1), 4)}
 
 
+@log_call
 def _infer_cer(
     model: VisionEncoderDecoderModel,
     test_ds: Dataset,

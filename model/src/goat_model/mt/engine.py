@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from goat_model.constants import SEED
-from goat_model.utils import have
+from goat_model.utils import have, log_call
 
 NLLB_HF_IDS = {
     "NLLB-200-distilled-600M": "facebook/nllb-200-distilled-600M",
@@ -107,6 +107,7 @@ class NLLBTransformers(MTBackend):
         return sum(len(ids) for ids in encoded["input_ids"])
 
 
+@log_call
 def get_mt(
     model_name: str,
     src_lang: str,

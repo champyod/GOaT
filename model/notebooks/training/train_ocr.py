@@ -16,9 +16,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
-from goat_model.utils import setup_seed
+from goat_model.utils import log_call, setup_seed
 
 
+@log_call
 def main() -> None:
     parser = argparse.ArgumentParser(description="OCR fine-tuning for ThaiTrOCR (selection winner).")
     parser.add_argument("--selection", type=Path, default=c.RESULTS / "ocr_selection.json")

@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
+from goat_model.utils import log_call
 from goat_model.data import (
     download_flores200,
     download_scbmt,
@@ -29,12 +30,14 @@ from goat_model.data import (
 
 
 
+@log_call
 def _has_images(out_dir: Path) -> bool:
     images = out_dir / "images"
     gt = out_dir / "gt"
     return images.is_dir() and gt.is_dir() and any(images.iterdir())
 
 
+@log_call
 def main() -> None:
     print(f"[wrapper] {Path(__file__).name} start", flush=True)
     parser = argparse.ArgumentParser(description="Download/ingest GOaT datasets.")

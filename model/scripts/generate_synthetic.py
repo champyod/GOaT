@@ -20,8 +20,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from goat_model import constants as c
 from goat_model.data import split_ocr
 from goat_model.synth_ocr import _build_manifest, flatten_synthetic
+from goat_model.utils import log_call
 
 
+@log_call
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download + split synthetic OCR data.")
     parser.add_argument("--out", type=Path, default=c.SYNTHETIC)
@@ -59,17 +61,32 @@ def main() -> None:
         import threading
         import time
 
+        from goat_model.utils import LogProgress
+
         gen_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            from huggingface_hub import HfApi
+            info = HfApi().dataset_info(c.OCR_SYNTHETIC_REPO_ID)
+            total_mb = max(1, int((info.usedStorage or 0) // 1048576))
+        except Exception:
+            total_mb = 0
+        fetch_prog = (
+            LogProgress(total_mb, "fetch", unit="MB", interval_s=3.0, in_path=c.OCR_SYNTHETIC_REPO_ID, out_path=str(gen_dir))
+            if total_mb else None
+        )
         stop = threading.Event()
 
         def _fetch_watch():
             t0 = time.monotonic()
-            while not stop.wait(30.0):
+            while not stop.wait(3.0):
                 try:
                     size = sum(p.stat().st_size for p in gen_dir.rglob("*") if p.is_file())
                 except Exception:
                     size = 0
-                print(f"[fetch] downloading {c.OCR_SYNTHETIC_REPO_ID} ... {size / 1048576:.0f}MB elapsed={time.monotonic() - t0:.0f}s -> {gen_dir}", flush=True)
+                if fetch_prog is not None:
+                    fetch_prog.update(max(0, size // 1048576 - fetch_prog.n))
+                else:
+                    print(f"[fetch] downloading {c.OCR_SYNTHETIC_REPO_ID} ... {size / 1048576:.0f}MB elapsed={time.monotonic() - t0:.0f}s -> {gen_dir}", flush=True)
 
         watcher = threading.Thread(target=_fetch_watch, daemon=True)
         watcher.start()
@@ -83,6 +100,8 @@ def main() -> None:
         finally:
             stop.set()
             watcher.join(timeout=1.0)
+            if fetch_prog is not None:
+                fetch_prog.close()
         manifest = _build_manifest(args.out)
         if not manifest:
             raise SystemExit(

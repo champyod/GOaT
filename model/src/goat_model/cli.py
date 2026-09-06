@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import sys
 
+from goat_model.utils import log_call
 
+
+@log_call
 def _hello() -> int:
     print("Hello from model!")
     print("GOaT model pipeline scaffold (see model/README.md)")
@@ -13,6 +16,7 @@ def _hello() -> int:
     return 0
 
 
+@log_call
 def _plan() -> int:
     from goat_model import constants as c
 
@@ -22,6 +26,7 @@ def _plan() -> int:
     return 0
 
 
+@log_call
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="goat-model", description="GOaT model pipeline")
     parser.add_argument("command", nargs="?", default="hello", help="hello | plan")
