@@ -12,25 +12,26 @@ import numpy as np
 
 
 def log_call(fn):
-    import functools, traceback, os, sys
+    import functools, traceback, os
+    from goat_model.log import debug as _dbg, error as _err, info as _info
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        debug = "--debug" in sys.argv or os.environ.get("GOAT_DEBUG") == "1"
-        if debug:
-            print(f"[enter] {fn.__name__} args={args} kwargs={kwargs}", flush=True)
+        is_debug = "--debug" in sys.argv or os.environ.get("GOAT_DEBUG") == "1"
+        if is_debug:
+            _dbg(fn.__name__, f"args={args} kwargs={kwargs}")
         else:
-            print(f"[enter] {fn.__name__}", flush=True)
+            _info(fn.__name__)
         try:
             res = fn(*args, **kwargs)
-            if debug:
-                print(f"[exit] {fn.__name__} -> {type(res).__name__ if res is not None else 'None'}", flush=True)
+            if is_debug:
+                _dbg(fn.__name__, f"-> {type(res).__name__ if res is not None else 'None'}")
             else:
-                print(f"[exit] {fn.__name__}", flush=True)
+                _info(fn.__name__)
             return res
         except Exception as e:
-            print(f"[error] {fn.__name__} {e}", flush=True)
-            if debug:
-                print(traceback.format_exc(), flush=True)
+            _err(fn.__name__, str(e))
+            if is_debug:
+                print(traceback.format_exc(), flush=True, file=sys.stderr)
             raise
     return wrapper
 
