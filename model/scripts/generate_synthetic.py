@@ -45,11 +45,32 @@ def main() -> None:
                 "then this script can fetch the synthetic dataset."
             ) from err
 
-        snapshot_download(
-            repo_id=c.OCR_SYNTHETIC_REPO_ID,
-            repo_type="dataset",
-            local_dir=gen_dir,
-        )
+        import threading
+        import time
+
+        gen_dir.mkdir(parents=True, exist_ok=True)
+        stop = threading.Event()
+
+        def _fetch_watch():
+            t0 = time.monotonic()
+            while not stop.wait(30.0):
+                try:
+                    size = sum(p.stat().st_size for p in gen_dir.rglob("*") if p.is_file())
+                except Exception:
+                    size = 0
+                print(f"[fetch] downloading {c.OCR_SYNTHETIC_REPO_ID} ... {size / 1048576:.0f}MB elapsed={time.monotonic() - t0:.0f}s -> {gen_dir}", flush=True)
+
+        watcher = threading.Thread(target=_fetch_watch, daemon=True)
+        watcher.start()
+        try:
+            snapshot_download(
+                repo_id=c.OCR_SYNTHETIC_REPO_ID,
+                repo_type="dataset",
+                local_dir=gen_dir,
+            )
+        finally:
+            stop.set()
+            watcher.join(timeout=1.0)
         manifest = _build_manifest(args.out)
         if not manifest:
             raise SystemExit(

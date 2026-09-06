@@ -201,10 +201,13 @@ def flatten_synthetic(
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    prog = LogProgress(len(manifest), "flatten", unit="imgs", interval_s=10.0, in_path=str(gen_dir), out_path=str(out_dir))
     for n, (image_key, label) in enumerate(manifest.items()):
         stem = f"{prefix}_{n:05d}"
         shutil.copy2(gen_dir / image_key, out_dir / f"{stem}.png")
         (out_dir / f"{stem}.txt").write_text(label, encoding="utf-8")
+        prog.update()
+    prog.close()
     return out_dir
 
 

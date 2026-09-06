@@ -275,6 +275,7 @@ def split_ocr(
     }
     manifest: dict[str, list[str]] = {}
     counts: dict[str, int] = {}
+    prog = LogProgress(sum(len(items) for items in parts.values()), "split-copy", unit="imgs", interval_s=10.0, out_path=str(out_root))
     for key, items in parts.items():
         dest = destination[key]
         dest.mkdir(parents=True, exist_ok=True)
@@ -283,7 +284,9 @@ def split_ocr(
             shutil.copy2(img, dest / img.name)
             shutil.copy2(gt, dest / gt.name)
             manifest[dest.name].append(img.name)
+            prog.update()
         counts[key] = len(items)
+    prog.close()
 
     from goat_model.utils import log_call, write_json
 
