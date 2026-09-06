@@ -100,11 +100,17 @@ def main() -> None:
             from huggingface_hub import HfApi
             info = HfApi().dataset_info(c.OCR_SYNTHETIC_REPO_ID)
             total_mb = max(1, int((info.usedStorage or 0) // 1048576))
+            total_files = max(1, len(info.siblings or []))
         except Exception:
             total_mb = 0
+            total_files = 0
         fetch_prog = (
             LogProgress(total_mb, "fetch", unit="MB", interval_s=3.0, in_path=c.OCR_SYNTHETIC_REPO_ID, out_path=str(stage_dir))
             if total_mb else None
+        )
+        files_prog = (
+            LogProgress(total_files, "fetch-files", unit="files", interval_s=3.0, in_path=c.OCR_SYNTHETIC_REPO_ID, out_path=str(stage_dir))
+            if total_files else None
         )
         _info("synthetic", "snapshot download", repo=c.OCR_SYNTHETIC_REPO_ID, dst=str(stage_dir))
         STALL_AFTER = 120.0
@@ -137,9 +143,18 @@ def main() -> None:
                     err = e
                     break
                 try:
-                    size = sum(p.stat().st_size for p in stage_dir.rglob("*") if p.is_file())
+                    size = 0
+                    count = 0
+                    for p in stage_dir.rglob("*"):
+                        if p.is_file():
+                            count += 1
+                            try:
+                                size += p.stat().st_size
+                            except OSError:
+                                pass
                 except Exception:
                     size = 0
+                    count = 0
                 now = time.monotonic()
                 if size > dl["size"]:
                     dl["size"] = size
@@ -149,6 +164,8 @@ def main() -> None:
                 else:
                     _info("fetch", "downloading", repo=c.OCR_SYNTHETIC_REPO_ID, mb=round(size / 1048576),
                           elapsed=round(now - dl["t0"]), dst=str(stage_dir))
+                if files_prog is not None:
+                    files_prog.update(max(0, count - files_prog.n))
                 if not fut.done() and now - dl["moved"] > STALL_AFTER:
                     _warn("fetch", "stalled - abandoning attempt", stall_s=round(STALL_AFTER),
                           mb=round(size / 1048576), attempt=f"{attempt}/{MAX_ATTEMPTS}")
@@ -171,6 +188,8 @@ def main() -> None:
                 time.sleep(wait)
         if fetch_prog is not None:
             fetch_prog.close()
+        if files_prog is not None:
+            files_prog.close()
         if last_err is not None:
             raise last_err
         _info("synthetic", "staging", src=str(stage_dir), dst=str(gen_dir))
