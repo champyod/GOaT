@@ -81,8 +81,9 @@ def main() -> None:
                 "then this script can fetch the synthetic dataset."
             ) from err
 
-        import threading
         import time
+        from concurrent.futures import ThreadPoolExecutor
+        import concurrent.futures as _futures
 
         # Stage in /tmp (fast local writes for 10k files), bulk-copy to Drive after.
         # stage_dir persists across runs so snapshot_download resumes partials.
@@ -101,26 +102,14 @@ def main() -> None:
             LogProgress(total_mb, "fetch", unit="MB", interval_s=3.0, in_path=c.OCR_SYNTHETIC_REPO_ID, out_path=str(stage_dir))
             if total_mb else None
         )
-        stop = threading.Event()
-
-        def _fetch_watch():
-            t0 = time.monotonic()
-            while not stop.wait(3.0):
-                try:
-                    size = sum(p.stat().st_size for p in stage_dir.rglob("*") if p.is_file())
-                except Exception:
-                    size = 0
-                if fetch_prog is not None:
-                    fetch_prog.update(max(0, size // 1048576 - fetch_prog.n))
-                else:
-                    print(f"[fetch] downloading {c.OCR_SYNTHETIC_REPO_ID} ... {size / 1048576:.0f}MB elapsed={time.monotonic() - t0:.0f}s -> {stage_dir}", flush=True)
-
-        watcher = threading.Thread(target=_fetch_watch, daemon=True)
-        watcher.start()
         print(f"[step] synthetic: snapshot download {c.OCR_SYNTHETIC_REPO_ID} -> {stage_dir} ...", flush=True)
+        STALL_AFTER = 120.0
         last_err: Exception | None = None
         for attempt in range(1, 7):
-            try:
+            dl = {"size": 0, "moved": time.monotonic(), "t0": time.monotonic()}
+            ex = ThreadPoolExecutor(max_workers=1)
+
+            def _run_snapshot():
                 snapshot_download(
                     repo_id=c.OCR_SYNTHETIC_REPO_ID,
                     repo_type="dataset",
@@ -129,17 +118,50 @@ def main() -> None:
                     # into 429s; fewer workers downloads slower but steadier.
                     max_workers=4,
                 )
-                last_err = None
-                break
-            except Exception as err:
-                if not isinstance(err, (ConnectionError, TimeoutError, OSError)) and "429" not in str(err):
-                    raise
+
+            fut = ex.submit(_run_snapshot)
+            err: Exception | None = None
+            stalled = False
+            while True:
+                try:
+                    fut.result(timeout=3.0)
+                    break
+                except _futures.TimeoutError:
+                    pass
+                except Exception as e:
+                    err = e
+                    break
+                try:
+                    size = sum(p.stat().st_size for p in stage_dir.rglob("*") if p.is_file())
+                except Exception:
+                    size = 0
+                now = time.monotonic()
+                if size > dl["size"]:
+                    dl["size"] = size
+                    dl["moved"] = now
+                if fetch_prog is not None:
+                    fetch_prog.update(max(0, size // 1048576 - fetch_prog.n))
+                else:
+                    print(f"[fetch] downloading {c.OCR_SYNTHETIC_REPO_ID} ... {size / 1048576:.0f}MB elapsed={now - dl['t0']:.0f}s -> {stage_dir}", flush=True)
+                if not fut.done() and now - dl["moved"] > STALL_AFTER:
+                    print(f"[fetch] STALLED {STALL_AFTER:.0f}s at {size / 1048576:.0f}MB - abandoning attempt {attempt}/6 ...", flush=True)
+                    stalled = True
+                    break
+            if stalled:
+                # Leaked attempt thread may still write; snapshot moves finished
+                # files atomically so duplicates stay valid, newest wins.
+                ex.shutdown(wait=False, cancel_futures=True)
+                last_err = TimeoutError(f"fetch stalled {STALL_AFTER:.0f}s with no growth")
+            else:
+                ex.shutdown(wait=True)
                 last_err = err
+                if last_err is None:
+                    break
+                if not isinstance(last_err, (ConnectionError, TimeoutError, OSError)) and "429" not in str(last_err):
+                    raise last_err
                 wait = 30 * attempt
-                print(f"[fetch] attempt {attempt}/6 failed ({err}). retry in {wait}s ...", flush=True)
+                print(f"[fetch] attempt {attempt}/6 failed ({last_err}). retry in {wait}s ...", flush=True)
                 time.sleep(wait)
-        stop.set()
-        watcher.join(timeout=1.0)
         if fetch_prog is not None:
             fetch_prog.close()
         if last_err is not None:
