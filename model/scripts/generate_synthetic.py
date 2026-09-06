@@ -33,12 +33,15 @@ def main() -> None:
 
     gen_dir = args.out / "gen"
     manifest_path = args.out / "manifest.json"
+    print(f"[step] synthetic: rebuilding manifest from {gen_dir} ...", flush=True)
     manifest = _build_manifest(args.out) if manifest_path.is_file() else {}
     if manifest:
+        print(f"[step] synthetic: verifying {len(manifest)} manifest entries ...", flush=True)
         bad = [
             key for key in manifest
             if not (gen_dir / key).is_file() or (gen_dir / key).stat().st_size == 0
         ]
+        print(f"[step] synthetic: {len(manifest) - len(bad)}/{len(manifest)} entries ok", flush=True)
         if bad:
             print(f"[fetch] {len(bad)} missing/corrupt entries, re-downloading ...", flush=True)
             manifest = {}
@@ -70,6 +73,7 @@ def main() -> None:
 
         watcher = threading.Thread(target=_fetch_watch, daemon=True)
         watcher.start()
+        print(f"[step] synthetic: snapshot download {c.OCR_SYNTHETIC_REPO_ID} -> {gen_dir} ...", flush=True)
         try:
             snapshot_download(
                 repo_id=c.OCR_SYNTHETIC_REPO_ID,
@@ -88,7 +92,9 @@ def main() -> None:
         flatten_synthetic(gen_dir, manifest, args.out, prefix=c.OCR_SYN_PREFIX)
         print(f"downloaded {len(manifest)} synthetic images -> {args.out}")
 
+    print(f"[step] synthetic: stratified split -> {args.out.parent} ...", flush=True)
     split_ocr(synthetic_dir=args.out, real_dir=args.real, out_root=args.out.parent, seed=args.seed)
+    print("[step] synthetic: done", flush=True)
 
 
 if __name__ == "__main__":

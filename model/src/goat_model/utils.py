@@ -91,14 +91,18 @@ def log_call(fn):
         debug = "--debug" in sys.argv or os.environ.get("GOAT_DEBUG") == "1"
         if debug:
             print(f"[enter] {fn.__name__} args={args} kwargs={kwargs}", flush=True)
+        else:
+            print(f"[enter] {fn.__name__}", flush=True)
         try:
             res = fn(*args, **kwargs)
             if debug:
                 print(f"[exit] {fn.__name__} -> {type(res).__name__ if res is not None else 'None'}", flush=True)
+            else:
+                print(f"[exit] {fn.__name__}", flush=True)
             return res
         except Exception as e:
+            print(f"[error] {fn.__name__} {e}", flush=True)
             if debug:
-                print(f"[error] {fn.__name__} {e}", flush=True)
                 print(traceback.format_exc(), flush=True)
             raise
     return wrapper
