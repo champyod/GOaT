@@ -11,6 +11,30 @@ from typing import Any
 import numpy as np
 
 
+def log_call(fn):
+    import functools, traceback, os, sys
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        debug = "--debug" in sys.argv or os.environ.get("GOAT_DEBUG") == "1"
+        if debug:
+            print(f"[enter] {fn.__name__} args={args} kwargs={kwargs}", flush=True)
+        else:
+            print(f"[enter] {fn.__name__}", flush=True)
+        try:
+            res = fn(*args, **kwargs)
+            if debug:
+                print(f"[exit] {fn.__name__} -> {type(res).__name__ if res is not None else 'None'}", flush=True)
+            else:
+                print(f"[exit] {fn.__name__}", flush=True)
+            return res
+        except Exception as e:
+            print(f"[error] {fn.__name__} {e}", flush=True)
+            if debug:
+                print(traceback.format_exc(), flush=True)
+            raise
+    return wrapper
+
+
 @log_call
 def have(*packages: str) -> bool:
     return all(importlib.util.find_spec(pkg) is not None for pkg in packages)
@@ -88,26 +112,3 @@ class LogProgress:
     def close(self) -> None:
         if self.bar is not None:
             self.bar.close()
-
-def log_call(fn):
-    import functools, traceback, os, sys
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        debug = "--debug" in sys.argv or os.environ.get("GOAT_DEBUG") == "1"
-        if debug:
-            print(f"[enter] {fn.__name__} args={args} kwargs={kwargs}", flush=True)
-        else:
-            print(f"[enter] {fn.__name__}", flush=True)
-        try:
-            res = fn(*args, **kwargs)
-            if debug:
-                print(f"[exit] {fn.__name__} -> {type(res).__name__ if res is not None else 'None'}", flush=True)
-            else:
-                print(f"[exit] {fn.__name__}", flush=True)
-            return res
-        except Exception as e:
-            print(f"[error] {fn.__name__} {e}", flush=True)
-            if debug:
-                print(traceback.format_exc(), flush=True)
-            raise
-    return wrapper
