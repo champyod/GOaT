@@ -70,7 +70,7 @@ SYNC_T0=$(date +%s)
 HEART_PID=$!
 uv sync --extra ocr --extra mt --extra train
 kill $HEART_PID 2>/dev/null
-wait $HEART_PID 2>/dev/null
+wait $HEART_PID 2>/dev/null || true
 
 # Full opencv-python (via synthtiger) needs system libGL; install only when cv2 fails to import.
 PYTHONPATH=src uv run python -c "import cv2" 2>/dev/null || (apt-get update -qq && apt-get install -y -q libgl1 libglib2.0-0)
