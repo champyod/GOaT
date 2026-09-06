@@ -125,6 +125,9 @@ def main() -> None:
                     repo_id=c.OCR_SYNTHETIC_REPO_ID,
                     repo_type="dataset",
                     local_dir=stage_dir,
+                    # 10k small files x default workers bursts the token endpoint
+                    # into 429s; fewer workers downloads slower but steadier.
+                    max_workers=4,
                 )
                 last_err = None
                 break
