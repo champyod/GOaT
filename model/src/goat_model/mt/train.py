@@ -40,7 +40,7 @@ from goat_model.constants import (
 from goat_model.metrics import corpus_bleu
 from goat_model.mt.engine import NLLB_HF_IDS
 from goat_model.mt.evaluate import load_pairs
-from goat_model.utils import log_call, LogProgress, setup_seed, write_json
+from goat_model.utils import log_call, LogProgress, setup_seed, trainer_heartbeat, write_json
 
 
 @log_call
@@ -124,7 +124,7 @@ def run_mt_finetune(
                 collator = DataCollatorForSeq2Seq(tokenizer, model=model)
                 out_dir = out_root / f"r{r}_alpha{alpha}_lr{lr}"
                 args = Seq2SeqTrainingArguments(output_dir=str(out_dir), learning_rate=lr, per_device_train_batch_size=MT_BATCH_SIZE, num_train_epochs=LORA_EPOCHS[1], optim="adamw_torch", eval_strategy="epoch", save_strategy="epoch", save_total_limit=1, load_best_model_at_end=True, metric_for_best_model="eval_bleu", greater_is_better=True, predict_with_generate=True, seed=seed, logging_steps=10, disable_tqdm=False)
-                trainer = Seq2SeqTrainer(model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds, tokenizer=tokenizer, data_collator=collator, compute_metrics=compute_bleu)
+                trainer = Seq2SeqTrainer(model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds, tokenizer=tokenizer, data_collator=collator, compute_metrics=compute_bleu, callbacks=[trainer_heartbeat("mt-train")])
                 trainer.train(resume_from_checkpoint=True)
                 model.save_pretrained(out_dir)
 

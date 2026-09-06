@@ -33,7 +33,7 @@ from goat_model.constants import (
     THAITROCR_MODEL_ID,
 )
 from goat_model.metrics import cer
-from goat_model.utils import log_call, LogProgress, setup_seed, write_json
+from goat_model.utils import log_call, LogProgress, setup_seed, trainer_heartbeat, write_json
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
@@ -199,6 +199,7 @@ def run_ocr_finetune(
                 tokenizer=processor.feature_extractor,
                 data_collator=default_data_collator,
                 compute_metrics=lambda ep: _compute_cer(ep, processor),
+                callbacks=[trainer_heartbeat("ocr-train")],
             )
             trainer.train(resume_from_checkpoint=True)
             model.save_pretrained(out_dir)

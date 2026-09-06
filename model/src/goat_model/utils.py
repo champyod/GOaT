@@ -112,3 +112,37 @@ class LogProgress:
     def close(self) -> None:
         if self.bar is not None:
             self.bar.close()
+
+
+def trainer_heartbeat(desc="train", interval_s=60.0):
+    """transformers TrainerCallback printing a living-status heartbeat.
+
+    ``TQDM_DISABLE=1`` kills HF progress bars in batch logs, leaving
+    hours-long ``trainer.train()`` silent. This prints
+    ``[desc] step n/N epoch=x loss=y elapsed=Ns`` every ``interval_s``.
+    transformers is imported lazily so base envs without it still import utils.
+    """
+    from transformers import TrainerCallback
+
+    class _HeartbeatCallback(TrainerCallback):
+        def __init__(self):
+            self.t0 = time.monotonic()
+            self.last = 0.0
+
+        def on_step_end(self, args, state, control, **kwargs):
+            now = time.monotonic()
+            if now - self.last < interval_s:
+                return control
+            self.last = now
+            loss = None
+            if state.log_history:
+                loss = state.log_history[-1].get("loss", state.log_history[-1].get("eval_loss"))
+            total = state.max_steps or "?"
+            print(
+                f"[{desc}] step {state.global_step}/{total} epoch={state.epoch:.2f} "
+                f"loss={loss} elapsed={now - self.t0:.0f}s",
+                flush=True,
+            )
+            return control
+
+    return _HeartbeatCallback()
