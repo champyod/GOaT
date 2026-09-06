@@ -11,6 +11,9 @@ import random
 from pathlib import Path
 
 import numpy as np
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import copy_replace, log_call, LogProgress
 
 from goat_model import constants as c
@@ -32,7 +35,7 @@ def dataset_revisions() -> dict[str, str | None]:
         from huggingface_hub import HfApi
         from huggingface_hub.errors import HfHubHTTPError
     except ImportError as err:
-        raise SystemExit("huggingface_hub not installed - run `uv sync --extra mt`") from err
+        raise RuntimeError("huggingface_hub not installed - run `uv sync --extra mt`") from err
 
     api = HfApi()
     revisions: dict[str, str | None] = {}
@@ -50,7 +53,7 @@ def download_flores200(out_dir: Path) -> Path:
     try:
         from datasets import load_dataset
     except ImportError as err:
-        raise SystemExit("datasets not installed - run `uv sync --extra mt`") from err
+        raise RuntimeError("datasets not installed - run `uv sync --extra mt`") from err
 
     ds = load_dataset("facebook/flores", "all", split="devtest")
 
@@ -61,7 +64,7 @@ def download_flores200(out_dir: Path) -> Path:
     for col in (th_col, en_col):
         if col not in ds.column_names:
             raise ValueError(f"flores200: expected column {col!r}, got {ds.column_names[:5]}...")
-    print(f"[flores] {len(ds)} rows -> {out_dir.name}", flush=True)
+    _info("flores", f"{len(ds)} rows", out=out_dir.name)
     th = [row[th_col] for row in ds]
     en = [row[en_col] for row in ds]
     if not th or len(th) != len(en):
@@ -74,7 +77,7 @@ def download_flores200(out_dir: Path) -> Path:
         (out_dir / "flores200.domains").write_text(
             "\n".join(str(row["domain"]) for row in ds) + "\n", encoding="utf-8"
         )
-    print(f"wrote {len(th)} th + {len(en)} en sentences to {out_dir}")
+    _info("flores", "wrote sentences", th=len(th), en=len(en), out=str(out_dir))
     return out_dir
 
 
@@ -94,13 +97,13 @@ def download_scbmt(
         raise SystemExit("datasets not installed - run `uv sync --extra mt`") from err
 
     ds = load_dataset("pythainlp/scb_mt_enth_2020", split="train")
-    print(f"loaded {ds.num_rows} pairs (target sample: {sample})")
+    _info("scbmt", "loaded pairs", rows=ds.num_rows, target_sample=sample)
 
     rng = np.random.default_rng(seed)
 
     strat_col = next((col for col in ("subdataset", "domain", "year_month") if col in ds.features), None)
     if strat_col is None:
-        print("WARN: no categorical column for stratification - using plain random sample")
+        _warn("scbmt", "no categorical column for stratification", fallback="random-sample")
         idx = rng.choice(ds.num_rows, sample, replace=False)
     else:
         cats, counts = np.unique(np.asarray(ds[strat_col]), return_counts=True)
@@ -115,7 +118,7 @@ def download_scbmt(
             if n
         ]
         idx = np.concatenate([p.astype(int) for p in picks])
-        print(f"stratified {sample} by {strat_col} ({len(cats)} groups, retained {len(idx)})")
+        _info("scbmt", "stratified", sample=sample, by=str(strat_col), groups=len(cats), retained=len(idx))
 
     shuffled = rng.permutation(idx)
     splits = {
@@ -132,7 +135,7 @@ def download_scbmt(
         en = [row["translation"]["en"] for row in sub]
         (out_dir / f"{name}.th").write_text("\n".join(th) + "\n", encoding="utf-8")
         (out_dir / f"{name}.en").write_text("\n".join(en) + "\n", encoding="utf-8")
-        print(f"wrote {name} ({len(sel)} pairs) -> {out_dir}/{name}.{{th,en}} | in=scb-mt out={out_dir.name}", flush=True)
+        _info("scbmt-write", f"wrote {name}", pairs=len(sel), out=str(out_dir))
         prog.update()
     prog.close()
     return out_dir
@@ -162,9 +165,9 @@ def ingest_manual(dataset: str, source: Path, ocr_root: Path = c.OCR_EVAL) -> Pa
             matched_gt += 1
 
     missing = len(imgs) - matched_gt
-    print(f"copied {copied} images; {matched_gt} had ground truth; {missing} MISSING GT")
+    _info("ingest", "copied", images=copied, with_gt=matched_gt, missing_gt=missing)
     if missing:
-        raise SystemExit("please provide a .txt with the same stem for every image")
+        raise RuntimeError("please provide a .txt with the same stem for every image")
     return dst
 
 
@@ -190,8 +193,8 @@ def _export_image_gt(items, out_dir: Path) -> Path:
             last = count
     prog.close()
     if not count:
-        raise SystemExit(f"no exportable rows for {out_dir.name}")
-    print(f"wrote {count} images+gt to {out_dir} | in={out_dir.name} out={out_dir}", flush=True)
+        raise RuntimeError(f"no exportable rows for {out_dir.name}")
+    _info("export", "wrote images+gt", count=count, out=str(out_dir))
     return out_dir
 
 
@@ -201,7 +204,7 @@ def download_thaiocr_evaluation(out_dir: Path) -> Path:
     try:
         from datasets import load_dataset
     except ImportError as err:
-        raise SystemExit("datasets not installed - run `uv sync --extra mt`") from err
+        raise RuntimeError("datasets not installed - run `uv sync --extra mt`") from err
 
     ds = load_dataset("openthaigpt/thai-ocr-evaluation", split="test")
     items = ((f"{i:04d}", row["image"], str(row["text"])) for i, row in enumerate(ds))
@@ -219,7 +222,7 @@ def download_thaiocrbench(out_dir: Path) -> Path:
     try:
         from datasets import load_dataset
     except ImportError as err:
-        raise SystemExit("datasets not installed - run `uv sync --extra mt`") from err
+        raise RuntimeError("datasets not installed - run `uv sync --extra mt`") from err
 
     ds = load_dataset("scb10x/ThaiOCRBench", split="test")
     wanted = {"text recognition", "full-page ocr"}
@@ -251,11 +254,11 @@ def split_ocr(
     synthetic = _assets(synthetic_dir)
     real = _assets(real_dir)
     if not synthetic:
-        raise SystemExit(f"no synthetic images+gt in {synthetic_dir}")
+        raise RuntimeError(f"no synthetic images+gt in {synthetic_dir}")
     if not real:
-        print(f"[warn] split_ocr: no real images+gt in {real_dir} - continuing synthetic-only", flush=True)
+        _warn("split_ocr", "no real images+gt - continuing synthetic-only", real_dir=str(real_dir))
 
-    print(f"found {len(synthetic)} synthetic, {len(real)} real images")
+    _info("split_ocr", "found images", synthetic=len(synthetic), real=len(real))
 
     def split_group(group: list[tuple[Path, Path]], prefix: str) -> dict[str, list]:
         rng.shuffle(group)
@@ -298,6 +301,6 @@ def split_ocr(
         syn = counts.get(f"syn_{split}", 0)
         real_n = counts.get(f"real_{split}", 0)
         totals[split] = syn + real_n
-        print(f"  {split}: {totals[split]} ({syn} syn, {real_n} real)")
-    print(f"expected: {c.DATA_PLAN['train']}/{c.DATA_PLAN['val']}/{c.DATA_PLAN['test']}")
+        _info("split", split, total=totals[split], syn=syn, real=real_n)
+    _info("split", "expected", train=c.DATA_PLAN["train"], val=c.DATA_PLAN["val"], test=c.DATA_PLAN["test"])
     return totals

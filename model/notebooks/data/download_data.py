@@ -19,6 +19,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import load_dotenv
 from goat_model.utils import log_call
 from goat_model.data import (
@@ -41,7 +44,7 @@ def _has_images(out_dir: Path) -> bool:
 @log_call
 def main() -> None:
     load_dotenv()
-    print(f"[wrapper] {Path(__file__).name} start", flush=True)
+    _info("download-data", "start", script=Path(__file__).name)
     parser = argparse.ArgumentParser(description="Download/ingest GOaT datasets.")
     parser.add_argument(
         "--dataset",
@@ -53,21 +56,21 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="re-download even when outputs exist")
     parser.add_argument("--debug", action="store_true", help="verbose per-action logs")
     args = parser.parse_args()
-    print(f"[args] {args}", flush=True)
+    _info("download-data", "args", **vars(args))
     _err_out = getattr(args, "out_dir", None)
     try:
 
         if args.dataset == "flores200":
             out = args.out_dir or c.MT_TEST
             if not args.force and (out / "flores200.th").is_file() and (out / "flores200.en").is_file():
-                print(f"skipped - already downloaded: {out}")
+                _info("download-data", "skipped - already downloaded", out=str(out))
             else:
                 download_flores200(out)
         elif args.dataset == "scb-mt":
             out = args.out_dir or c.DATA / "mt"
             parts = [f"{n}.{e}" for n in ("train", "val", "test") for e in ("th", "en")]
             if not args.force and all((out / f).is_file() for f in parts):
-                print(f"skipped - already downloaded: {out}")
+                _info("download-data", "skipped - already downloaded", out=str(out))
             else:
                 download_scbmt(out)
         elif args.dataset == "thaiocrbench":
@@ -76,7 +79,7 @@ def main() -> None:
             else:
                 out = args.out_dir or c.OCR_EVAL / "thaiocrbench"
                 if not args.force and _has_images(out):
-                    print(f"skipped - already downloaded: {out}")
+                    _info("download-data", "skipped - already downloaded", out=str(out))
                 else:
                     download_thaiocrbench(out)
         elif args.dataset == "thai-ocr-evaluation":
@@ -85,25 +88,25 @@ def main() -> None:
             else:
                 out = args.out_dir or c.OCR_EVAL / "thai-ocr-evaluation"
                 if not args.force and _has_images(out):
-                    print(f"skipped - already downloaded: {out}")
+                    _info("download-data", "skipped - already downloaded", out=str(out))
                 else:
                     download_thaiocr_evaluation(out)
 
 
-        print(f"[wrapper] {Path(__file__).name} done", flush=True)
+        _info("download-data", "done", script=Path(__file__).name)
 
 
     except Exception as err:
         tb = traceback.format_exc()
         inp = getattr(args, "out_dir", "?")
-        print(f"[error] download_data failed | in={inp} out={_err_out} | {err}", flush=True)
+        _err("download-data", "failed", inp=str(inp), out=str(_err_out), error=str(err))
         print(tb, flush=True)
         if _err_out is not None:
             try:
                 _err_path = str(_err_out) + ".error.json"
                 from pathlib import Path as _P
                 _P(_err_path).write_text(json.dumps({"error": str(err), "kind": "download_data", "input": str(inp), "output": str(_err_out)}, indent=2))
-                print(f"[error] wrote {_err_path}", flush=True)
+                _info("download-data", "wrote error file", path=_err_path)
             except Exception:
                 pass
         raise SystemExit(1)

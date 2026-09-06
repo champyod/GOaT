@@ -20,6 +20,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 from goat_model.constants import MODEL_ROOT
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import copy_replace, log_call, LogProgress
 
 #: Watchdog bound (seconds) for the SynthTIGER subprocess. A silent
@@ -64,7 +67,7 @@ def _urlopen_json(req, timeout: int = 30, tries: int = 6):
                 raise
             retry_after = err.headers.get("Retry-After") if err.headers else None
             wait = float(retry_after) if retry_after else delay
-            print(f"wikipedia 429 - retry in {wait:.0f}s (attempt {attempt + 1}/{tries})", flush=True)
+            _warn("wikipedia", "429 - retrying", wait=round(wait), attempt=f"{attempt + 1}/{tries}")
             time.sleep(wait)
             delay *= 2
     raise SystemExit("wikipedia kept returning 429 - rerun later to resume")
@@ -108,7 +111,7 @@ def fetch_wikipedia_corpus(
                     seen.add(line)
                     lines.append(line)
             if lines:
-                print(f"[wiki-{lang}] resuming {len(lines)}/{n_lines} lines from {part.name}", flush=True)
+                _info(f"wiki-{lang}", "resuming", lines=len(lines), total=n_lines, part=part.name)
         query = (
             "action=query&format=json&generator=random&grnnamespace=0"
             "&grnlimit=10&prop=extracts&explaintext=1"
@@ -139,7 +142,7 @@ def fetch_wikipedia_corpus(
                     fh.write("".join(ln + "\n" for ln in batch_new))
                 prog.update(len(batch_new))
         prog.close()
-        print(f"[wiki-{lang}] done {len(lines[:n_lines])}/{n_lines} -> {dst.name} (src wiki API)", flush=True)
+        _info(f"wiki-{lang}", "done", lines=len(lines[:n_lines]), total=n_lines, out=dst.name)
         dst.write_text("\n".join(lines[:n_lines]) + "\n", encoding="utf-8")
         part.unlink(missing_ok=True)
         corpus[lang] = dst
@@ -183,7 +186,7 @@ def download_ocr_fonts(out_dir: Path, names: tuple[str, ...]) -> Path:
             _download(url, dst)
         fonts_prog.update()
     fonts_prog.close()
-    print(f"[fonts] {len(list(out_dir.glob('*.ttf')))} ttf -> {out_dir}", flush=True)
+    _info("fonts", "ready", ttf=len(list(out_dir.glob("*.ttf"))), out=str(out_dir))
     return out_dir
 
 
@@ -373,9 +376,9 @@ def generate_synthtiger(
             if local_gen.exists():
                 _sh.rmtree(local_gen)
             _sh.copytree(drive_gen, local_gen)
-            print(f"[synth-gen] copied {drive_gen} -> {local_gen} for fast resume", flush=True)
+            _info("synth-gen", "copied for fast resume", src=str(drive_gen), dst=str(local_gen))
         except Exception as e:
-            print(f"[synth-gen] copy failed {e}, fresh local", flush=True)
+            _warn("synth-gen", "copy failed, fresh local", error=str(e))
             local_gen.mkdir(parents=True, exist_ok=True)
     else:
         local_gen.mkdir(parents=True, exist_ok=True)
@@ -385,14 +388,14 @@ def generate_synthtiger(
     if existing == 0 and drive_gen.is_dir():
         existing = sum(1 for _ in drive_gen.rglob("*.jpg"))
         if existing > 0:
-            print(f"[synth-gen] drive has {existing}, local empty - will resume from drive count", flush=True)
+            _info("synth-gen", "drive has images, local empty - resume from drive count", existing=existing)
     if existing >= n:
-        print(f"[synth-gen] skip {existing}/{n} already exists -> {drive_gen}", flush=True)
+        _info("synth-gen", "skip - already exists", existing=existing, total=n, out=str(drive_gen))
         return _build_manifest(out_dir)
     if existing > 0:
         seed = seed + existing
         n = n - existing
-        print(f"[synth-gen] resume {existing} existing, generating {n} remaining (seed offset) local={gen_root}", flush=True)
+        _info("synth-gen", "resume", existing=existing, remaining=n, seed_offset=seed, local=str(gen_root))
     vendored = MODEL_ROOT / "assets" / "synthtiger_templates" / "multiline" / "template.py"
     if vendored.is_file():
         template = str(vendored)
@@ -419,8 +422,8 @@ def generate_synthtiger(
                 try:
                     lines = Path(synth_log).read_text().splitlines()
                     if lines:
-                        print(f"[synth-gen] log head: {' | '.join(lines[:3])}", flush=True)
-                        print(f"[synth-gen] log tail: {' | '.join(lines[-2:])}", flush=True)
+                        _info("synth-gen", "log head", head=" | ".join(lines[:3]))
+                        _info("synth-gen", "log tail", tail=" | ".join(lines[-2:]))
                 except Exception:
                     pass
             prog.update(max(0, cnt - prog.n))
@@ -436,7 +439,7 @@ def generate_synthtiger(
             if local_font_dir.exists():
                 _shf.rmtree(local_font_dir)
             _shf.copytree(font_dir, local_font_dir)
-            print(f"[synth-gen] fonts {font_dir} -> {local_font_dir}", flush=True)
+            _info("synth-gen", "fonts copied", src=str(font_dir), dst=str(local_font_dir))
         if not local_corpus_dir.is_dir():
             local_corpus_dir.mkdir(parents=True, exist_ok=True)
         for src in [thai_corpus, english_corpus]:
@@ -447,14 +450,16 @@ def generate_synthtiger(
         english_corpus = local_corpus_dir / Path(english_corpus).name
         font_dir = local_font_dir
     except Exception as e:
-        print(f"[synth-gen] local copy failed {e}, using Drive paths", flush=True)
+        _warn("synth-gen", "local copy failed, using Drive paths", error=str(e))
     # Config AFTER the local swap so workers read local /tmp paths, never Drive.
     cfg = out_dir / "config_multiline.yaml"
     corpus_paths = [thai_corpus, english_corpus]
     corpus_weights = [text_ratio, 1.0 - text_ratio]
     _write_config(cfg, corpus_paths, corpus_weights, font_dir, text_ratio, seed)
     _preflight_local(corpus_paths, corpus_weights, font_dir)
-    print(f"[synth-gen] start n={n} workers={workers} template={Path(template).name} cfg={cfg.name} out={local_gen} -> {drive_gen} | in={thai_corpus.name},{english_corpus.name} fonts={font_dir}", flush=True)
+    _info("synth-gen", "start", n=n, workers=workers, template=Path(template).name, cfg=cfg.name,
+          out=str(local_gen), drive=str(drive_gen), corpus=f"{thai_corpus.name},{english_corpus.name}",
+          fonts=str(font_dir))
     synth_log = out_dir / "synth_gen.log"
     # bg sync Drive every 30s while generating
     import threading as _th2
@@ -468,7 +473,7 @@ def generate_synthtiger(
                         _sh2.rmtree(drive_gen)
                     _sh2.copytree(local_gen, drive_gen)
             except Exception as e:
-                print(f"[synth-gen] bg sync failed {e}", flush=True)
+                _warn("synth-gen", "bg sync failed", error=str(e))
     _bg_th = _th2.Thread(target=_bg_sync, daemon=True)
     _bg_th.start()
     cmd = [
@@ -497,14 +502,14 @@ def generate_synthtiger(
                 timeout=timeout_s,
             )
     except subprocess.TimeoutExpired:
-        print(f"[error] synth-gen timed out after {timeout_s}s log={synth_log} | out={out_dir}", flush=True)
+        _err("synth-gen", "timed out", timeout_s=timeout_s, log=str(synth_log), out=str(out_dir))
         try:
             print(Path(synth_log).read_text()[-4000:], flush=True)
         except Exception:
             pass
         raise
     except subprocess.CalledProcessError as err:
-        print(f"[error] synth-gen failed code={err.returncode} log={synth_log} | out={out_dir}", flush=True)
+        _err("synth-gen", "failed", code=err.returncode, log=str(synth_log), out=str(out_dir))
         try:
             print(Path(synth_log).read_text()[-2000:], flush=True)
         except Exception:
@@ -521,9 +526,9 @@ def generate_synthtiger(
             if drive_gen.exists():
                 _sh3.rmtree(drive_gen)
             _sh3.copytree(local_gen, drive_gen)
-            print(f"[synth-gen] final sync {local_gen} -> {drive_gen}", flush=True)
+            _info("synth-gen", "final sync", src=str(local_gen), dst=str(drive_gen))
         except Exception as e:
-            print(f"[synth-gen] final sync failed {e}", flush=True)
+            _warn("synth-gen", "final sync failed", error=str(e))
         try:
             final_cnt = sum(1 for _ in gen_root.rglob("*.jpg"))
             final_cnt += sum(1 for _ in gen_root.rglob("*.png"))

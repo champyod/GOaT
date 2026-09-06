@@ -19,6 +19,9 @@ from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import log_call, resolve_device, setup_seed, write_json
 
 
@@ -83,10 +86,10 @@ def main() -> None:
     }
     write_json(args.output, results)
 
-    print(f"ThaiTrOCR mean CER: {thai_mean:.4f} | PP-OCRv5-mobile: {pp_mean:.4f}")
-    print(f"paired t-test p={test['p_value']:.4f} significant={test['significant']}")
-    print(f"SELECTED: {decision}")
-    print(f"wrote {args.output}")
+    _info("select-ocr", "mean CER", thaitrocr=round(thai_mean, 4), pp_ocrv5=round(pp_mean, 4))
+    _info("select-ocr", "paired t-test", p=round(test['p_value'], 4), significant=test['significant'])
+    _info("select-ocr", "SELECTED", model=decision)
+    _info("select-ocr", "wrote", out=str(args.output))
 
 
 if __name__ == "__main__":

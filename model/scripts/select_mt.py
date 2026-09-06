@@ -18,6 +18,9 @@ from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test, summarize
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import log_call, resolve_device, setup_seed, write_json
 
 
@@ -108,13 +111,13 @@ def main() -> None:
 
     for model in c.MT_MODELS:
         m = results["models"][model]
-        print(
-            f"{model}: BLEU {m['bleu']['mean']:.2f}±{m['bleu']['std']:.2f} "
-            f"| {m['avg_s_per_sentence']['mean'] * 1000:.0f}±{m['avg_s_per_sentence']['std'] * 1000:.0f} ms/sentence"
-        )
-    print(f"paired t-test p={test['p_value']:.4f} significant={test['significant']}")
-    print(f"SELECTED: {selected}")
-    print(f"wrote {args.output}")
+        _info("select-mt", "model result", model=model, bleu=round(m['bleu']['mean'], 2),
+              bleu_std=round(m['bleu']['std'], 2),
+              ms_per_sentence=round(m['avg_s_per_sentence']['mean'] * 1000),
+              ms_std=round(m['avg_s_per_sentence']['std'] * 1000))
+    _info("select-mt", "paired t-test", p=round(test['p_value'], 4), significant=test['significant'])
+    _info("select-mt", "SELECTED", model=selected)
+    _info("select-mt", "wrote", out=str(args.output))
 
 
 if __name__ == "__main__":

@@ -15,6 +15,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import log_call, write_json
 
 
@@ -30,12 +33,12 @@ def main() -> None:
     try:
         import psutil
     except ImportError:
-        raise SystemExit("psutil not installed - re-run `uv sync`")
+        raise RuntimeError("psutil not installed - re-run `uv sync`")
 
     proc = psutil.Process(args.pid) if args.pid else psutil.Process()
     samples: list[float] = []
     deadline = time.monotonic() + args.duration
-    print(f"sampling PID {proc.pid} for {args.duration}s @ {args.interval} Hz")
+    _info("monitor", "sampling", pid=proc.pid, duration_s=args.duration, hz=args.interval)
     while time.monotonic() < deadline:
         samples.append(proc.memory_info().rss / 1_000_000)
         time.sleep(args.interval)
@@ -63,8 +66,8 @@ def main() -> None:
             },
         }
     write_json(args.output, summary)
-    print(summary)
-    print(f"wrote {args.output}")
+    _info("monitor", "summary", **summary)
+    _info("monitor", "wrote", out=str(args.output))
 
 
 if __name__ == "__main__":

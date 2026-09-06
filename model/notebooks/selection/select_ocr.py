@@ -22,6 +22,9 @@ from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import LogProgress, load_dotenv, log_call, resolve_device, setup_seed, write_json
 
 
@@ -66,16 +69,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=c.SEED)
     parser.add_argument("--debug", action="store_true", help="verbose per-action logs")
     args = parser.parse_args()
-    print(f"[args] {args}", flush=True)
+    _info("select-ocr", "args", **vars(args))
     _err_out = args.output
     try:
         if not args.force and args.output.is_file():
-            print(f"skipped - already selected: {args.output} (use --force to rerun)", flush=True)
+            _info("select-ocr", "skipped - already selected (use --force to rerun)", out=str(args.output))
             return
 
         setup_seed(args.seed)
         device = resolve_device(args.device)
-        print(f"[select-ocr] device={device}", flush=True)
+        _info("select-ocr", "device", device=device)
         results: dict = {
             "runs": args.repeats,
             "seed": args.seed,
@@ -89,7 +92,7 @@ def main() -> None:
         saved = {} if args.force else _load_partial(partial_path, args.seed, args.repeats)
         saved_runs = saved.get("runs_data", {})
         if saved:
-            print(f"[select-ocr] resuming from {partial_path}", flush=True)
+            _info("select-ocr", "resuming", partial=str(partial_path))
         for model in c.OCR_MODELS:
             stats = {}
             for dataset in c.OCR_DATASETS:
@@ -97,7 +100,7 @@ def main() -> None:
                 assets = evaluate.discover_assets(dataset_dir)
                 backend = get_ocr(model, device=device, seed=args.seed)
                 img_size = c.OCR_IMG_SIZE[model]
-                print(f"[select-ocr] {model}/{dataset} — loading weights (first run downloads GBs)", flush=True)
+                _info("select-ocr", "loading weights (first run downloads GBs)", model=model, dataset=dataset)
                 key = f"{model}/{dataset}"
                 stored = [list(r) for r in saved_runs.get(key, [])]
                 done = len(stored)
@@ -147,23 +150,23 @@ def main() -> None:
         write_json(args.output, results)
         partial_path.unlink(missing_ok=True)
 
-        print(f"ThaiTrOCR mean CER: {thai_mean:.4f} | PP-OCRv5-mobile: {pp_mean:.4f}", flush=True)
-        print(f"paired t-test p={test['p_value']:.4f} significant={test['significant']}", flush=True)
-        print(f"SELECTED: {decision}", flush=True)
-        print(f"wrote {args.output}", flush=True)
+        _info("select-ocr", "mean CER", thaitrocr=round(thai_mean, 4), pp_ocrv5=round(pp_mean, 4))
+        _info("select-ocr", "paired t-test", p=round(test['p_value'], 4), significant=test['significant'])
+        _info("select-ocr", "SELECTED", model=decision)
+        _info("select-ocr", "wrote", out=str(args.output))
 
 
     except Exception as err:
         tb = traceback.format_exc()
         inp = args.ocr_eval_dir
-        print(f"[error] select_ocr failed | in={inp} out={_err_out} | {err}", flush=True)
+        _err("select_ocr", "failed", inp=str(inp), out=str(_err_out), error=str(err))
         print(tb, flush=True)
         if _err_out is not None:
             try:
                 _err_path = str(_err_out) + ".error.json"
                 from pathlib import Path as _P
                 _P(_err_path).write_text(json.dumps({"error": str(err), "kind": "select_ocr", "input": str(inp), "output": str(_err_out)}, indent=2))
-                print(f"[error] wrote {_err_path}", flush=True)
+                _info("select_ocr", "wrote error file", path=_err_path)
             except Exception:
                 pass
         raise SystemExit(1)

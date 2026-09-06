@@ -21,6 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from goat_model import constants as c
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import log_call, resolve_device, setup_seed, write_json
 
 
@@ -49,7 +52,7 @@ def main() -> None:
 
     backend = get_ocr(args.model, device=args.device, seed=args.seed)
     img_size = c.OCR_IMG_SIZE[args.model]
-    print(f"[{args.model}] {len(assets)} images from {args.dataset} on {args.device}")
+    _info("eval-ocr", "loaded images", model=args.model, images=len(assets), dataset=args.dataset, device=args.device)
 
     runs = [
         evaluate.run_ocr(backend, assets, img_size, seed=args.seed) for _ in range(args.repeats)
@@ -73,8 +76,8 @@ def main() -> None:
             mean = f"{vals['mean']:.4f}".rstrip("0").rstrip(".")
             std = f"{vals['std']:.4f}".rstrip("0").rstrip(".")
             ci = (vals["ci95"]["ci_low"], vals["ci95"]["ci_high"])
-            print(f"  {metric:>14}: {mean} ± {std}  95%CI=({ci[0]:.4f}, {ci[1]:.4f})")
-    print(f"wrote {args.output}")
+            _info("eval-ocr", "metric", metric=metric, mean=mean, std=std, ci_low=round(ci[0], 4), ci_high=round(ci[1], 4))
+    _info("eval-ocr", "wrote", out=str(args.output))
 
 
 if __name__ == "__main__":

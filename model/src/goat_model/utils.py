@@ -210,7 +210,8 @@ def resolve_device(requested: str = "cuda") -> str:
     a loud warning. Anything else is treated as CUDA (fail fast).
     """
     if requested == "cpu":
-        print("[warn] resolve_device: explicit CPU - expect hours-long runs", flush=True)
+        from goat_model.log import warning as _warn
+        _warn("resolve_device", "explicit CPU - expect hours-long runs")
         return "cpu"
     if not have("torch"):
         raise RuntimeError("torch not installed - cannot verify CUDA; run `uv sync --extra mt`")

@@ -21,6 +21,9 @@ from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test, summarize
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import LogProgress, load_dotenv, log_call, resolve_device, setup_seed, write_json
 
 
@@ -70,16 +73,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=c.SEED)
     parser.add_argument("--debug", action="store_true", help="verbose per-action logs")
     args = parser.parse_args()
-    print(f"[args] {args}", flush=True)
+    _info("select-mt", "args", **vars(args))
     _err_out = args.output
     try:
         if not args.force and args.output.is_file():
-            print(f"skipped - already selected: {args.output} (use --force to rerun)", flush=True)
+            _info("select-mt", "skipped - already selected (use --force to rerun)", out=str(args.output))
             return
 
         setup_seed(args.seed)
         device = resolve_device(args.device)
-        print(f"[select-mt] device={device}", flush=True)
+        _info("select-mt", "device", device=device)
         src_file = args.mt_test_dir / f"flores200.{args.src}"
         ref_file = args.mt_test_dir / f"flores200.{args.tgt}"
         domain_file = args.mt_test_dir / "flores200.domains"
@@ -101,7 +104,7 @@ def main() -> None:
         saved_lat = saved.get("latency_series", {})
         saved_hyp = saved.get("last_hyp", {})
         if saved:
-            print(f"[select-mt] resuming from {partial_path}", flush=True)
+            _info("select-mt", "resuming", partial=str(partial_path))
 
         for model in c.MT_MODELS:
             backend = get_mt(
@@ -118,7 +121,7 @@ def main() -> None:
             latency_series[model] = list(saved_lat.get(model, []))
             done = len(bleu_series[model])
             last_by_model[model] = {"hypotheses": saved_hyp.get(model, [])}
-            print(f"[select-mt] {model} — loading weights (first run downloads GBs)", flush=True)
+            _info("select-mt", "loading weights (first run downloads GBs)", model=model)
             prog = LogProgress(args.repeats, f"select-mt {model}", unit="repeat", interval_s=30.0)
             prog.n = done
             for rep in range(done, args.repeats):
@@ -171,27 +174,26 @@ def main() -> None:
 
         for model in c.MT_MODELS:
             m = results["models"][model]
-            print(
-                f"{model}: BLEU {m['bleu']['mean']:.2f}±{m['bleu']['std']:.2f} "
-                f"| {m['avg_s_per_sentence']['mean'] * 1000:.0f}±{m['avg_s_per_sentence']['std'] * 1000:.0f} ms/sentence",
-                flush=True
-            )
-        print(f"paired t-test p={test['p_value']:.4f} significant={test['significant']}", flush=True)
-        print(f"SELECTED: {selected}", flush=True)
-        print(f"wrote {args.output}", flush=True)
+            _info("select-mt", "model result", model=model, bleu=round(m['bleu']['mean'], 2),
+                  bleu_std=round(m['bleu']['std'], 2),
+                  ms_per_sentence=round(m['avg_s_per_sentence']['mean'] * 1000),
+                  ms_std=round(m['avg_s_per_sentence']['std'] * 1000))
+        _info("select-mt", "paired t-test", p=round(test['p_value'], 4), significant=test['significant'])
+        _info("select-mt", "SELECTED", model=selected)
+        _info("select-mt", "wrote", out=str(args.output))
 
 
     except Exception as err:
         tb = traceback.format_exc()
         inp = args.mt_test_dir
-        print(f"[error] select_mt failed | in={inp} out={_err_out} | {err}", flush=True)
+        _err("select_mt", "failed", inp=str(inp), out=str(_err_out), error=str(err))
         print(tb, flush=True)
         if _err_out is not None:
             try:
                 _err_path = str(_err_out) + ".error.json"
                 from pathlib import Path as _P
                 _P(_err_path).write_text(json.dumps({"error": str(err), "kind": "select_mt", "input": str(inp), "output": str(_err_out)}, indent=2))
-                print(f"[error] wrote {_err_path}", flush=True)
+                _info("select_mt", "wrote error file", path=_err_path)
             except Exception:
                 pass
         raise SystemExit(1)

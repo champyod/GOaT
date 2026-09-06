@@ -19,6 +19,9 @@ from goat_model import constants as c
 from goat_model.metrics import bootstrap_ci, summarize
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import log_call, resolve_device, setup_seed, write_json
 
 
@@ -52,7 +55,7 @@ def main() -> None:
     src_lang = c.LANG_CODES[args.src]
     tgt_lang = c.LANG_CODES[args.tgt]
     sources, refs, tags = evaluate.load_pairs(src_file, ref_file, domain_file)
-    print(f"[{args.model}] {len(sources)} pairs {args.src}->{args.tgt} on {args.device}")
+    _info("eval-mt", "loaded pairs", model=args.model, pairs=len(sources), src=args.src, tgt=args.tgt, device=args.device)
 
     backend = get_mt(
         model_name=args.model,
@@ -98,8 +101,8 @@ def main() -> None:
         mean = f"{vals['mean']:.2f}".rstrip("0").rstrip(".")
         std = f"{vals['std']:.2f}".rstrip("0").rstrip(".")
         ci = (vals["ci95"]["ci_low"], vals["ci95"]["ci_high"])
-        print(f"  {metric:>20}: {mean} ± {std}  95%CI=({ci[0]:.2f}, {ci[1]:.2f})")
-    print(f"wrote {args.output}")
+        _info("eval-mt", "metric", metric=metric, mean=mean, std=std, ci_low=round(ci[0], 2), ci_high=round(ci[1], 2))
+    _info("eval-mt", "wrote", out=str(args.output))
 
 
 if __name__ == "__main__":

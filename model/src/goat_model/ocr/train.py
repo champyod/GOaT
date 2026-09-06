@@ -33,6 +33,9 @@ from goat_model.constants import (
     THAITROCR_MODEL_ID,
 )
 from goat_model.metrics import cer
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import log_call, LogProgress, resolve_device, setup_seed, trainer_heartbeat, write_json
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
@@ -115,7 +118,7 @@ def run_ocr_finetune(
     the winner and per-config results to ``result_path``.
     """
     if result_path.is_file():
-        print(f"skipped - already trained: {result_path}")
+        _info("ocr-train", "skipped - already trained", result=str(result_path))
         return
 
     if selected_model != "ThaiTrOCR":
@@ -126,7 +129,7 @@ def run_ocr_finetune(
                 "skipped": "only ThaiTrOCR is fine-tuned; PP-OCRv5-mobile stays frozen",
             },
         )
-        print(f"no fine-tune needed - selected {selected_model} stays frozen")
+        _info("ocr-train", "no fine-tune needed - stays frozen", selected=selected_model)
         return
 
     setup_seed(seed)
@@ -153,7 +156,7 @@ def run_ocr_finetune(
                 if best is None or v["cer"] < best[0]:
                     best = (v["cer"], key)
             if grid_results:
-                print(f"[ocr-train] resuming {len(grid_results)} configs from {partial_path}", flush=True)
+                _info("ocr-train", "resuming configs", done=len(grid_results), partial=str(partial_path))
     total = len(OCR_GRID_LEARNING_RATES) * len(OCR_GRID_BATCH_SIZES)
     done = 0
     for lr in OCR_GRID_LEARNING_RATES:
@@ -161,9 +164,9 @@ def run_ocr_finetune(
             done += 1
             cfg_key = f"lr{lr}_bs{batch}"
             if cfg_key in grid_results:
-                print(f"[ocr-train] skip done {cfg_key}", flush=True)
+                _info("ocr-train", "skip done", config=cfg_key)
                 continue
-            print(f"[ocr-train] [{done}/{total}] lr={lr} bs={batch} — loading model", flush=True)
+            _info("ocr-train", "loading model", done=done, total=total, lr=lr, batch=batch)
             setup_seed(seed)
             model = VisionEncoderDecoderModel.from_pretrained(THAITROCR_MODEL_ID)
             model.config.decoder_start_token_id = processor.tokenizer.cls_token_id
@@ -211,7 +214,7 @@ def run_ocr_finetune(
             key = {"lr": lr, "batch_size": batch}
             grid_results[cfg_key] = {**key, "cer": val_cer, "model": str(out_dir)}
             write_json(partial_path, {"seed": seed, "selected": selected_model, "grid_results": grid_results})
-            print(f"config lr{lr} bs{batch}: CER {val_cer}", flush=True)
+            _info("ocr-train", "CER", lr=lr, batch=batch, cer=val_cer)
             if best is None or val_cer < best[0]:
                 best = (val_cer, key)
 
@@ -229,4 +232,4 @@ def run_ocr_finetune(
             "winner_cer": best[0],
         },
     )
-    print(f"wrote {result_path}", flush=True)
+    _info("ocr-train", "wrote result", result=str(result_path))

@@ -17,6 +17,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import load_dotenv, log_call, setup_seed
 
 
@@ -32,7 +35,7 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="ignore existing results, retrain")
     parser.add_argument("--debug", action="store_true", help="verbose per-action logs")
     args = parser.parse_args()
-    print(f"[args] {args}", flush=True)
+    _info("train-mt", "args", **vars(args))
     _err_out = args.output
     try:
 
@@ -62,13 +65,13 @@ def main() -> None:
     except Exception as err:
         tb = traceback.format_exc()
         inp = args.mt_dir
-        print(f"[error] train_mt failed | in={inp} out={_err_out} | {err}", flush=True)
+        _err("train-mt", "failed", inp=str(inp), out=str(_err_out), error=str(err))
         print(tb, flush=True)
         try:
             _err_path = str(_err_out) + ".error.json"
             from pathlib import Path as _P
             _P(_err_path).write_text(json.dumps({"error": str(err), "kind": "train_mt", "input": str(inp), "output": str(_err_out)}, indent=2))
-            print(f"[error] wrote {_err_path}", flush=True)
+            _info("train-mt", "wrote error file", path=_err_path)
         except Exception:
             pass
         raise SystemExit(1)

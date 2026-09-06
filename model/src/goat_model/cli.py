@@ -8,11 +8,14 @@ import sys
 from goat_model.utils import log_call
 
 
+from goat_model.log import info as _info
+
+
 @log_call
 def _hello() -> int:
-    print("Hello from model!")
-    print("GOaT model pipeline scaffold (see model/README.md)")
-    print("Phases: data -> select -> train -> export -> eval")
+    _info("cli", "Hello from model!")
+    _info("cli", "GOaT model pipeline scaffold (see model/README.md)")
+    _info("cli", "Phases: data -> select -> train -> export -> eval")
     return 0
 
 
@@ -20,9 +23,9 @@ def _hello() -> int:
 def _plan() -> int:
     from goat_model import constants as c
 
-    print("OCR:", dict(c.OCR_IMG_SIZE))
-    print("MT:", c.MT_MODELS, "lang codes:", c.LANG_CODES)
-    print("Split plan:", c.DATA_PLAN)
+    _info("cli", "plan", ocr=dict(c.OCR_IMG_SIZE))
+    _info("cli", "plan", mt=c.MT_MODELS, langs=c.LANG_CODES)
+    _info("cli", "plan", split=c.DATA_PLAN)
     return 0
 
 

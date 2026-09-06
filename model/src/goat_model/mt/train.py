@@ -40,6 +40,9 @@ from goat_model.constants import (
 from goat_model.metrics import corpus_bleu
 from goat_model.mt.engine import NLLB_HF_IDS
 from goat_model.mt.evaluate import load_pairs
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import log_call, LogProgress, resolve_device, setup_seed, trainer_heartbeat, write_json
 
 
@@ -53,7 +56,7 @@ def run_mt_finetune(
 ) -> None:
     """Run LoRA grid for NLLB-600M; skip if result already exists."""
     if result_path.is_file():
-        print(f"skipped - already trained: {result_path}")
+        _info("mt-train", "skipped - already trained", result=str(result_path))
         return
 
     MODEL_600M = "NLLB-200-distilled-600M"
@@ -63,7 +66,7 @@ def run_mt_finetune(
     selected = json.loads(selection_path.read_text()).get("selected")
     if selected != MODEL_600M:
         write_json(result_path, {"selected": selected, "skipped": f"only {MODEL_600M} is fine-tuned"})
-        print(f"no fine-tune needed - selected {selected} stays zero-shot")
+        _info("mt-train", "no fine-tune needed - stays zero-shot", selected=selected)
         return
 
     setup_seed(seed)
@@ -107,16 +110,16 @@ def run_mt_finetune(
                 if best is None or v["flores_bleu"] > best[0]:
                     best = (v["flores_bleu"], key)
             if grid_results:
-                print(f"[mt-train] resuming {len(grid_results)} configs from {partial_path}", flush=True)
+                _info("mt-train", "resuming configs", done=len(grid_results), partial=str(partial_path))
 
     for r in LORA_RANKS:
         for alpha in LORA_ALPHAS:
             for lr in LORA_LEARNING_RATES:
                 cfg_key = f"r{r}_alpha{alpha}_lr{lr}"
                 if cfg_key in grid_results:
-                    print(f"[mt-train] skip done {cfg_key}", flush=True)
+                    _info("mt-train", "skip done", config=cfg_key)
                     continue
-                print(f"[mt-train] config {r}/{alpha}/{lr} — loading base", flush=True)
+                _info("mt-train", "loading base", r=r, alpha=alpha, lr=lr)
                 setup_seed(seed)
                 base = AutoModelForSeq2SeqLM.from_pretrained(model_id).to(device)
                 peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, r=r, lora_alpha=alpha, target_modules=list(LORA_TARGET_MODULES), lora_dropout=0.1, bias="none")
@@ -147,7 +150,7 @@ def run_mt_finetune(
                 key = {"rank": r, "alpha": alpha, "lr": lr}
                 grid_results[cfg_key] = {**key, "flores_bleu": flores_bleu, "adapter": str(out_dir)}
                 write_json(partial_path, {"seed": seed, "selected": selected, "grid_results": grid_results})
-                print(f"config r{r} alpha{alpha} lr{lr}: FLORES BLEU {flores_bleu}", flush=True)
+                _info("mt-train", "FLORES BLEU", r=r, alpha=alpha, lr=lr, bleu=flores_bleu)
                 if best is None or flores_bleu > best[0]:
                     best = (flores_bleu, key)
 
@@ -162,4 +165,4 @@ def run_mt_finetune(
 
     partial_path.unlink(missing_ok=True)
     write_json(result_path, {"selected": selected, "base_model": model_id, "target_modules": list(LORA_TARGET_MODULES), "epochs": list(LORA_EPOCHS), "grid_results": grid_results, "winner": best[1], "winner_flores_bleu": best[0]})
-    print(f"wrote {result_path}", flush=True)
+    _info("mt-train", "wrote result", result=str(result_path))

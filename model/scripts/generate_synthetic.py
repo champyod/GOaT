@@ -20,6 +20,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from goat_model import constants as c
 from goat_model.data import split_ocr
 from goat_model.synth_ocr import _build_manifest, flatten_synthetic
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import LogProgress, copy_replace, load_dotenv, log_call
 
 
@@ -36,7 +39,7 @@ def _sync_tree(src: Path, dst: Path) -> tuple[int, int]:
         d.parent.mkdir(parents=True, exist_ok=True)
         copy_replace(f, d)
         copied += 1
-    print(f"[sync] {copied} copied, {skipped} skipped {src} -> {dst}", flush=True)
+    _info("sync", "tree synced", copied=copied, skipped=skipped, src=str(src), dst=str(dst))
     return copied, skipped
 
 
@@ -49,11 +52,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=c.SEED)
     parser.add_argument("--debug", action="store_true", help="verbose per-action logs")
     args = parser.parse_args()
-    print(f"[args] {args}", flush=True)
+    _info("synthetic", "args", **vars(args))
 
     gen_dir = args.out / "gen"
     manifest_path = args.out / "manifest.json"
-    print(f"[step] synthetic: rebuilding manifest from {gen_dir} ...", flush=True)
+    _info("synthetic", "rebuilding manifest", gen=str(gen_dir))
     manifest = _build_manifest(args.out) if manifest_path.is_file() else {}
     if manifest:
         verify_prog = LogProgress(len(manifest), "verify", unit="entries", interval_s=3.0, in_path=str(gen_dir))
@@ -67,12 +70,12 @@ def main() -> None:
                 bad.append(key)
             verify_prog.update()
         verify_prog.close()
-        print(f"[step] synthetic: {len(manifest) - len(bad)}/{len(manifest)} entries ok", flush=True)
+        _info("synthetic", "entries ok", ok=len(manifest) - len(bad), total=len(manifest))
         if bad:
-            print(f"[fetch] {len(bad)} missing/corrupt entries, re-downloading ...", flush=True)
+            _warn("fetch", "missing/corrupt entries, re-downloading", bad=len(bad))
             manifest = {}
     if manifest:
-        print(f"downloaded dataset already present - reusing {args.out} ({len(manifest)} images)")
+        _info("synthetic", "dataset present - reusing", out=str(args.out), images=len(manifest))
     else:
         try:
             from huggingface_hub import snapshot_download
@@ -91,7 +94,7 @@ def main() -> None:
         stage_dir = Path("/tmp/synth_dl")
         stage_dir.mkdir(parents=True, exist_ok=True)
         if gen_dir.is_dir():
-            print(f"[step] synthetic: merging Drive progress {gen_dir} -> {stage_dir} ...", flush=True)
+            _info("synthetic", "merging Drive progress", src=str(gen_dir), dst=str(stage_dir))
             _sync_tree(gen_dir, stage_dir)
         try:
             from huggingface_hub import HfApi
@@ -103,7 +106,7 @@ def main() -> None:
             LogProgress(total_mb, "fetch", unit="MB", interval_s=3.0, in_path=c.OCR_SYNTHETIC_REPO_ID, out_path=str(stage_dir))
             if total_mb else None
         )
-        print(f"[step] synthetic: snapshot download {c.OCR_SYNTHETIC_REPO_ID} -> {stage_dir} ...", flush=True)
+        _info("synthetic", "snapshot download", repo=c.OCR_SYNTHETIC_REPO_ID, dst=str(stage_dir))
         STALL_AFTER = 120.0
         last_err: Exception | None = None
         for attempt in range(1, 7):
@@ -143,9 +146,11 @@ def main() -> None:
                 if fetch_prog is not None:
                     fetch_prog.update(max(0, size // 1048576 - fetch_prog.n))
                 else:
-                    print(f"[fetch] downloading {c.OCR_SYNTHETIC_REPO_ID} ... {size / 1048576:.0f}MB elapsed={now - dl['t0']:.0f}s -> {stage_dir}", flush=True)
+                    _info("fetch", "downloading", repo=c.OCR_SYNTHETIC_REPO_ID, mb=round(size / 1048576),
+                          elapsed=round(now - dl["t0"]), dst=str(stage_dir))
                 if not fut.done() and now - dl["moved"] > STALL_AFTER:
-                    print(f"[fetch] STALLED {STALL_AFTER:.0f}s at {size / 1048576:.0f}MB - abandoning attempt {attempt}/6 ...", flush=True)
+                    _warn("fetch", "stalled - abandoning attempt", stall_s=round(STALL_AFTER),
+                          mb=round(size / 1048576), attempt=f"{attempt}/6")
                     stalled = True
                     break
             if stalled:
@@ -161,13 +166,13 @@ def main() -> None:
                 if not isinstance(last_err, (ConnectionError, TimeoutError, OSError)) and "429" not in str(last_err):
                     raise last_err
                 wait = 30 * attempt
-                print(f"[fetch] attempt {attempt}/6 failed ({last_err}). retry in {wait}s ...", flush=True)
+                _warn("fetch", "attempt failed", attempt=f"{attempt}/6", error=str(last_err), retry_s=wait)
                 time.sleep(wait)
         if fetch_prog is not None:
             fetch_prog.close()
         if last_err is not None:
             raise last_err
-        print(f"[step] synthetic: staging {stage_dir} -> {gen_dir} ...", flush=True)
+        _info("synthetic", "staging", src=str(stage_dir), dst=str(gen_dir))
         gen_dir.mkdir(parents=True, exist_ok=True)
         _sync_tree(stage_dir, gen_dir)
         manifest = _build_manifest(args.out)
@@ -177,11 +182,11 @@ def main() -> None:
                 "holds images/<shard>/<idx>.jpg plus tab-separated gt.txt at root"
             )
         flatten_synthetic(gen_dir, manifest, args.out, prefix=c.OCR_SYN_PREFIX)
-        print(f"downloaded {len(manifest)} synthetic images -> {args.out}")
+        _info("synthetic", "downloaded", images=len(manifest), out=str(args.out))
 
-    print(f"[step] synthetic: stratified split -> {args.out.parent} ...", flush=True)
+    _info("synthetic", "stratified split", out=str(args.out.parent))
     split_ocr(synthetic_dir=args.out, real_dir=args.real, out_root=args.out.parent, seed=args.seed)
-    print("[step] synthetic: done", flush=True)
+    _info("synthetic", "done")
 
 
 if __name__ == "__main__":

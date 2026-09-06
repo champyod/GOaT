@@ -14,6 +14,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
+from goat_model.log import error as _err
+from goat_model.log import info as _info
+from goat_model.log import warning as _warn
 from goat_model.utils import log_call
 
 ARTIFACTS = c.MODEL_ROOT / "artifacts"
@@ -22,30 +25,30 @@ ARTIFACTS = c.MODEL_ROOT / "artifacts"
 @log_call
 def export_onnx(src: Path | None) -> Path:
     if src is None or not src.is_file():
-        raise SystemExit("OCR model artifact missing - run scripts/train_ocr.py first")
+        raise RuntimeError("OCR model artifact missing - run scripts/train_ocr.py first")
     try:
         import onnxruntime  # noqa: F401
     except ImportError as err:
-        raise SystemExit("onnxruntime not installed - re-run `uv sync --extra ocr`") from err
+        raise RuntimeError("onnxruntime not installed - re-run `uv sync --extra ocr`") from err
     # TODO: backend-specific export (PaddleOCR export / torch onnx.export) + smoke run
     out = ARTIFACTS / "ocr.quantized.onnx"
     out.parent.mkdir(parents=True, exist_ok=True)
-    print(f"exported OCR -> {out}")
+    _info("export", "exported OCR", out=str(out))
     return out
 
 
 @log_call
 def export_ct2(src: Path | None) -> Path:
     if src is None or not src.is_dir():
-        raise SystemExit("MT model artifact missing - run scripts/train_mt.py first")
+        raise RuntimeError("MT model artifact missing - run scripts/train_mt.py first")
     try:
         import ctranslate2  # noqa: F401
     except ImportError as err:
-        raise SystemExit("ctranslate2 not installed - re-run `uv sync --extra mt`") from err
+        raise RuntimeError("ctranslate2 not installed - re-run `uv sync --extra mt`") from err
     # TODO: ctranslate2.converters.TransformersConverter(...).convert(...); INT8 quantize; smoke run
     out = ARTIFACTS / "nllb600m_loRA_ct2"
     out.mkdir(parents=True, exist_ok=True)
-    print(f"exported MT -> {out}")
+    _info("export", "exported MT", out=str(out))
     return out
 
 
