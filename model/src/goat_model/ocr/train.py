@@ -15,6 +15,7 @@ import torch
 from datasets import Dataset
 from PIL import Image as PILImage
 from transformers import (
+    DataCollatorForSeq2Seq,
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
     TrOCRProcessor,
@@ -41,35 +42,6 @@ IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 
 @log_call
-def _pixels(paths: list[str], processor: TrOCRProcessor, img_size: int) -> torch.Tensor:
-    """Load + resize one batch of images to pixel tensors (never materialize all)."""
-    return torch.stack(
-        [
-            processor.image_processor(
-                PILImage.open(p).convert("RGB").resize((img_size, img_size)),
-                return_tensors="pt",
-            ).pixel_values[0]
-            for p in paths
-        ]
-    )
-
-
-def _make_collator(processor: TrOCRProcessor, img_size: int):
-    """Batch collator: pixels on the fly, labels padded with -100 (ignored)."""
-
-    def collate(features):
-        pixel_values = _pixels([f["image"] for f in features], processor, img_size)
-        labels = [torch.tensor(f["labels"]) for f in features]
-        labels = torch.nn.utils.rnn.pad_sequence(
-            labels, batch_first=True, padding_value=processor.tokenizer.pad_token_id
-        )
-        labels[labels == processor.tokenizer.pad_token_id] = -100
-        return {"pixel_values": pixel_values, "labels": labels}
-
-    return collate
-
-
-@log_call
 def _build_dataset(split_dir: Path, processor: TrOCRProcessor, img_size: int) -> Dataset:
     images, texts = [], []
     for img in sorted(split_dir.iterdir()):
@@ -81,11 +53,20 @@ def _build_dataset(split_dir: Path, processor: TrOCRProcessor, img_size: int) ->
             texts.append(gt.read_text(encoding="utf-8").strip())
     ds = Dataset.from_dict({"image": images, "text": texts})
 
-    def preprocess(ex):
-        return {"labels": processor.tokenizer(ex["text"], return_tensors="pt").input_ids[0].tolist()}
+    def preprocess(batch):
+        return {
+            "pixel_values": [
+                processor(
+                    PILImage.open(p).convert("RGB").resize((img_size, img_size)),
+                    return_tensors="pt",
+                ).pixel_values[0]
+                for p in batch["image"]
+            ],
+            "labels": processor.tokenizer(batch["text"]).input_ids,
+            "text": batch["text"],
+        }
 
-    # keep "image" (collator transforms per batch) and "text" (test refs) columns
-    return ds.map(preprocess)
+    return ds.with_transform(preprocess)
 
 
 @log_call
@@ -107,7 +88,6 @@ def _infer_cer(
     model: VisionEncoderDecoderModel,
     test_ds: Dataset,
     processor: TrOCRProcessor,
-    img_size: int,
     batch_size: int,
     refs: list[str],
 ) -> float:
@@ -116,7 +96,9 @@ def _infer_cer(
     prog = LogProgress(len(batches), "ocr-infer", unit="batch", interval_s=1.0)
     with torch.inference_mode():
         for i in batches:
-            px = _pixels(test_ds[i : i + batch_size]["image"], processor, img_size).to(model.device)
+            px = torch.stack(
+                [torch.tensor(x) for x in test_ds[i : i + batch_size]["pixel_values"]]
+            ).to(model.device)
             gen = model.generate(px, max_length=128)
             hyps.extend(processor.batch_decode(gen, skip_special_tokens=True))
             prog.update()
@@ -214,6 +196,7 @@ def run_ocr_finetune(
                 seed=seed,
                 logging_steps=10,
                 disable_tqdm=False,
+                remove_unused_columns=False,
             )
             trainer = Seq2SeqTrainer(
                 model=model,
@@ -221,14 +204,14 @@ def run_ocr_finetune(
                 train_dataset=train_ds,
                 eval_dataset=val_ds,
                 tokenizer=processor.feature_extractor,
-                data_collator=_make_collator(processor, img_size),
+                data_collator=DataCollatorForSeq2Seq(tokenizer=processor.tokenizer, padding=True),
                 compute_metrics=lambda ep: _compute_cer(ep, processor),
                 callbacks=[trainer_heartbeat("ocr-train")],
             )
             trainer.train(resume_from_checkpoint=True)
             model.save_pretrained(out_dir)
 
-            val_cer = _infer_cer(model, test_ds, processor, img_size, batch, test_refs)
+            val_cer = _infer_cer(model, test_ds, processor, batch, test_refs)
             del model
             torch.cuda.empty_cache()
 
