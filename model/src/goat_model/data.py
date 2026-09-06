@@ -254,7 +254,7 @@ def split_ocr(
     if not synthetic:
         raise SystemExit(f"no synthetic images+gt in {synthetic_dir}")
     if not real:
-        raise SystemExit(f"no real images+gt in {real_dir}")
+        print(f"[warn] split_ocr: no real images+gt in {real_dir} - continuing synthetic-only", flush=True)
 
     print(f"found {len(synthetic)} synthetic, {len(real)} real images")
 
