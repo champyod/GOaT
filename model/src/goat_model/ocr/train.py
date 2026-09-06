@@ -15,11 +15,11 @@ import torch
 from datasets import Dataset
 from PIL import Image as PILImage
 from transformers import (
+    DataCollatorForSeq2Seq,
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
     TrOCRProcessor,
     VisionEncoderDecoderModel,
-    default_data_collator,
 )
 
 from goat_model.constants import (
@@ -53,17 +53,20 @@ def _build_dataset(split_dir: Path, processor: TrOCRProcessor, img_size: int) ->
             texts.append(gt.read_text(encoding="utf-8").strip())
     ds = Dataset.from_dict({"image": images, "text": texts})
 
-    def preprocess(ex):
+    def preprocess(batch):
         return {
-            "pixel_values": processor(
-                PILImage.open(ex["image"]).convert("RGB").resize((img_size, img_size)),
-                return_tensors="pt",
-            ).pixel_values[0],
-            "labels": processor.tokenizer(ex["text"], return_tensors="pt").input_ids[0],
+            "pixel_values": [
+                processor(
+                    PILImage.open(p).convert("RGB").resize((img_size, img_size)),
+                    return_tensors="pt",
+                ).pixel_values[0]
+                for p in batch["image"]
+            ],
+            "labels": processor.tokenizer(batch["text"]).input_ids,
+            "text": batch["text"],
         }
 
-    # keep "text": run_ocr_finetune reads test refs from it after mapping
-    return ds.map(preprocess, remove_columns=["image"])
+    return ds.with_transform(preprocess)
 
 
 @log_call
@@ -193,6 +196,7 @@ def run_ocr_finetune(
                 seed=seed,
                 logging_steps=10,
                 disable_tqdm=False,
+                remove_unused_columns=False,
             )
             trainer = Seq2SeqTrainer(
                 model=model,
@@ -200,7 +204,7 @@ def run_ocr_finetune(
                 train_dataset=train_ds,
                 eval_dataset=val_ds,
                 tokenizer=processor.feature_extractor,
-                data_collator=default_data_collator,
+                data_collator=DataCollatorForSeq2Seq(tokenizer=processor.tokenizer, padding=True),
                 compute_metrics=lambda ep: _compute_cer(ep, processor),
                 callbacks=[trainer_heartbeat("ocr-train")],
             )
