@@ -58,12 +58,16 @@ def main() -> None:
                 "then this script can fetch the synthetic dataset."
             ) from err
 
+        import shutil
         import threading
         import time
 
         from goat_model.utils import LogProgress
 
-        gen_dir.mkdir(parents=True, exist_ok=True)
+        # Stage in /tmp (fast local writes for 10k files), bulk-copy to Drive after.
+        # stage_dir persists across runs so snapshot_download resumes partials.
+        stage_dir = Path("/tmp/synth_dl")
+        stage_dir.mkdir(parents=True, exist_ok=True)
         try:
             from huggingface_hub import HfApi
             info = HfApi().dataset_info(c.OCR_SYNTHETIC_REPO_ID)
@@ -71,7 +75,7 @@ def main() -> None:
         except Exception:
             total_mb = 0
         fetch_prog = (
-            LogProgress(total_mb, "fetch", unit="MB", interval_s=3.0, in_path=c.OCR_SYNTHETIC_REPO_ID, out_path=str(gen_dir))
+            LogProgress(total_mb, "fetch", unit="MB", interval_s=3.0, in_path=c.OCR_SYNTHETIC_REPO_ID, out_path=str(stage_dir))
             if total_mb else None
         )
         stop = threading.Event()
@@ -80,24 +84,24 @@ def main() -> None:
             t0 = time.monotonic()
             while not stop.wait(3.0):
                 try:
-                    size = sum(p.stat().st_size for p in gen_dir.rglob("*") if p.is_file())
+                    size = sum(p.stat().st_size for p in stage_dir.rglob("*") if p.is_file())
                 except Exception:
                     size = 0
                 if fetch_prog is not None:
                     fetch_prog.update(max(0, size // 1048576 - fetch_prog.n))
                 else:
-                    print(f"[fetch] downloading {c.OCR_SYNTHETIC_REPO_ID} ... {size / 1048576:.0f}MB elapsed={time.monotonic() - t0:.0f}s -> {gen_dir}", flush=True)
+                    print(f"[fetch] downloading {c.OCR_SYNTHETIC_REPO_ID} ... {size / 1048576:.0f}MB elapsed={time.monotonic() - t0:.0f}s -> {stage_dir}", flush=True)
 
         watcher = threading.Thread(target=_fetch_watch, daemon=True)
         watcher.start()
-        print(f"[step] synthetic: snapshot download {c.OCR_SYNTHETIC_REPO_ID} -> {gen_dir} ...", flush=True)
+        print(f"[step] synthetic: snapshot download {c.OCR_SYNTHETIC_REPO_ID} -> {stage_dir} ...", flush=True)
         last_err: Exception | None = None
         for attempt in range(1, 7):
             try:
                 snapshot_download(
                     repo_id=c.OCR_SYNTHETIC_REPO_ID,
                     repo_type="dataset",
-                    local_dir=gen_dir,
+                    local_dir=stage_dir,
                 )
                 last_err = None
                 break
@@ -114,6 +118,10 @@ def main() -> None:
             fetch_prog.close()
         if last_err is not None:
             raise last_err
+        print(f"[step] synthetic: staging {stage_dir} -> {gen_dir} ...", flush=True)
+        if gen_dir.exists():
+            shutil.rmtree(gen_dir)
+        shutil.copytree(stage_dir, gen_dir)
         manifest = _build_manifest(args.out)
         if not manifest:
             raise SystemExit(
