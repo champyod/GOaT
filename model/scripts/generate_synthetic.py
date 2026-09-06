@@ -68,6 +68,14 @@ def main() -> None:
         # stage_dir persists across runs so snapshot_download resumes partials.
         stage_dir = Path("/tmp/synth_dl")
         stage_dir.mkdir(parents=True, exist_ok=True)
+        if gen_dir.is_dir():
+            print(f"[step] synthetic: merging Drive progress {gen_dir} -> {stage_dir} ...", flush=True)
+            for src in gen_dir.rglob("*"):
+                if src.is_file():
+                    dst = stage_dir / src.relative_to(gen_dir)
+                    if not dst.is_file() or dst.stat().st_size != src.stat().st_size:
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, dst)
         try:
             from huggingface_hub import HfApi
             info = HfApi().dataset_info(c.OCR_SYNTHETIC_REPO_ID)
