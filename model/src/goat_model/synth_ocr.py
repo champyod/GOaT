@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 from goat_model.constants import MODEL_ROOT
-from goat_model.utils import log_call, LogProgress
+from goat_model.utils import copy_replace, log_call, LogProgress
 
 #: Watchdog bound (seconds) for the SynthTIGER subprocess. A silent
 #: per-sample retry-loop hang becomes a fast ``TimeoutExpired`` instead
@@ -207,7 +207,7 @@ def flatten_synthetic(
     prog = LogProgress(len(manifest), "flatten", unit="imgs", interval_s=10.0, in_path=str(gen_dir), out_path=str(out_dir))
     for n, (image_key, label) in enumerate(manifest.items()):
         stem = f"{prefix}_{n:05d}"
-        shutil.copy2(gen_dir / image_key, out_dir / f"{stem}.png")
+        copy_replace(gen_dir / image_key, out_dir / f"{stem}.png")
         (out_dir / f"{stem}.txt").write_text(label, encoding="utf-8")
         prog.update()
     prog.close()

@@ -8,11 +8,10 @@ model/scripts/; notebooks should import these functions directly.
 from __future__ import annotations
 
 import random
-import shutil
 from pathlib import Path
 
 import numpy as np
-from goat_model.utils import log_call, LogProgress
+from goat_model.utils import copy_replace, log_call, LogProgress
 
 from goat_model import constants as c
 
@@ -155,11 +154,11 @@ def ingest_manual(dataset: str, source: Path, ocr_root: Path = c.OCR_EVAL) -> Pa
 
     copied = matched_gt = 0
     for img in imgs:
-        shutil.copy2(img, dst / "images" / img.name)
+        copy_replace(img, dst / "images" / img.name)
         copied += 1
         gt = gt_map.get(img.stem)
         if gt is not None:
-            shutil.copy2(gt, dst / "gt" / f"{img.stem}.txt")
+            copy_replace(gt, dst / "gt" / f"{img.stem}.txt")
             matched_gt += 1
 
     missing = len(imgs) - matched_gt
@@ -283,8 +282,8 @@ def split_ocr(
         dest.mkdir(parents=True, exist_ok=True)
         manifest.setdefault(dest.name, [])
         for img, gt in items:
-            shutil.copy2(img, dest / img.name)
-            shutil.copy2(gt, dest / gt.name)
+            copy_replace(img, dest / img.name)
+            copy_replace(gt, dest / gt.name)
             manifest[dest.name].append(img.name)
             prog.update()
         counts[key] = len(items)

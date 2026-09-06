@@ -20,13 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from goat_model import constants as c
 from goat_model.data import split_ocr
 from goat_model.synth_ocr import _build_manifest, flatten_synthetic
-from goat_model.utils import log_call
+from goat_model.utils import copy_replace, log_call
 
 
 def _sync_tree(src: Path, dst: Path) -> tuple[int, int]:
     """Copy only new/changed files src -> dst (size-compare). Returns (copied, skipped)."""
-    import shutil
-
     copied = skipped = 0
     for f in src.rglob("*"):
         if not f.is_file():
@@ -36,7 +34,7 @@ def _sync_tree(src: Path, dst: Path) -> tuple[int, int]:
             skipped += 1
             continue
         d.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(f, d)
+        copy_replace(f, d)
         copied += 1
     print(f"[sync] {copied} copied, {skipped} skipped {src} -> {dst}", flush=True)
     return copied, skipped

@@ -146,3 +146,19 @@ def trainer_heartbeat(desc="train", interval_s=60.0):
             return control
 
     return _HeartbeatCallback()
+
+
+def copy_replace(src: Path, dst: Path) -> None:
+    """copy2 that survives Drive FUSE: overwriting an existing Drive file in
+    place can raise PermissionError, while delete-then-write succeeds.
+    Deliberately undecorated: called per file in 10k-copy loops."""
+    import shutil
+
+    try:
+        shutil.copy2(src, dst)
+    except PermissionError:
+        try:
+            dst.unlink()
+        except OSError:
+            pass
+        shutil.copy2(src, dst)
