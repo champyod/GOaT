@@ -57,7 +57,13 @@ if ! command -v uv >/dev/null 2>&1; then
   export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 fi
 
+# uv prints per-package lines only when done; heartbeat the silent multi-GB install.
+SYNC_T0=$(date +%s)
+( while true; do echo "[sync] installing ... .venv $(du -sh .venv 2>/dev/null | cut -f1) elapsed=$(( $(date +%s) - SYNC_T0 ))s" >&2; sleep 30; done ) &
+HEART_PID=$!
 uv sync --extra ocr --extra mt --extra train
+kill $HEART_PID 2>/dev/null
+wait $HEART_PID 2>/dev/null
 
 # Full opencv-python (via synthtiger) needs system libGL; install only when cv2 fails to import.
 PYTHONPATH=src uv run python -c "import cv2" $DEBUG_ARGS 2>/dev/null || (apt-get update -qq && apt-get install -y -q libgl1 libglib2.0-0)
