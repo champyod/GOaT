@@ -33,9 +33,9 @@ def main() -> None:
 
     gen_dir = args.out / "gen"
     manifest_path = args.out / "manifest.json"
-    if manifest_path.is_file():
-        manifest = _build_manifest(args.out)
-        print(f"downloaded dataset already present - reusing {args.out}")
+    manifest = _build_manifest(args.out) if manifest_path.is_file() else {}
+    if manifest:
+        print(f"downloaded dataset already present - reusing {args.out} ({len(manifest)} images)")
     else:
         try:
             from huggingface_hub import snapshot_download
@@ -51,6 +51,11 @@ def main() -> None:
             local_dir=gen_dir,
         )
         manifest = _build_manifest(args.out)
+        if not manifest:
+            raise SystemExit(
+                f"no gt.txt entries under {gen_dir} - check {c.OCR_SYNTHETIC_REPO_ID} "
+                "holds images/<shard>/<idx>.jpg plus tab-separated gt.txt at root"
+            )
         flatten_synthetic(gen_dir, manifest, args.out, prefix=c.OCR_SYN_PREFIX)
         print(f"downloaded {len(manifest)} synthetic images -> {args.out}")
 
