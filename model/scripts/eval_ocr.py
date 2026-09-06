@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from goat_model import constants as c
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
-from goat_model.utils import log_call, setup_seed, write_json
+from goat_model.utils import log_call, resolve_device, setup_seed, write_json
 
 
 @log_call
@@ -30,10 +30,11 @@ def main() -> None:
     parser.add_argument("--model", choices=c.OCR_MODELS, default="PP-OCRv5-mobile")
     parser.add_argument("--dataset", choices=c.OCR_DATASETS, default="thaiocrbench")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", default="cuda", help="cuda (default, fails fast if unavailable) | cpu (explicit, slow)")
     parser.add_argument("--seed", type=int, default=c.SEED)
     parser.add_argument("--repeats", type=int, default=c.OCR_N_RUNS)
     args = parser.parse_args()
+    args.device = resolve_device(args.device)
 
     setup_seed(args.seed)
     dataset_dir = c.OCR_EVAL / args.dataset

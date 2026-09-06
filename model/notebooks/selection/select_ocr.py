@@ -22,7 +22,7 @@ from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
-from goat_model.utils import LogProgress, log_call, setup_seed, write_json
+from goat_model.utils import LogProgress, log_call, resolve_device, setup_seed, write_json
 
 
 @log_call
@@ -59,7 +59,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="OCR selection experiment (CER decision rule).")
     parser.add_argument("--repeats", type=int, default=c.OCR_N_RUNS)
     parser.add_argument("--ocr-eval-dir", type=Path, default=c.OCR_EVAL)
-    parser.add_argument("--device", default="auto", help="auto=cuda if available else cpu")
+    parser.add_argument("--device", default="cuda", help="cuda (default, fails fast if unavailable) | cpu (explicit, slow)")
     parser.add_argument("--force", action="store_true", help="ignore checkpoints, rerun all repeats")
     parser.add_argument("--output", type=Path, default=c.RESULTS / "ocr_selection.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
@@ -73,8 +73,7 @@ def main() -> None:
             return
 
         setup_seed(args.seed)
-        import torch
-        device = args.device if args.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
+        device = resolve_device(args.device)
         print(f"[select-ocr] device={device}", flush=True)
         results: dict = {
             "runs": args.repeats,

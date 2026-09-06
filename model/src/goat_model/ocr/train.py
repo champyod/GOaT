@@ -33,7 +33,7 @@ from goat_model.constants import (
     THAITROCR_MODEL_ID,
 )
 from goat_model.metrics import cer
-from goat_model.utils import log_call, LogProgress, setup_seed, trainer_heartbeat, write_json
+from goat_model.utils import log_call, LogProgress, resolve_device, setup_seed, trainer_heartbeat, write_json
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
@@ -168,7 +168,7 @@ def run_ocr_finetune(
             model = VisionEncoderDecoderModel.from_pretrained(THAITROCR_MODEL_ID)
             model.config.decoder_start_token_id = processor.tokenizer.cls_token_id
             model.config.pad_token_id = processor.tokenizer.pad_token_id
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = resolve_device("cuda")
             model = model.to(device)
 
             out_dir = out_root / f"lr{lr}_bs{batch}"

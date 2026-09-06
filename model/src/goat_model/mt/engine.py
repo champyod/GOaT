@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from goat_model.constants import SEED
-from goat_model.utils import have, log_call
+from goat_model.utils import have, log_call, resolve_device
 
 NLLB_HF_IDS = {
     "NLLB-200-distilled-600M": "facebook/nllb-200-distilled-600M",
@@ -45,7 +45,7 @@ class NLLBTransformers(MTBackend):
         beam: int = 4,
         max_length: int = 256,
         length_penalty: float = 1.0,
-        device: str = "cpu",
+        device: str = "cuda",
         seed: int = SEED,
     ) -> None:
         self.model_name = model_name
@@ -115,11 +115,12 @@ def get_mt(
     beam: int = 4,
     max_length: int = 256,
     length_penalty: float = 1.0,
-    device: str = "cpu",
+    device: str = "cuda",
     seed: int = SEED,
 ) -> MTBackend:
     if model_name not in NLLB_HF_IDS:
         raise ValueError(f"unknown MT model {model_name!r}; expected one of {sorted(NLLB_HF_IDS)}")
+    device = resolve_device(device)
     return NLLBTransformers(
         model_name=model_name,
         src_lang=src_lang,

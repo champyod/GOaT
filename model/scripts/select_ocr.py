@@ -19,7 +19,7 @@ from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
-from goat_model.utils import log_call, setup_seed, write_json
+from goat_model.utils import log_call, resolve_device, setup_seed, write_json
 
 
 @log_call
@@ -45,7 +45,7 @@ def main() -> None:
         for dataset in c.OCR_DATASETS:
             dataset_dir = c.OCR_EVAL / dataset
             assets = evaluate.discover_assets(dataset_dir)
-            backend = get_ocr(model, device="cpu", seed=args.seed)
+            backend = get_ocr(model, device=resolve_device("cuda"), seed=args.seed)
             img_size = c.OCR_IMG_SIZE[model]
             runs = [
                 evaluate.run_ocr(backend, assets, img_size, seed=args.seed)

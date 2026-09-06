@@ -19,7 +19,7 @@ from goat_model import constants as c
 from goat_model.metrics import bootstrap_ci, summarize
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
-from goat_model.utils import log_call, setup_seed, write_json
+from goat_model.utils import log_call, resolve_device, setup_seed, write_json
 
 
 @log_call
@@ -30,7 +30,7 @@ def main() -> None:
     parser.add_argument("--tgt", choices=("th", "en"), default="th")
     parser.add_argument("--dataset", choices=("flores200",), default="flores200")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", default="cuda", help="cuda (default, fails fast if unavailable) | cpu (explicit, slow)")
     parser.add_argument("--beam", type=int, default=c.MT_BEAM_SIZE)
     parser.add_argument("--max_len", type=int, default=c.MT_MAX_LENGTH)
     parser.add_argument("--length_penalty", type=float, default=c.MT_LENGTH_PENALTY)
@@ -38,6 +38,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=c.SEED)
     parser.add_argument("--repeats", type=int, default=c.MT_N_RUNS)
     args = parser.parse_args()
+    args.device = resolve_device(args.device)
 
     setup_seed(args.seed)
     src_file = c.MT_TEST / f"{args.dataset}.{args.src}"

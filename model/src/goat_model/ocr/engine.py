@@ -12,7 +12,7 @@ from typing import Protocol
 import numpy as np
 
 from goat_model.constants import SEED
-from goat_model.utils import have, log_call
+from goat_model.utils import have, log_call, resolve_device
 
 
 @dataclass
@@ -34,8 +34,8 @@ class PaddleOCRv5(OCRBackend):
 
     name = "PP-OCRv5-mobile"
 
-    def __init__(self, device: str = "cpu", seed: int = SEED) -> None:
-        self.device = device
+    def __init__(self, device: str = "cuda", seed: int = SEED) -> None:
+        self.device = resolve_device(device)
         self.seed = seed
         self._engine = None
 
@@ -86,8 +86,8 @@ class ThaiTrOCR(OCRBackend):
     model_id = "openthaigpt/thai-trocr"
     img_size = 384
 
-    def __init__(self, device: str = "cpu", seed: int = SEED) -> None:
-        self.device = device
+    def __init__(self, device: str = "cuda", seed: int = SEED) -> None:
+        self.device = resolve_device(device)
         self.seed = seed
         self._model = None
         self._processor = None
@@ -128,7 +128,8 @@ BACKENDS = {"PP-OCRv5-mobile": PaddleOCRv5, "ThaiTrOCR": ThaiTrOCR}
 
 
 @log_call
-def get_ocr(model: str, device: str = "cpu", seed: int = SEED) -> OCRBackend:
+def get_ocr(model: str, device: str = "cuda", seed: int = SEED) -> OCRBackend:
     if model not in BACKENDS:
         raise ValueError(f"unknown OCR model {model!r}; expected one of {sorted(BACKENDS)}")
+    device = resolve_device(device)
     return BACKENDS[model](device=device, seed=seed)
