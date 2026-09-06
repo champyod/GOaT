@@ -40,14 +40,15 @@ watch -n 3 'tail -n 30 /tmp/goat_training_log.txt; echo ---; free -h | head -2; 
 ```
 Isolated rerun of one script:
 ```bash
-uv run python scripts/generate_synthetic.py --out $DATA_ROOT/synthetic --debug
+uv run python scripts/generate_synthetic.py --out /tmp/goat_synth_data/synthetic --debug
 ```
 # generate_synthetic downloads the 10k SynthTIGER images from the HF
 # dataset (KunanonKhai/Synthetic-GOaT-OCR), flattens them, then 70/15/15
-# splits into $DATA_ROOT/{train,val,test} for train_ocr.
+# splits into /tmp/goat_synth_data/{train,val,test} for train_ocr.
+# Synth never touches Drive (local-only, so log/result syncing never contends).
 # train_mt skips when mt_training.json already exists (already-trained guard).
 
 ## Common
-- Resume: `git pull` pulls new code; partials resume same VM and new VM (Drive).
+- Resume: `git pull` pulls new code; partials resume same VM (/tmp); new VM re-pulls deterministic HF data.
 - Logs: `/tmp/*` fast, Drive `logs/` every 5m.
 - Keep host: `while true; do echo "--- $(date) ---"; colab exec -s goat <<< "print('ping')" >/dev/null 2>&1; colab sessions; colab status -s goat 2>&1 | head -5; sleep 30; done`

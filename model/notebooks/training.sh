@@ -46,6 +46,11 @@ ART_OCR="$(PYTHONPATH=src python3 -c 'from goat_model.constants import ART_OCR; 
 MT_DATA="$(PYTHONPATH=src python3 -c 'from goat_model.constants import DRIVE_PATHS; print(DRIVE_PATHS["mt"])')"
 RESULTS="$(PYTHONPATH=src python3 -c 'from goat_model.constants import DRIVE_PATHS; print(DRIVE_PATHS["results"])')"
 DATA_ROOT="$(PYTHONPATH=src python3 -c 'from goat_model.constants import DRIVE_PATHS; print(DRIVE_PATHS["data_root"])')"
+# Synth data stays fully local: HF is the persistent source, and 10k-file
+# Drive traffic contends with log/result syncing. Only small result JSONs
+# ($RESULTS) ever touch Drive in this script.
+LOCAL_SYNTH="/tmp/goat_synth_data"
+mkdir -p "$LOCAL_SYNTH"
 
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -58,8 +63,8 @@ uv sync --extra ocr --extra mt --extra train
 PYTHONPATH=src uv run python -c "import cv2" $DEBUG_ARGS 2>/dev/null || (apt-get update -qq && apt-get install -y -q libgl1 libglib2.0-0)
 
 uv run python notebooks/training/train_mt.py --mt-dir "$MT_DATA" --selection "$RESULTS/mt_selection.json" --output "$RESULTS/mt_training.json" --out-root "$ART_MT" --seed "$SEED" $DEBUG_ARGS
-uv run python scripts/generate_synthetic.py --out "$DATA_ROOT/synthetic" --real "$DATA_ROOT/real" $DEBUG_ARGS
-uv run python notebooks/training/train_ocr.py --selection "$RESULTS/ocr_selection.json" --data-root "$DATA_ROOT" --output "$RESULTS/ocr_training.json" --out-root "$ART_OCR" --seed "$SEED" $DEBUG_ARGS
+uv run python scripts/generate_synthetic.py --out "$LOCAL_SYNTH/synthetic" --real "$DATA_ROOT/real" $DEBUG_ARGS
+uv run python notebooks/training/train_ocr.py --selection "$RESULTS/ocr_selection.json" --data-root "$LOCAL_SYNTH" --output "$RESULTS/ocr_training.json" --out-root "$ART_OCR" --seed "$SEED" $DEBUG_ARGS
 
 echo "Done"
 ls -lh "$RESULTS/" 2>&1
