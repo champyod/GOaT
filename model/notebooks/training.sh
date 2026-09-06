@@ -31,6 +31,12 @@ export HF_HUB_CACHE="$DRIVE/hf_cache"
 # so logs read correctly with plain `tail`, no `tr`/`grep` post-processing.
 export TQDM_DISABLE=1
 
+# Witness for vanishing jobs: every python dumps a traceback on fatal signals,
+# and the shell logs signal/exit receipt with timestamps (preemption/OOM leaves a mark).
+export PYTHONFAULTHANDLER=1
+trap 'echo "[trap] training.sh got TERM/INT at $(date -u +%FT%TZ)" >&2; exit 143' TERM INT
+trap 'code=$?; echo "[trap] training.sh exiting code=$code at $(date -u +%FT%TZ)" >&2' EXIT
+
 # Install (dual path, same set): primary `colab install -s goat -r requirements.txt`
 # from laptop once; fallback below (uv sync) still runs so sh works when skipped.
 # Mirrors ipynb %pip cell — both install the same extras.

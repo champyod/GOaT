@@ -15,9 +15,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from goat_model.utils import write_json
+from goat_model.utils import log_call, write_json
 
 
+@log_call
 def main() -> None:
     parser = argparse.ArgumentParser(description="1 Hz RSS sampler for RAM measurement.")
     parser.add_argument("--pid", type=int, default=None, help="process to monitor (default: self)")
