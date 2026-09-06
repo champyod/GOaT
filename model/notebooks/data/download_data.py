@@ -101,7 +101,7 @@ def main() -> None:
                 _err_path = str(_err_out) + ".error.json"
                 from pathlib import Path as _P
                 _P(_err_path).write_text(json.dumps({"error": str(err), "kind": "download_data", "input": str(inp), "output": str(_err_out)}, indent=2))
-                print(f"[error] wrote {{_err_path}}", flush=True)
+                print(f"[error] wrote {_err_path}", flush=True)
             except Exception:
                 pass
         raise SystemExit(1)

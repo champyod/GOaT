@@ -56,7 +56,7 @@ def _build_dataset(split_dir: Path, processor: TrOCRProcessor, img_size: int) ->
                 PILImage.open(ex["image"]).convert("RGB").resize((img_size, img_size)),
                 return_tensors="pt",
             ).pixel_values[0],
-            "labels": processor(ex["text"], return_tensors="pt").input_ids[0],
+            "labels": processor.tokenizer(ex["text"], return_tensors="pt").input_ids[0],
         }
 
     # keep "text": run_ocr_finetune reads test refs from it after mapping
