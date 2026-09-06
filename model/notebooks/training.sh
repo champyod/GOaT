@@ -20,6 +20,9 @@ done
 DRIVE="${DRIVE:-/content/drive/MyDrive/GOaT}"
 cd "$PROJECT"
 
+# Secrets without re-export: model/.env (gitignored; template: model/.env.example).
+if [ -f "$PROJECT/.env" ]; then set -a; . "$PROJECT/.env"; set +a; fi
+
 # Model + dataset weights cache on Drive: first run downloads (needs
 # HF_TOKEN for gated sets), reruns reuse with no re-download. Local SSD
 # would be faster per-file, but persistence across VMs wins by GBs.

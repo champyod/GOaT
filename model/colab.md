@@ -7,7 +7,9 @@ colab drivemount -s goat
 colab console -s goat
 ```
 ```bash
-export HF_TOKEN=hf_...
+[ -f /content/GOaT/model/.env ] || cp /content/GOaT/model/.env.example /content/GOaT/model/.env
+# fill HF_TOKEN (+ webhook URL) in /content/GOaT/model/.env once — picked up
+# automatically, no re-export on every new console
 [ -d /content/GOaT/.git ] || git clone --depth 1 https://github.com/champyod/GOaT.git /content/GOaT
 git -C /content/GOaT pull --ff-only
 mkdir -p /content/drive/MyDrive/GOaT/logs
@@ -46,11 +48,18 @@ Isolated single-script rerun:
 ```bash
 uv run python scripts/generate_synthetic.py --out /tmp/goat_synth_data/synthetic --debug
 ```
-# generate_synthetic downloads the 10k SynthTIGER images from the HF
-# dataset (KunanonKhai/Synthetic-GOaT-OCR), flattens them, then 70/15/15
-# splits into /tmp/goat_synth_data/{train,val,test} for train_ocr.
-# Synth never touches Drive (local-only, so log/result syncing never contends).
-# train_mt skips when mt_training.json already exists (already-trained guard).
+Notes:
+- generate_synthetic downloads the 10k SynthTIGER images from the HF dataset (KunanonKhai/Synthetic-GOaT-OCR), flattens them, then 70/15/15 splits into /tmp/goat_synth_data/{train,val,test} for train_ocr.
+- Synth never touches Drive (local-only, so log/result syncing never contends).
+- train_mt skips when mt_training.json already exists (already-trained guard).
+
+## Host watchdog
+From any machine that can read the log file (live `/tmp/*.txt` or the Drive-synced `logs/` copy), watch for errors, clean finish, or silence (possible dead host):
+```bash
+export DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...  # or model/.env on this host
+python /path/to/GOaT/model/scripts/host_watchdog.py --log /tmp/goat_training_log.txt --job training --silence 600
+```
+Tune with `--error-pattern` / `--done-pattern` (repeatable), `--poll` seconds. Exit 0 on done, 2 on silence timeout. Notifications are fail-open: a dead webhook never stops the watch.
 
 ## Common
 - Resume: `git pull` pulls new code; partials resume same VM (/tmp); new VM re-pulls deterministic HF data.

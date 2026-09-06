@@ -21,7 +21,7 @@ from goat_model.data import dataset_revisions
 from goat_model.metrics import cohens_d, paired_t_test, summarize
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
-from goat_model.utils import LogProgress, log_call, resolve_device, setup_seed, write_json
+from goat_model.utils import LogProgress, load_dotenv, log_call, resolve_device, setup_seed, write_json
 
 
 @log_call
@@ -55,6 +55,7 @@ def _flush_partial(path: Path, seed: int, repeats: int, bleu, lat, hyp) -> None:
 
 @log_call
 def main() -> None:
+    load_dotenv()
     parser = argparse.ArgumentParser(
         description="MT selection experiment (BLEU/latency decision rule)."
     )

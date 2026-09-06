@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from goat_model import constants as c
 from goat_model.data import split_ocr
 from goat_model.synth_ocr import _build_manifest, flatten_synthetic
-from goat_model.utils import LogProgress, copy_replace, log_call
+from goat_model.utils import LogProgress, copy_replace, load_dotenv, log_call
 
 
 def _sync_tree(src: Path, dst: Path) -> tuple[int, int]:
@@ -42,6 +42,7 @@ def _sync_tree(src: Path, dst: Path) -> tuple[int, int]:
 
 @log_call
 def main() -> None:
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Download + split synthetic OCR data.")
     parser.add_argument("--out", type=Path, default=c.SYNTHETIC)
     parser.add_argument("--real", type=Path, default=c.REAL)

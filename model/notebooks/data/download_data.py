@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
+from goat_model.utils import load_dotenv
 from goat_model.utils import log_call
 from goat_model.data import (
     download_flores200,
@@ -39,6 +40,7 @@ def _has_images(out_dir: Path) -> bool:
 
 @log_call
 def main() -> None:
+    load_dotenv()
     print(f"[wrapper] {Path(__file__).name} start", flush=True)
     parser = argparse.ArgumentParser(description="Download/ingest GOaT datasets.")
     parser.add_argument(

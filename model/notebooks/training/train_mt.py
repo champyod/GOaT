@@ -17,11 +17,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
-from goat_model.utils import log_call, setup_seed
+from goat_model.utils import load_dotenv, log_call, setup_seed
 
 
 @log_call
 def main() -> None:
+    load_dotenv()
     parser = argparse.ArgumentParser(description="LoRA fine-tuning for NLLB-600M (selection winner).")
     parser.add_argument("--mt-dir", type=Path, default=c.DATA / "mt")
     parser.add_argument("--selection", type=Path, default=c.RESULTS / "mt_selection.json")
