@@ -12,24 +12,24 @@ import numpy as np
 
 
 def log_call(fn):
-    import functools, traceback, os
-    from goat_model.log import debug as _dbg, error as _err, info as _info
+    import functools, logging, traceback
+    from goat_model.log import configure, debug as _dbg, error as _err, info as _info
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        is_debug = "--debug" in sys.argv or os.environ.get("GOAT_DEBUG") == "1"
+        is_debug = configure().isEnabledFor(logging.DEBUG)
         if is_debug:
-            _dbg(fn.__name__, f"args={args} kwargs={kwargs}")
+            _dbg(fn.__name__, "enter", args=args, kwargs=kwargs)
         else:
-            _info(fn.__name__)
+            _info(fn.__name__, "enter")
         try:
             res = fn(*args, **kwargs)
             if is_debug:
-                _dbg(fn.__name__, f"-> {type(res).__name__ if res is not None else 'None'}")
+                _dbg(fn.__name__, "exit", result=type(res).__name__ if res is not None else "None")
             else:
-                _info(fn.__name__)
+                _info(fn.__name__, "exit")
             return res
         except Exception as e:
-            _err(fn.__name__, str(e))
+            _err(fn.__name__, "error", message=str(e))
             if is_debug:
                 print(traceback.format_exc(), flush=True, file=sys.stderr)
             raise
@@ -101,14 +101,17 @@ class LogProgress:
             el = now - self.t0
             rate = self.n / el if el > 0 else 0.0
             eta = (self.total - self.n) / rate if rate > 0 else -1.0
-            suffix = ""
-            if self.in_path or self.out_path:
-                suffix = f" | in={self.in_path or '?'} out={self.out_path or '?'}"
-            print(
-                f"[{self.desc}] {self.n}/{self.total} {self.unit} "
-                f"elapsed={el:.0f}s eta={eta:.0f}s rate={rate:.1f}/s{suffix}",
-                flush=True,
-            )
+            from goat_model.log import info as _info
+            kv: dict = {
+                "elapsed": round(el),
+                "eta": round(eta),
+                "rate": round(rate, 1),
+            }
+            if self.in_path:
+                kv["in"] = self.in_path
+            if self.out_path:
+                kv["out"] = self.out_path
+            _info(self.desc, f"{self.n}/{self.total} {self.unit}", **kv)
 
     def close(self) -> None:
         if self.bar is not None:
@@ -139,10 +142,13 @@ def trainer_heartbeat(desc="train", interval_s=60.0):
             if state.log_history:
                 loss = state.log_history[-1].get("loss", state.log_history[-1].get("eval_loss"))
             total = state.max_steps or "?"
-            print(
-                f"[{desc}] step {state.global_step}/{total} epoch={state.epoch:.2f} "
-                f"loss={loss} elapsed={now - self.t0:.0f}s",
-                flush=True,
+            from goat_model.log import info as _info
+            _info(
+                desc,
+                f"step {state.global_step}/{total}",
+                epoch=round(state.epoch, 2) if state.epoch is not None else None,
+                loss=loss,
+                elapsed=round(now - self.t0),
             )
             return control
 
