@@ -35,6 +35,14 @@ def main() -> None:
     manifest_path = args.out / "manifest.json"
     manifest = _build_manifest(args.out) if manifest_path.is_file() else {}
     if manifest:
+        bad = [
+            key for key in manifest
+            if not (gen_dir / key).is_file() or (gen_dir / key).stat().st_size == 0
+        ]
+        if bad:
+            print(f"[fetch] {len(bad)} missing/corrupt entries, re-downloading ...", flush=True)
+            manifest = {}
+    if manifest:
         print(f"downloaded dataset already present - reusing {args.out} ({len(manifest)} images)")
     else:
         try:
