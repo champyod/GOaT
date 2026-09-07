@@ -72,17 +72,38 @@ def main() -> None:
             ) from err
 
         import tarfile
+        import threading
+        import time
 
         _info("synthetic", "tar download", repo=c.OCR_SYNTHETIC_REPO_ID, revision=TAR_REVISION, file=TAR_FILE)
-        tar_path = hf_hub_download(
-            repo_id=c.OCR_SYNTHETIC_REPO_ID,
-            repo_type="dataset",
-            revision=TAR_REVISION,
-            filename=TAR_FILE,
-        )
+        stop = threading.Event()
+        t0 = time.monotonic()
+
+        def _dl_watch():
+            while not stop.wait(3.0):
+                _info("fetch", "downloading tar ...", elapsed=round(time.monotonic() - t0))
+
+        watcher = threading.Thread(target=_dl_watch, daemon=True)
+        watcher.start()
+        try:
+            tar_path = hf_hub_download(
+                repo_id=c.OCR_SYNTHETIC_REPO_ID,
+                repo_type="dataset",
+                revision=TAR_REVISION,
+                filename=TAR_FILE,
+            )
+        finally:
+            stop.set()
+            watcher.join(timeout=1.0)
+        _info("synthetic", "tar downloaded", mb=round(Path(tar_path).stat().st_size / 1048576), path=str(tar_path))
         gen_dir.mkdir(parents=True, exist_ok=True)
         with tarfile.open(tar_path, "r") as tf:
-            tf.extractall(gen_dir)
+            members = tf.getmembers()
+            xprog = LogProgress(len(members), "extract", unit="files", interval_s=3.0, in_path=str(tar_path), out_path=str(gen_dir))
+            for m in members:
+                tf.extract(m, gen_dir)
+                xprog.update()
+            xprog.close()
         manifest = _build_manifest(args.out)
         if not manifest:
             raise SystemExit(
