@@ -34,6 +34,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+WATCHDOG_VERSION = "2026-09-07-unified-clock"
+
 try:  # pipeline logging when run inside the model tree
     from goat_model.log import error as _err
     from goat_model.log import info as _info
@@ -230,8 +232,10 @@ def main() -> int:
     # Sync clock: explicit sync file when given, else the watched log's own
     # mtime. Either way idle/sync share one clock, one unit, one threshold set.
     sync_source = args.sync_file if args.sync_file is not None else path
+    _info("watchdog", f"starting version={WATCHDOG_VERSION}", job=args.job,
+          clock=str(sync_source), silence=args.silence, downtime=args.downtime)
     _info("watchdog", f"watching {path}", silence=args.silence, poll=args.poll)
-    _send(webhook, f"watching {args.job} started", title="Watch started", color=0x5865F2)
+    _send(webhook, f"watching {args.job} started (v{WATCHDOG_VERSION})", title="Watch started", color=0x5865F2)
 
     offset = path.stat().st_size if path.is_file() else 0
     last_growth = time.monotonic()
