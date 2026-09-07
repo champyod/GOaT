@@ -1,7 +1,9 @@
 #!/bin/bash
 # sync-goat: pull a VM training log to this Pi for tools/host_watchdog.py.
-# - Appends only the tail each poll; touches a sync heartbeat file on success
-#   so the watchdog can tell "VM quiet" apart from "sync stalled".
+# - Appends only the tail each poll; touches the sync heartbeat file on EVERY
+#   poll (success or fail) so its mtime = last attempt; the watchdog compares
+#   it against log growth to tell "VM quiet" apart from "sync dead".
+# - Fetch failures print to this script's console only, never into the log.
 # - Defaults match the watchdog: out defaults to ~/synced/goat.log,
 #   sync-file defaults to <out-dir>/.sync_ok.
 # Usage: bash tools/sync-goat.sh --vm-log /tmp/goat_training_log.txt [--session goat]
@@ -44,10 +46,10 @@ PY
         echo "[$TS] fetch failed: $(printf '%s' "$CHUNK" | head -c 300)" >&2
     elif [ -n "$CLEAN" ]; then
         printf '%s\n' "$CLEAN" >> "$OUT"
-        touch "$SYNC_FILE"
         echo "[$TS] synced ${#CLEAN}B total=$(wc -c < "$OUT")B -> $OUT"
     else
         echo "[$TS] miss: $(head -c 300 /tmp/sync-goat.err)"
     fi
+    touch "$SYNC_FILE"
     sleep "$INTERVAL"
 done

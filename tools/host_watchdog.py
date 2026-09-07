@@ -27,6 +27,7 @@ either way it is never logged).
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import re
 import sys
@@ -107,6 +108,31 @@ def _load_dotenv() -> None:
             val = val.strip().strip("\'").strip('"')
             if key and key not in _os.environ:
                 _os.environ[key] = val
+
+
+_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})")
+
+
+def _content_time(chunk: str) -> float | None:
+    """Newest ISO line timestamp in a chunk (epoch) or None.
+
+    Normalized log lines carry the VM's own clock, so VM silence measured
+    here stays true even when the sync itself lags behind.
+    """
+    best: float | None = None
+    for line in chunk.splitlines():
+        match = _TS_RE.match(line.strip())
+        if match is None:
+            continue
+        try:
+            ts = datetime.datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%S").replace(
+                tzinfo=datetime.timezone.utc
+            ).timestamp()
+        except ValueError:
+            continue
+        if best is None or ts > best:
+            best = ts
+    return best
 
 
 def _matches_any(line: str, patterns: list[str]) -> str | None:
@@ -219,19 +245,20 @@ def main() -> int:
     parser.add_argument("--downtime", type=float, default=3600.0,
                         help="seconds without growth = really-down error (latched, never exits; must exceed --silence)")
     parser.add_argument("--sync-file", type=Path, default=None,
-                        help="touch-file the sync loop updates on each success; "
-                             "omit to use the watched log file's own mtime as the sync clock")
+                        help="touch-file the sync loop updates on every poll; "
+                             "omit for <log-dir>/.sync_ok (the sync-goat.sh default)")
     parser.add_argument("--poll", type=float, default=15.0, help="poll interval seconds")
     args = parser.parse_args()
 
     _load_dotenv()
     webhook = args.webhook or os.environ.get("DISCORD_WEBHOOK_URL", "")
     path = args.log.expanduser()
+    # Sync clock stays independent from the log clock: explicit sync file when
+    # given, else the sync loop's default heartbeat next to the watched log.
     if args.sync_file is not None:
-        args.sync_file = args.sync_file.expanduser()
-    # Sync clock: explicit sync file when given, else the watched log's own
-    # mtime. Either way idle/sync share one clock, one unit, one threshold set.
-    sync_source = args.sync_file if args.sync_file is not None else path
+        sync_source = args.sync_file.expanduser()
+    else:
+        sync_source = path.parent / ".sync_ok"
     _info("watchdog", f"starting version={WATCHDOG_VERSION}", job=args.job,
           clock=str(sync_source), silence=args.silence, downtime=args.downtime)
     _info("watchdog", f"watching {path}", silence=args.silence, poll=args.poll)
@@ -239,6 +266,7 @@ def main() -> int:
 
     offset = path.stat().st_size if path.is_file() else 0
     last_growth = time.monotonic()
+    last_content: float | None = None
     last_progress: str | None = None
     last_event: str | None = None  # "error" | "ok": status of the last reported chunk
     finished = False
@@ -268,17 +296,24 @@ def main() -> int:
                     _info("watchdog", "recovered, job alive again")
                 last_event = "ok"
             finished = finished or done
+            ts = _content_time(chunk)
+            if ts is not None:
+                last_content = ts
         idle = time.monotonic() - last_growth
+        # VM clock comes from content timestamps when the log carries them
+        # (immune to sync lag); falls back to growth age otherwise.
+        vm_idle = (time.time() - last_content) if last_content is not None else idle
+        vm_kv = {"vm": _fmt_age(vm_idle)} if last_content is not None else {}
         sync_idle, sync_at = _sync_age(sync_source)
         sync_kv = {} if sync_idle is None else {"sync_idle": _fmt_age(sync_idle), "sync_at": sync_at}
         sync_fresh = sync_idle is None or sync_idle < args.silence
         state = _heartbeat_state(finished=finished, last_event=last_event)
         if last_progress is not None:
             _info("watchdog", state, idle=_fmt_age(idle), size=size, offset=offset,
-                  **sync_kv, last=last_progress[:200])
+                  **sync_kv, **vm_kv, last=last_progress[:200])
         else:
             _info("watchdog", state, idle=_fmt_age(idle), size=size, offset=offset,
-                  **sync_kv)
+                  **sync_kv, **vm_kv)
         if not sync_fresh:
             # idle == now - last sync here; same clock and units as the heartbeat.
             stale = sync_idle if sync_idle is not None else idle
@@ -296,15 +331,15 @@ def main() -> int:
         sync_warned = sync_down_alerted = False
         if finished or last_event == "error":
             continue  # silence after done/crash is expected; never alert, never exit
-        if idle >= args.downtime and not down_alerted:
+        if vm_idle >= args.downtime and not down_alerted:
             down_alerted = True
             warned = True
-            _err("watchdog", "host is down", idle=_fmt_age(idle), downtime=_fmt_age(args.downtime))
-            _send(webhook, f"{args.job} DOWN {_fmt_age(idle)} - host is down", title="Host down", color=0xFF0000, ping=True)
-        elif idle >= args.silence and not warned:
+            _err("watchdog", "host is down", idle=_fmt_age(vm_idle), downtime=_fmt_age(args.downtime))
+            _send(webhook, f"{args.job} DOWN {_fmt_age(vm_idle)} - host is down", title="Host down", color=0xFF0000, ping=True)
+        elif vm_idle >= args.silence and not warned:
             warned = True
-            _warn("watchdog", "host may be down", idle=_fmt_age(idle), silence=_fmt_age(args.silence))
-            _send(webhook, f"{args.job} MAYBE-DOWN {_fmt_age(idle)} - host may be down", title="Host may be down", color=0xFFA500, ping=True)
+            _warn("watchdog", "host may be down", idle=_fmt_age(vm_idle), silence=_fmt_age(args.silence))
+            _send(webhook, f"{args.job} MAYBE-DOWN {_fmt_age(vm_idle)} - host may be down", title="Host may be down", color=0xFFA500, ping=True)
 
 
 if __name__ == "__main__":
