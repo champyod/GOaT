@@ -29,10 +29,6 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=c.SEED)
     args = parser.parse_args()
 
-    for part in ("train", "val", "test"):
-        if not (args.mt_dir / part).is_dir() and not (args.mt_dir / f"{part}.en").is_file():
-            raise RuntimeError(f"run scripts/download_data.py --dataset scb-mt first (missing {args.mt_dir}/{part})")
-
     try:
         import peft  # noqa: F401
     except ImportError as err:
