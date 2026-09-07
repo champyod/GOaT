@@ -40,7 +40,9 @@ except Exception as e:
 PY
 )
     CLEAN=$(printf '%s' "$CHUNK" | grep -v '^\[colab\]' | tail -c 8000)
-    if [ -n "$CLEAN" ]; then
+    if printf '%s' "$CHUNK" | grep -q '^\[sync-miss\]'; then
+        echo "[$TS] fetch failed: $(printf '%s' "$CHUNK" | head -c 300)" >&2
+    elif [ -n "$CLEAN" ]; then
         printf '%s\n' "$CLEAN" >> "$OUT"
         touch "$SYNC_FILE"
         echo "[$TS] synced ${#CLEAN}B total=$(wc -c < "$OUT")B -> $OUT"
