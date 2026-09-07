@@ -4,7 +4,7 @@
 #   a stale token looks exactly like a dead session).
 # - Exits (no spin) when the VM is truly gone from the server.
 # - Backs off on rapid failures; resets after a healthy connection.
-# Usage: bash model/scripts/console-keep.sh [-s NAME]
+# Usage: bash tools/console-keep.sh [-s NAME]
 set -u
 NAME="${2:-goat}"
 CLI_PY="$HOME/.local/share/uv/tools/google-colab-cli/bin/python"

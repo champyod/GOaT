@@ -57,7 +57,7 @@ Notes:
 From any machine that can read the log file (live `/tmp/*.txt` or the Drive-synced `logs/` copy), watch for errors, clean finish, or silence (possible dead host):
 ```bash
 export DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...  # or model/.env on this host
-python /path/to/GOaT/model/scripts/host_watchdog.py --log /tmp/goat_training_log.txt --job training --silence 600
+python /path/to/GOaT/tools/host_watchdog.py --log /tmp/goat_training_log.txt --job training --silence 600
 ```
 Tune with `--error-pattern` / `--done-pattern` (repeatable), `--poll` seconds. Exit 0 on done, 2 on silence timeout. Notifications are fail-open: a dead webhook never stops the watch.
 
