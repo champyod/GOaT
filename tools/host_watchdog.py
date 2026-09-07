@@ -232,7 +232,7 @@ def main() -> int:
     last_progress: str | None = None
     last_event: str | None = None  # "error" | "ok": status of the last reported chunk
     finished = False
-    warned = down_alerted = sync_warned = False
+    warned = down_alerted = sync_warned = sync_down_alerted = False
     if args.downtime <= args.silence:
         _warn("watchdog", "downtime alert disabled, must exceed silence",
               downtime=args.downtime, silence=args.silence)
@@ -243,7 +243,7 @@ def main() -> int:
         chunk, size = _tail_new(path, offset)
         if chunk is not None:
             last_growth = time.monotonic()
-            warned = down_alerted = False
+            warned = down_alerted = sync_down_alerted = False
             offset = size
             progress, event, done = _ingest_chunk(
                 chunk, job=args.job, webhook=webhook,
@@ -270,11 +270,20 @@ def main() -> int:
             _info("watchdog", state, idle=_fmt_age(idle), size=size, offset=offset,
                   **sync_kv)
         if not sync_fresh:
+            # idle == now - last sync here; same clock and units as the heartbeat.
+            stale = sync_idle if sync_idle is not None else idle
             if not sync_warned:
                 sync_warned = True
-                _warn("watchdog", "sync stalled, host state unknown", idle=_fmt_age(idle))
+                _warn("watchdog", "logs not sync", idle=_fmt_age(stale))
+                _send(webhook, f"{args.job} logs not sync for {_fmt_age(stale)}",
+                      title="Sync stalled", color=0xFFA500, ping=True)
+            if stale >= args.downtime and not sync_down_alerted:
+                sync_down_alerted = True
+                _err("watchdog", "sync down", idle=_fmt_age(stale), downtime=_fmt_age(args.downtime))
+                _send(webhook, f"{args.job} sync down idle after {_fmt_age(stale)}",
+                      title="Sync down", color=0xFF0000, ping=True)
             continue
-        sync_warned = False
+        sync_warned = sync_down_alerted = False
         if finished or last_event == "error":
             continue  # silence after done/crash is expected; never alert, never exit
         if idle >= args.downtime and not down_alerted:
