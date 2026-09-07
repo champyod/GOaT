@@ -211,7 +211,10 @@ def run_ocr_finetune(
                     EarlyStoppingCallback(early_stopping_patience=OCR_EARLY_STOP_PATIENCE),
                 ],
             )
-            trainer.train(resume_from_checkpoint=True)
+            from transformers.trainer_utils import get_last_checkpoint
+
+            last_ckpt = get_last_checkpoint(out_dir)
+            trainer.train(resume_from_checkpoint=last_ckpt if last_ckpt else False)
             model.save_pretrained(out_dir)
 
             val_cer = _infer_cer(model, test_ds, processor, batch, test_refs)

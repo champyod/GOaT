@@ -128,7 +128,10 @@ def run_mt_finetune(
                 out_dir = out_root / f"r{r}_alpha{alpha}_lr{lr}"
                 args = Seq2SeqTrainingArguments(output_dir=str(out_dir), learning_rate=lr, per_device_train_batch_size=MT_BATCH_SIZE, num_train_epochs=LORA_EPOCHS[1], optim="adamw_torch", eval_strategy="epoch", save_strategy="epoch", save_total_limit=1, load_best_model_at_end=True, metric_for_best_model="eval_bleu", greater_is_better=True, predict_with_generate=True, seed=seed, logging_steps=10, disable_tqdm=False)
                 trainer = Seq2SeqTrainer(model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds, processing_class=tokenizer, data_collator=collator, compute_metrics=compute_bleu, callbacks=[trainer_heartbeat("mt-train")])
-                trainer.train(resume_from_checkpoint=True)
+                from transformers.trainer_utils import get_last_checkpoint
+
+                last_ckpt = get_last_checkpoint(out_dir)
+                trainer.train(resume_from_checkpoint=last_ckpt if last_ckpt else False)
                 model.save_pretrained(out_dir)
 
                 ft_model = PeftModel.from_pretrained(AutoModelForSeq2SeqLM.from_pretrained(model_id).to(device), out_dir)
