@@ -163,6 +163,7 @@ def trainer_heartbeat(desc="train", interval_s=60.0):
         def __init__(self):
             self.t0 = time.monotonic()
             self.last = 0.0
+            self.eval_batches = 0
 
         def on_step_end(self, args, state, control, **kwargs):
             now = time.monotonic()
@@ -182,6 +183,22 @@ def trainer_heartbeat(desc="train", interval_s=60.0):
                 elapsed=round(now - self.t0),
             )
             return control
+
+        def on_prediction_step(self, args, state, control, **kwargs):
+            # Epoch-end generation (predict_with_generate) has no train steps;
+            # without this the log goes silent for tens of minutes per eval.
+            self.eval_batches += 1
+            now = time.monotonic()
+            if now - self.last < interval_s:
+                return
+            self.last = now
+            from goat_model.log import info as _info
+            _info(
+                desc,
+                "evaluating ...",
+                batches=self.eval_batches,
+                elapsed=round(now - self.t0),
+            )
 
     return _HeartbeatCallback()
 
