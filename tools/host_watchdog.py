@@ -121,7 +121,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Watch a batch log file and report to a webhook.")
     parser.add_argument("--log", type=Path, required=True, help="log file to tail")
     parser.add_argument("--webhook", default="", help="webhook URL (or DISCORD_WEBHOOK_URL env)")
-    parser.add_argument("--job", default="batch", help="job label used in messages")
+    parser.add_argument("--job", default="goat", help="job label used in Discord messages")
     # NOTE: bare "oom" (matches "room"), "inf" (matches "info") and "nan"
     # (matches "finance") deliberately excluded; covered by "out of memory",
     # "=inf" and "=nan" instead.
@@ -147,7 +147,7 @@ def main() -> int:
     _load_dotenv()
     webhook = args.webhook or os.environ.get("DISCORD_WEBHOOK_URL", "")
     path = args.log
-    _info("watchdog", f"watching {path}", job=args.job, silence=args.silence, poll=args.poll)
+    _info("watchdog", f"watching {path}", silence=args.silence, poll=args.poll)
     _send(webhook, f"watching {args.job} started", title="Watch started", color=0x5865F2)
 
     offset = path.stat().st_size if path.is_file() else 0
@@ -159,7 +159,7 @@ def main() -> int:
     down_alerted = False
     if args.downtime <= args.silence:
         _warn("watchdog", "downtime alert disabled, must exceed silence",
-              job=args.job, downtime=args.downtime, silence=args.silence)
+              downtime=args.downtime, silence=args.silence)
         args.downtime = float("inf")
     reported_errors: set[str] = set()
     while True:  # never exits on its own; Ctrl+C to stop
@@ -188,23 +188,23 @@ def main() -> int:
                 stripped = line.strip()
                 if not stripped:
                     continue
-                progress = re.sub(r"^\S+ (?:INFO|WARNING|ERROR) [\w-]+ ", "", stripped).strip()
+                progress = re.sub(r"^\S+ (?:INFO|WARNING|ERROR) ", "", stripped).strip()
                 last_progress = progress or stripped
                 hit = _matches_any(line, args.error_pattern)
                 if hit is not None and line not in reported_errors:
                     reported_errors.add(line)
                     chunk_has_error = True
                     last_event = "error"
-                    _err("watchdog", line.strip()[:200], job=args.job, match=hit)
+                    _err("watchdog", line.strip()[:200], match=hit)
                     _send(webhook, f"{args.job} ERROR ({hit}): {line.strip()[:1000]}", title="Training ERROR", color=0xFF0000, ping=True)
                     continue
                 if _matches_any(line, args.done_pattern) is not None:
                     finished = True
-                    _info("watchdog", line.strip()[:200], job=args.job, state="done")
+                    _info("watchdog", line.strip()[:200], state="done")
                     _send(webhook, f"{args.job} done", title="Training done", color=0x00FF00, ping=True)
             if not chunk_has_error:
                 if last_event == "error":
-                    _info("watchdog", "recovered, job alive again", job=args.job)
+                    _info("watchdog", "recovered, job alive again")
                 last_event = "ok"
         idle = time.monotonic() - last_growth
         if last_progress is not None:
@@ -214,19 +214,19 @@ def main() -> int:
             elif last_event == "error":
                 state = "stuck at error, waiting for recovery"
             _info("watchdog", state, idle=f"{idle:.0f}s", size=size, offset=offset,
-                  job=args.job, last=last_progress[:200])
+                  last=last_progress[:200])
         else:
-            _info("watchdog", "healthy", job=args.job, idle=f"{idle:.0f}s", size=size, offset=offset)
+            _info("watchdog", "healthy", idle=f"{idle:.0f}s", size=size, offset=offset)
         if finished or last_event == "error":
             continue  # silence after done/crash is expected; never alert, never exit
         if idle >= args.downtime and not down_alerted:
             down_alerted = True
             warned = True
-            _err("watchdog", "host is down", job=args.job, idle=f"{idle:.0f}s", downtime=args.downtime)
+            _err("watchdog", "host is down", idle=f"{idle:.0f}s", downtime=args.downtime)
             _send(webhook, f"{args.job} DOWN {idle:.0f}s - host is down", title="Host down", color=0xFF0000, ping=True)
         elif idle >= args.silence and not warned:
             warned = True
-            _warn("watchdog", "host may be down", job=args.job, idle=f"{idle:.0f}s", silence=args.silence)
+            _warn("watchdog", "host may be down", idle=f"{idle:.0f}s", silence=args.silence)
             _send(webhook, f"{args.job} MAYBE-DOWN {idle:.0f}s - host may be down", title="Host may be down", color=0xFFA500, ping=True)
 
 
