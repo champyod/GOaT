@@ -148,6 +148,7 @@ def main() -> int:
 
     offset = out.stat().st_size if out.is_file() else 0
     last_content: float | None = None
+    last_action: str | None = None
     last_ok = time.monotonic()
     fetch_warned = fetch_failed = vm_warned = vm_down = False
     finished = False
@@ -172,6 +173,7 @@ def main() -> int:
                 stripped = line.strip()
                 if not stripped:
                     continue
+                last_action = stripped
                 lowered = stripped.lower()
                 if any(p.lower() in lowered for p in args.error_pattern) and stripped not in reported:
                     reported.add(stripped)
@@ -190,18 +192,19 @@ def main() -> int:
         # ages: vm from content timestamps (fallback: local growth), fetch from attempts.
         vm_age = (now_wall - last_content) if last_content is not None else (now_mono - last_ok)
         fetch_age = now_mono - last_ok
+        action = f" last={(last_action[:160] if last_action else '-')}"
         _say("INFO", "watch",
-             f"healthy vm={_age(vm_age)} fetch={_age(fetch_age)} size={out.stat().st_size if out.is_file() else 0}")
+             f"healthy vm={_age(vm_age)} fetch={_age(fetch_age)} size={out.stat().st_size if out.is_file() else 0}{action}")
         if finished:
             return 0
         if vm_age >= args.downtime and not vm_down:
             vm_down = vm_warned = True
             _say("ERROR", "watch", f"vm silent {_age(vm_age)}")
-            _send(webhook, f"{args.job} DOWN {_age(vm_age)} - no log content", "Host down", 0xFF0000, True)
+            _send(webhook, f"{args.job} DOWN {_age(vm_age)} - no log content. Last action: {(last_action[:500] if last_action else '-')}", "Host down", 0xFF0000, True)
         elif vm_age >= args.silence and not vm_warned:
             vm_warned = True
             _say("WARNING", "watch", f"vm quiet {_age(vm_age)}")
-            _send(webhook, f"{args.job} quiet {_age(vm_age)} - no new log content",
+            _send(webhook, f"{args.job} quiet {_age(vm_age)} - no new log content. Last action: {(last_action[:500] if last_action else '-')}",
                   "Host may be down", 0xFFA500, True)
 
 
