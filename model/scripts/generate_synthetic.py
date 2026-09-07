@@ -23,24 +23,10 @@ from goat_model.synth_ocr import _build_manifest, flatten_synthetic
 from goat_model.log import error as _err
 from goat_model.log import info as _info
 from goat_model.log import warning as _warn
-from goat_model.utils import LogProgress, copy_replace, load_dotenv, log_call
+from goat_model.utils import LogProgress, load_dotenv, log_call
 
-
-def _sync_tree(src: Path, dst: Path) -> tuple[int, int]:
-    """Copy only new/changed files src -> dst (size-compare). Returns (copied, skipped)."""
-    copied = skipped = 0
-    for f in src.rglob("*"):
-        if not f.is_file():
-            continue
-        d = dst / f.relative_to(src)
-        if d.is_file() and d.stat().st_size == f.stat().st_size:
-            skipped += 1
-            continue
-        d.parent.mkdir(parents=True, exist_ok=True)
-        copy_replace(f, d)
-        copied += 1
-    _info("sync", "tree synced", copied=copied, skipped=skipped, src=str(src), dst=str(dst))
-    return copied, skipped
+TAR_FILE = "synth.tar"
+TAR_REVISION = "tar"
 
 
 @log_call
@@ -78,123 +64,25 @@ def main() -> None:
         _info("synthetic", "dataset present - reusing", out=str(args.out), images=len(manifest))
     else:
         try:
-            from huggingface_hub import snapshot_download
+            from huggingface_hub import hf_hub_download
         except ImportError as err:
             raise SystemExit(
                 "huggingface_hub not installed - add it to pyproject.toml and re-run `uv sync`, "
                 "then this script can fetch the synthetic dataset."
             ) from err
 
-        import time
-        from concurrent.futures import ThreadPoolExecutor
-        import concurrent.futures as _futures
+        import tarfile
 
-        # Stage in /tmp (fast local writes for 10k files), bulk-copy to Drive after.
-        # stage_dir persists across runs so snapshot_download resumes partials.
-        stage_dir = Path("/tmp/synth_dl")
-        stage_dir.mkdir(parents=True, exist_ok=True)
-        if gen_dir.is_dir():
-            _info("synthetic", "merging Drive progress", src=str(gen_dir), dst=str(stage_dir))
-            _sync_tree(gen_dir, stage_dir)
-        try:
-            from huggingface_hub import HfApi
-            info = HfApi().dataset_info(c.OCR_SYNTHETIC_REPO_ID)
-            total_mb = max(1, int((info.usedStorage or 0) // 1048576))
-            total_files = max(1, len(info.siblings or []))
-        except Exception:
-            total_mb = 0
-            total_files = 0
-        fetch_prog = (
-            LogProgress(total_mb, "fetch", unit="MB", interval_s=3.0, in_path=c.OCR_SYNTHETIC_REPO_ID, out_path=str(stage_dir))
-            if total_mb else None
+        _info("synthetic", "tar download", repo=c.OCR_SYNTHETIC_REPO_ID, revision=TAR_REVISION, file=TAR_FILE)
+        tar_path = hf_hub_download(
+            repo_id=c.OCR_SYNTHETIC_REPO_ID,
+            repo_type="dataset",
+            revision=TAR_REVISION,
+            filename=TAR_FILE,
         )
-        files_prog = (
-            LogProgress(total_files, "fetch-files", unit="files", interval_s=3.0, in_path=c.OCR_SYNTHETIC_REPO_ID, out_path=str(stage_dir))
-            if total_files else None
-        )
-        _info("synthetic", "snapshot download", repo=c.OCR_SYNTHETIC_REPO_ID, dst=str(stage_dir))
-        STALL_AFTER = 120.0
-        MAX_ATTEMPTS = 10
-        last_err: Exception | None = None
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            dl = {"size": 0, "moved": time.monotonic(), "t0": time.monotonic()}
-            ex = ThreadPoolExecutor(max_workers=1)
-
-            def _run_snapshot():
-                snapshot_download(
-                    repo_id=c.OCR_SYNTHETIC_REPO_ID,
-                    repo_type="dataset",
-                    local_dir=stage_dir,
-                    # 10k small files x default workers bursts the token endpoint
-                    # into 429s; 2 workers after 4-worker bursts still throttled.
-                    max_workers=2,
-                )
-
-            fut = ex.submit(_run_snapshot)
-            err: Exception | None = None
-            stalled = False
-            while True:
-                try:
-                    fut.result(timeout=3.0)
-                    break
-                except _futures.TimeoutError:
-                    pass
-                except Exception as e:
-                    err = e
-                    break
-                try:
-                    size = 0
-                    count = 0
-                    for p in stage_dir.rglob("*"):
-                        if p.is_file():
-                            count += 1
-                            try:
-                                size += p.stat().st_size
-                            except OSError:
-                                pass
-                except Exception:
-                    size = 0
-                    count = 0
-                now = time.monotonic()
-                if size > dl["size"]:
-                    dl["size"] = size
-                    dl["moved"] = now
-                if fetch_prog is not None:
-                    fetch_prog.update(max(0, size // 1048576 - fetch_prog.n))
-                else:
-                    _info("fetch", "downloading", repo=c.OCR_SYNTHETIC_REPO_ID, mb=round(size / 1048576),
-                          elapsed=round(now - dl["t0"]), dst=str(stage_dir))
-                if files_prog is not None:
-                    files_prog.update(max(0, count - files_prog.n))
-                if not fut.done() and now - dl["moved"] > STALL_AFTER:
-                    _warn("fetch", "stalled - abandoning attempt", stall_s=round(STALL_AFTER),
-                          mb=round(size / 1048576), attempt=f"{attempt}/{MAX_ATTEMPTS}")
-                    stalled = True
-                    break
-            if stalled:
-                # Leaked attempt thread may still write; snapshot moves finished
-                # files atomically so duplicates stay valid, newest wins.
-                ex.shutdown(wait=False, cancel_futures=True)
-                last_err = TimeoutError(f"fetch stalled {STALL_AFTER:.0f}s with no growth")
-            else:
-                ex.shutdown(wait=True)
-                last_err = err
-                if last_err is None:
-                    break
-                if not isinstance(last_err, (ConnectionError, TimeoutError, OSError)) and "429" not in str(last_err):
-                    raise last_err
-                wait = 30 * attempt
-                _warn("fetch", "attempt failed", attempt=f"{attempt}/{MAX_ATTEMPTS}", error=str(last_err), retry_s=wait)
-                time.sleep(wait)
-        if fetch_prog is not None:
-            fetch_prog.close()
-        if files_prog is not None:
-            files_prog.close()
-        if last_err is not None:
-            raise last_err
-        _info("synthetic", "staging", src=str(stage_dir), dst=str(gen_dir))
         gen_dir.mkdir(parents=True, exist_ok=True)
-        _sync_tree(stage_dir, gen_dir)
+        with tarfile.open(tar_path, "r") as tf:
+            tf.extractall(gen_dir)
         manifest = _build_manifest(args.out)
         if not manifest:
             raise SystemExit(
