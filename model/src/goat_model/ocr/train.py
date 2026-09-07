@@ -16,6 +16,7 @@ from datasets import Dataset
 from PIL import Image as PILImage
 from transformers import (
     DataCollatorForSeq2Seq,
+    EarlyStoppingCallback,
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
     TrOCRProcessor,
@@ -191,7 +192,6 @@ def run_ocr_finetune(
                 load_best_model_at_end=True,
                 metric_for_best_model=OCR_EARLY_STOP_METRIC,
                 greater_is_better=False,
-                early_stopping_patience=OCR_EARLY_STOP_PATIENCE,
                 predict_with_generate=True,
                 seed=seed,
                 logging_steps=10,
@@ -206,7 +206,10 @@ def run_ocr_finetune(
                 tokenizer=processor.feature_extractor,
                 data_collator=DataCollatorForSeq2Seq(tokenizer=processor.tokenizer, padding=True),
                 compute_metrics=lambda ep: _compute_cer(ep, processor),
-                callbacks=[trainer_heartbeat("ocr-train")],
+                callbacks=[
+                    trainer_heartbeat("ocr-train"),
+                    EarlyStoppingCallback(early_stopping_patience=OCR_EARLY_STOP_PATIENCE),
+                ],
             )
             trainer.train(resume_from_checkpoint=True)
             model.save_pretrained(out_dir)
