@@ -203,7 +203,7 @@ def run_ocr_finetune(
                 args=args,
                 train_dataset=train_ds,
                 eval_dataset=val_ds,
-                tokenizer=processor.tokenizer,
+                processing_class=processor.tokenizer,
                 data_collator=DataCollatorForSeq2Seq(tokenizer=processor.tokenizer, padding=True),
                 compute_metrics=lambda ep: _compute_cer(ep, processor),
                 callbacks=[
