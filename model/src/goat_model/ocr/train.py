@@ -55,6 +55,9 @@ def _build_dataset(split_dir: Path, processor: TrOCRProcessor, img_size: int) ->
     ds = Dataset.from_dict({"image": images, "text": texts})
 
     def preprocess(batch):
+        # NOTE: no "text" here - with_transform replaces row content with this
+        # output, and raw strings would ride into DataCollatorForSeq2Seq's
+        # tokenizer.pad. Test refs come from the stored "text" column instead.
         return {
             "pixel_values": [
                 processor(
@@ -64,7 +67,6 @@ def _build_dataset(split_dir: Path, processor: TrOCRProcessor, img_size: int) ->
                 for p in batch["image"]
             ],
             "labels": processor.tokenizer(batch["text"]).input_ids,
-            "text": batch["text"],
         }
 
     return ds.with_transform(preprocess)
