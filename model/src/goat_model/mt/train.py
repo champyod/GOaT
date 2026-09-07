@@ -43,7 +43,7 @@ from goat_model.mt.evaluate import load_pairs
 from goat_model.log import error as _err
 from goat_model.log import info as _info
 from goat_model.log import warning as _warn
-from goat_model.utils import log_call, LogProgress, resolve_device, setup_seed, trainer_heartbeat, write_json
+from goat_model.utils import drive_mirror_callback, log_call, LogProgress, resolve_device, setup_seed, sync_dir, trainer_heartbeat, write_json
 
 
 @log_call
@@ -126,8 +126,12 @@ def run_mt_finetune(
                 model = get_peft_model(base, peft_config)
                 collator = DataCollatorForSeq2Seq(tokenizer, model=model)
                 out_dir = out_root / f"r{r}_alpha{alpha}_lr{lr}"
+                ckpt_mirror = result_path.parent / "checkpoints" / f"r{r}_alpha{alpha}_lr{lr}"
+                if ckpt_mirror.is_dir() and not any(out_dir.glob("checkpoint-*")):
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    sync_dir(ckpt_mirror, out_dir)
                 args = Seq2SeqTrainingArguments(output_dir=str(out_dir), learning_rate=lr, per_device_train_batch_size=MT_BATCH_SIZE, num_train_epochs=LORA_EPOCHS[1], optim="adamw_torch", eval_strategy="epoch", save_strategy="epoch", save_total_limit=1, load_best_model_at_end=True, metric_for_best_model="eval_bleu", greater_is_better=True, predict_with_generate=True, seed=seed, logging_steps=10, disable_tqdm=False)
-                trainer = Seq2SeqTrainer(model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds, processing_class=tokenizer, data_collator=collator, compute_metrics=compute_bleu, callbacks=[trainer_heartbeat("mt-train")])
+                trainer = Seq2SeqTrainer(model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds, processing_class=tokenizer, data_collator=collator, compute_metrics=compute_bleu, callbacks=[trainer_heartbeat("mt-train"), drive_mirror_callback(ckpt_mirror, tag="mt-ckpt")])
                 from transformers.trainer_utils import get_last_checkpoint
 
                 last_ckpt = get_last_checkpoint(out_dir)

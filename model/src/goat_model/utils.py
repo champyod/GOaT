@@ -223,3 +223,49 @@ def resolve_device(requested: str = "cuda") -> str:
         f"device {requested!r} requested but CUDA unavailable - fix torch/CUDA "
         "(never fall back to CPU silently)"
     )
+
+
+def sync_dir(src: Path, dst: Path) -> tuple[int, int]:
+    """Copy only new/changed files src -> dst (size-compare). Shared Drive-mirror primitive."""
+    copied = skipped = 0
+    for f in Path(src).rglob("*"):
+        if not f.is_file():
+            continue
+        d = Path(dst) / f.relative_to(src)
+        if d.is_file() and d.stat().st_size == f.stat().st_size:
+            skipped += 1
+            continue
+        d.parent.mkdir(parents=True, exist_ok=True)
+        copy_replace(f, d)
+        copied += 1
+    return copied, skipped
+
+
+def drive_mirror_callback(mirror_dir: Path, tag: str = "ckpt"):
+    """transformers TrainerCallback: mirror latest checkpoint to Drive in background on every save.
+
+    Local checkpoints stay fast; a daemon thread syncs the diff so a dead VM
+    loses nothing. transformers imported lazily like trainer_heartbeat.
+    """
+    from transformers import TrainerCallback
+
+    class _MirrorCallback(TrainerCallback):
+        def on_save(self, args, state, control, **kwargs):
+            from goat_model.log import info as _info
+
+            src = Path(args.output_dir)
+            dst = Path(mirror_dir)
+
+            def _copy():
+                try:
+                    copied, skipped = sync_dir(src, dst)
+                    _info(tag, "mirrored checkpoint", copied=copied, skipped=skipped, dst=str(dst))
+                except Exception as e:
+                    _info(tag, "mirror failed", error=str(e))
+
+            import threading
+
+            threading.Thread(target=_copy, daemon=True).start()
+            return control
+
+    return _MirrorCallback()

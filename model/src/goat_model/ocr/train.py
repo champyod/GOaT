@@ -36,7 +36,7 @@ from goat_model.metrics import cer
 from goat_model.log import error as _err
 from goat_model.log import info as _info
 from goat_model.log import warning as _warn
-from goat_model.utils import log_call, LogProgress, resolve_device, setup_seed, trainer_heartbeat, write_json
+from goat_model.utils import drive_mirror_callback, log_call, LogProgress, resolve_device, setup_seed, sync_dir, trainer_heartbeat, write_json
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
@@ -209,6 +209,11 @@ def run_ocr_finetune(
             model = model.to(device)
 
             out_dir = out_root / f"lr{lr}_bs{batch}"
+            ckpt_mirror = result_path.parent / "checkpoints" / f"lr{lr}_bs{batch}"
+            if ckpt_mirror.is_dir() and not any(out_dir.glob("checkpoint-*")):
+                _info("ocr-train", "restoring checkpoints from Drive", src=str(ckpt_mirror))
+                out_dir.mkdir(parents=True, exist_ok=True)
+                sync_dir(ckpt_mirror, out_dir)
             args = Seq2SeqTrainingArguments(
                 output_dir=str(out_dir),
                 learning_rate=lr,
@@ -238,6 +243,7 @@ def run_ocr_finetune(
                 compute_metrics=lambda ep: _compute_cer(ep, processor),
                 callbacks=[
                     trainer_heartbeat("ocr-train"),
+                    drive_mirror_callback(ckpt_mirror, tag="ocr-ckpt"),
                     EarlyStoppingCallback(early_stopping_patience=OCR_EARLY_STOP_PATIENCE),
                 ],
             )
