@@ -151,7 +151,6 @@ def main() -> int:
     last_action: str | None = None
     last_ok = time.monotonic()
     fetch_warned = fetch_failed = vm_warned = vm_down = False
-    finished = False
     reported: set[str] = set()
     while True:
         time.sleep(args.poll)
@@ -185,7 +184,6 @@ def main() -> int:
                 if any(stripped.lower() == p.lower() for p in args.done_pattern):
                     _say("INFO", "watch", f"done: {stripped[:200]}")
                     _send(webhook, f"{args.job} done", "Job done", 0x00FF00, True)
-                    finished = True
         else:
             if not fetch_failed:
                 fetch_failed = True
@@ -195,8 +193,6 @@ def main() -> int:
         # ages: vm from content timestamps (fallback: local growth), fetch from attempts.
         vm_age = (now_wall - last_content) if last_content is not None else (now_mono - last_ok)
         fetch_age = now_mono - last_ok
-        if finished:
-            return 0
         action = f" last={(last_action[:160] if last_action else '-')}"
         _say("INFO", "watch",
              f"healthy vm={_age(vm_age)} fetch={_age(fetch_age)} size={out.stat().st_size if out.is_file() else 0}{action}")
