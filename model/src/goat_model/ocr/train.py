@@ -15,7 +15,6 @@ import torch
 from datasets import Dataset
 from PIL import Image as PILImage
 from transformers import (
-    DataCollatorForSeq2Seq,
     EarlyStoppingCallback,
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
@@ -40,6 +39,34 @@ from goat_model.log import warning as _warn
 from goat_model.utils import log_call, LogProgress, resolve_device, setup_seed, trainer_heartbeat, write_json
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+
+
+@log_call
+def _make_collator(processor: TrOCRProcessor):
+    """Batch collator that never touches tokenizer.pad.
+
+    DataCollatorForSeq2Seq routes leftover features through
+    ``tokenizer.pad``, which demands ``input_ids`` and dies on vision-only
+    rows. Stack pixels directly, pad labels with -100 (ignored in loss).
+    """
+
+    def collate(features):
+        pixel_values = torch.stack(
+            [
+                f["pixel_values"]
+                if torch.is_tensor(f["pixel_values"])
+                else torch.tensor(f["pixel_values"])
+                for f in features
+            ]
+        )
+        labels = [torch.tensor(f["labels"]) for f in features]
+        labels = torch.nn.utils.rnn.pad_sequence(
+            labels, batch_first=True, padding_value=processor.tokenizer.pad_token_id
+        )
+        labels[labels == processor.tokenizer.pad_token_id] = -100
+        return {"pixel_values": pixel_values, "labels": labels}
+
+    return collate
 
 
 @log_call
@@ -207,7 +234,7 @@ def run_ocr_finetune(
                 train_dataset=train_ds,
                 eval_dataset=val_ds,
                 processing_class=processor.tokenizer,
-                data_collator=DataCollatorForSeq2Seq(tokenizer=processor.tokenizer, padding=True),
+                data_collator=_make_collator(processor),
                 compute_metrics=lambda ep: _compute_cer(ep, processor),
                 callbacks=[
                     trainer_heartbeat("ocr-train"),
