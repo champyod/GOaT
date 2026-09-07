@@ -53,13 +53,14 @@ Notes:
 - Synth never touches Drive (local-only, so log/result syncing never contends).
 - train_mt skips when mt_training.json already exists (already-trained guard).
 
-## Host watchdog
-From any machine that can read the log file (live `/tmp/*.txt` or the Drive-synced `logs/` copy), watch for errors, clean finish, or silence (possible dead host):
+## Sync-watch (Pi operator)
+One process pulls the VM log and watches it — no separate sync step:
 ```bash
 export DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...  # or model/.env on this host
-python /path/to/GOaT/tools/host_watchdog.py --log /tmp/goat_training_log.txt --job training --silence 600
+python GOaT/tools/sync-watch --vm-log /tmp/goat_training_log.txt --session goat \
+    --out ~/synced/goat.log --silence 900 --downtime 3600 --poll 15
 ```
-Tune with `--error-pattern` / `--done-pattern` (repeatable), `--poll` seconds. Exit 0 on done, 2 on silence timeout. Notifications are fail-open: a dead webhook never stops the watch.
+Tune with `--error-pattern` / `--done-pattern` (repeatable). Never exits: warns at `--silence`, errors at `--downtime`, quiet while sync stalled or after error/done. Notifications are fail-open: a dead webhook never stops the watch.
 
 ## Common
 - Resume: `git pull` pulls new code; partials resume same VM (/tmp); new VM re-pulls deterministic HF data.
