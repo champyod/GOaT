@@ -33,9 +33,6 @@ def _orphans(assignments, bound: set[str]) -> list:
 def _pick_orphan(orphans: list, pick: int | None):
     for i, a in enumerate(orphans):
         print(f"  [{i}] {a.endpoint} ({a.accelerator} / {a.variant})", flush=True)
-    if len(orphans) == 1 and pick is None:
-        print("one orphan - adopting it", flush=True)
-        return orphans[0]
     if pick is not None:
         if 0 <= pick < len(orphans):
             return orphans[pick]
@@ -110,17 +107,13 @@ def watch(name: str, interval: float, force: bool | None = None) -> None:
                 else:
                     for i, a in enumerate(cands):
                         print(f"  [{i}] {a.endpoint} ({a.accelerator} / {a.variant})", flush=True)
-                    if len(cands) == 1:
-                        print("one candidate - picking it", flush=True)
+                    raw = input(f"pick [0..{len(cands) - 1}] (Enter keeps [0]): ").strip()
+                    if raw == "":
                         picked = cands[0]
+                    elif not raw.isdigit() or not 0 <= int(raw) < len(cands):
+                        raise SystemExit("no selection made")
                     else:
-                        raw = input(f"pick [0..{len(cands) - 1}] (Enter keeps [0]): ").strip()
-                        if raw == "":
-                            picked = cands[0]
-                        elif not raw.isdigit() or not 0 <= int(raw) < len(cands):
-                            raise SystemExit("no selection made")
-                        else:
-                            picked = cands[int(raw)]
+                        picked = cands[int(raw)]
                     entry = SessionState(
                         name=name,
                         token=picked.runtime_proxy_info.token,
@@ -158,9 +151,6 @@ def select(name: str, pick: int | None) -> SessionState:
             chosen = cands[pick][1]
         else:
             raise SystemExit(f"--pick {pick} out of range 0..{len(cands) - 1}")
-    elif len(cands) == 1:
-        print("one candidate - keeping it", flush=True)
-        chosen = cands[0][1]
     else:
         raw = input(f"pick [0..{len(cands) - 1}] (Enter keeps [0]): ").strip()
         if raw == "":
@@ -193,25 +183,26 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="with --watch: select even if bound")
     parser.add_argument("--interval", type=float, default=None, help="seconds between refreshes")
     args = parser.parse_args()
+    interval = args.interval if args.interval is not None else 2700.0
     if args.watch:
         watch(args.name, args.interval if args.interval is not None else 5.0, args.force)
         return
-    if not args.no_select and args.endpoint is None:
-        select(args.name, args.pick)
-        while args.loop:
-            time.sleep(args.interval if args.interval is not None else 2700.0)
-            try:
-                refresh(args.name, None, None)
-            except SystemExit as err:
-                print(f"rebind: {err}", flush=True)
-        return
-    refresh(args.name, args.endpoint, args.pick)
-    while args.loop:
-        time.sleep(args.interval if args.interval is not None else 2700.0)
+    bound = False
+    while True:
         try:
-            refresh(args.name, None, None)
-        except SystemExit as err:
+            if not bound and not args.no_select and args.endpoint is None:
+                select(args.name, args.pick)
+            else:
+                refresh(args.name, args.endpoint, args.pick)
+            bound = True
+        except (SystemExit, EOFError) as err:
             print(f"rebind: {err}", flush=True)
+            bound = False
+            if not args.loop:
+                raise SystemExit(1) from err
+        if not args.loop:
+            return
+        time.sleep(interval)
 
 
 if __name__ == "__main__":
