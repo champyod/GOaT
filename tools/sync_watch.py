@@ -179,7 +179,10 @@ def main() -> int:
                     reported.add(stripped)
                     _say("ERROR", "watch", stripped[:200])
                     _send(webhook, f"{args.job} ERROR: {stripped[:1000]}", "Job ERROR", 0xFF0000, True)
-                if any(p.lower() in lowered for p in args.done_pattern):
+                # Exact-line match only: "synthetic done" (a phase) must not
+                # exit the watch while the job continues; training.sh ends
+                # with a bare "Done" line which does match.
+                if any(stripped.lower() == p.lower() for p in args.done_pattern):
                     _say("INFO", "watch", f"done: {stripped[:200]}")
                     _send(webhook, f"{args.job} done", "Job done", 0x00FF00, True)
                     finished = True
@@ -192,11 +195,11 @@ def main() -> int:
         # ages: vm from content timestamps (fallback: local growth), fetch from attempts.
         vm_age = (now_wall - last_content) if last_content is not None else (now_mono - last_ok)
         fetch_age = now_mono - last_ok
+        if finished:
+            return 0
         action = f" last={(last_action[:160] if last_action else '-')}"
         _say("INFO", "watch",
              f"healthy vm={_age(vm_age)} fetch={_age(fetch_age)} size={out.stat().st_size if out.is_file() else 0}{action}")
-        if finished:
-            return 0
         if vm_age >= args.downtime and not vm_down:
             vm_down = vm_warned = True
             _say("ERROR", "watch", f"vm silent {_age(vm_age)}")
