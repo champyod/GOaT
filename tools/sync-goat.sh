@@ -30,10 +30,10 @@ mkdir -p "$(dirname "$OUT")"
 touch "$OUT"
 while true; do
     TS=$(date '+%H:%M:%S')
-    CHUNK=$(VM_LOG="$VM_LOG" colab exec -s "$SESSION" <<'PY' 2>/tmp/sync-goat.err
+    CHUNK=$(colab exec -s "$SESSION" <<PY 2>/tmp/sync-goat.err
 import os
 try:
-    with open(os.environ["VM_LOG"], "r", errors="replace") as f:
+    with open("$VM_LOG", "r", errors="replace") as f:
         print(f.read()[-8000:], end="")
 except Exception as e:
     print(f"[sync-miss] {e}")
@@ -41,7 +41,7 @@ PY
 )
     CLEAN=$(printf '%s' "$CHUNK" | grep -v '^\[colab\]' | tail -c 8000)
     if [ -n "$CLEAN" ]; then
-        printf '%s' "$CLEAN" >> "$OUT"
+        printf '%s\n' "$CLEAN" >> "$OUT"
         touch "$SYNC_FILE"
         echo "[$TS] synced ${#CLEAN}B total=$(wc -c < "$OUT")B -> $OUT"
     else
