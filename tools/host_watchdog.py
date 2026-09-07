@@ -217,13 +217,19 @@ def main() -> int:
     parser.add_argument("--downtime", type=float, default=3600.0,
                         help="seconds without growth = really-down error (latched, never exits; must exceed --silence)")
     parser.add_argument("--sync-file", type=Path, default=None,
-                        help="touch-file the sync loop updates on each success; maydown/downtime require it fresh")
+                        help="touch-file the sync loop updates on each success; "
+                             "omit to use the watched log file's own mtime as the sync clock")
     parser.add_argument("--poll", type=float, default=15.0, help="poll interval seconds")
     args = parser.parse_args()
 
     _load_dotenv()
     webhook = args.webhook or os.environ.get("DISCORD_WEBHOOK_URL", "")
     path = args.log.expanduser()
+    if args.sync_file is not None:
+        args.sync_file = args.sync_file.expanduser()
+    # Sync clock: explicit sync file when given, else the watched log's own
+    # mtime. Either way idle/sync share one clock, one unit, one threshold set.
+    sync_source = args.sync_file if args.sync_file is not None else path
     _info("watchdog", f"watching {path}", silence=args.silence, poll=args.poll)
     _send(webhook, f"watching {args.job} started", title="Watch started", color=0x5865F2)
 
@@ -259,7 +265,7 @@ def main() -> int:
                 last_event = "ok"
             finished = finished or done
         idle = time.monotonic() - last_growth
-        sync_idle, sync_at = _sync_age(args.sync_file)
+        sync_idle, sync_at = _sync_age(sync_source)
         sync_kv = {} if sync_idle is None else {"sync_idle": _fmt_age(sync_idle), "sync_at": sync_at}
         sync_fresh = sync_idle is None or sync_idle < args.silence
         state = _heartbeat_state(finished=finished, last_event=last_event)
