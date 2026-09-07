@@ -43,7 +43,7 @@ IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 
 @log_call
-def _build_dataset(split_dir: Path, processor: TrOCRProcessor, img_size: int) -> Dataset:
+def _build_dataset(split_dir: Path, processor: TrOCRProcessor, img_size: int) -> tuple[Dataset, list[str]]:
     images, texts = [], []
     for img in sorted(split_dir.iterdir()):
         if img.suffix.lower() not in IMG_EXTS:
@@ -69,7 +69,9 @@ def _build_dataset(split_dir: Path, processor: TrOCRProcessor, img_size: int) ->
             "labels": processor.tokenizer(batch["text"]).input_ids,
         }
 
-    return ds.with_transform(preprocess)
+    # refs travel alongside: with_transform drops the stored "text" column,
+    # so re-reading test_ds["text"] later would KeyError.
+    return ds.with_transform(preprocess), texts
 
 
 @log_call
@@ -142,10 +144,9 @@ def run_ocr_finetune(
     processor = TrOCRProcessor.from_pretrained(THAITROCR_MODEL_ID)
     img_size = OCR_IMG_SIZE["ThaiTrOCR"]
 
-    train_ds = _build_dataset(data_root / "train", processor, img_size)
-    val_ds = _build_dataset(data_root / "val", processor, img_size)
-    test_ds = _build_dataset(data_root / "test", processor, img_size)
-    test_refs = [t for t in test_ds["text"]]
+    train_ds, _ = _build_dataset(data_root / "train", processor, img_size)
+    val_ds, _ = _build_dataset(data_root / "val", processor, img_size)
+    test_ds, test_refs = _build_dataset(data_root / "test", processor, img_size)
 
     partial_path = result_path.with_name(result_path.stem + ".partial.json")
     grid_results = {}
