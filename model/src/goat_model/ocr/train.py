@@ -260,15 +260,18 @@ def run_ocr_finetune(
                 trainer.train(resume_from_checkpoint=last_ckpt if last_ckpt else False)
                 model.save_pretrained(out_dir)
 
-                val_cer = _infer_cer(model, test_ds, processor, batch, test_refs)
+                val_cer = _infer_cer(model, test_ds, processor, min(batch, 8), test_refs)
+                del trainer
             except torch.OutOfMemoryError as err:
                 _warn("ocr-train", "config OOM - skipped", config=cfg_key, error=str(err)[:200])
                 skipped.append(cfg_key)
+                del trainer
                 del model
                 gc.collect()
                 torch.cuda.empty_cache()
                 continue
             del model
+            gc.collect()
             torch.cuda.empty_cache()
 
             key = {"lr": lr, "batch_size": batch}
