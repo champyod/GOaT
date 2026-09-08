@@ -38,7 +38,7 @@ def main() -> None:
     proc = psutil.Process(args.pid) if args.pid else psutil.Process()
     samples: list[float] = []
     deadline = time.monotonic() + args.duration
-    print(f"sampling PID {proc.pid} for {args.duration}s @ {args.interval} Hz")
+    _info("ram", "sampling", pid=proc.pid, duration_s=args.duration, interval_s=args.interval)
     while time.monotonic() < deadline:
         samples.append(proc.memory_info().rss / 1_000_000)
         if len(samples) % 60 == 0:
