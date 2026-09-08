@@ -429,8 +429,7 @@ Usage: colab install [OPTIONS] [packages]...
 LIMITATIONS: no packages and no `-r` → exit 1. Missing local `-r` file → exit 1. GOaT `selection.sh` uses its own `uv sync --extra ocr --extra mt --extra train` — prefer that for pipeline runs.
 
 ```bash
-colab install -s goat torch transformers
-colab install -s goat -r requirements.txt
+colab install -s goat -r requirements.txt  # pinned (transformers 4.x line for ViT checkpoint key schema); bare `colab install -s goat torch transformers` would pull unconstrained 5.x
 ```
 
 ### 1.13 `edit` — `$EDITOR` round-trip on one remote file
