@@ -28,7 +28,12 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "2026-09-08-offset"
+try:
+    VERSION = datetime.datetime.fromtimestamp(
+        Path(__file__).stat().st_mtime, datetime.timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+except OSError:
+    VERSION = "unknown-mtime"
 _TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})")
 
 
