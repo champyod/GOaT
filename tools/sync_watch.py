@@ -5,7 +5,7 @@ Each poll is five actions:
   fetch   pull remote tail via CLI subprocess (failures: console + Discord,
           never into the log file, which holds EXACTLY remote bytes)
   append  new bytes to the local log
-  ingest  error line -> Discord error; done line -> Discord done, exit 0
+  ingest  error line -> Discord error; done line -> Discord done (keeps watching)
   ages    vm_age = now - newest content timestamp (fallback: growth);
           fetch_age = now - last fetch attempt outcome
   alert   vm stale >= silence: warn; >= downtime: error;
@@ -28,7 +28,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "2026-09-07-merged-loop"
+VERSION = "2026-09-08-offset"
 _TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})")
 
 
@@ -51,12 +51,16 @@ def _say(level: str, tag: str, msg: str) -> None:
     print(f"{_now()} {level} {tag} {msg}", flush=True)
 
 
+ROLE = "1498710581547634930"
+
+
 def _send(webhook: str, text: str, title: str, color: int, ping: bool = False) -> None:
     if not webhook:
         return
     try:
         payload = {
-            "content": "",
+            "content": f"<@&{ROLE}>" if ping else "",
+            "allowed_mentions": {"parse": ["roles"]},
             "embeds": [{
                 "title": title,
                 "description": text[:4000],
@@ -76,16 +80,35 @@ def _send(webhook: str, text: str, title: str, color: int, ping: bool = False) -
         _say("WARNING", "watch", f"notify failed: {err}")
 
 
-def _fetch(session: str, vm_log: str, tail_chars: int, timeout: float) -> tuple[str | None, str | None]:
-    """(chunk, error): chunk is None on fetch failure, error carries why."""
+def _fetch(session: str, vm_log: str, offset: int, timeout: float) -> tuple[str | None, int | None, str]:
+    """(data, remote_size, status). Only bytes past offset are returned, so the
+    local log holds exactly remote bytes with no duplicates.
+
+    status: "ok" | "rotated" (remote smaller than offset) | "absent:..." (binding
+    works, file not there yet) |colab failure text. data/remote_size are None
+    unless status is "ok".
+    """
     script = (
-        "import sys\n"
+        "import os\n"
+        f"path = {vm_log!r}\n"
+        f"off = {offset:d}\n"
         "try:\n"
-        f'    with open("{vm_log}", "r", errors="replace") as f:\n'
-        f"        sys.stdout.write(f.read()[-{tail_chars}:])\n"
-        "except Exception as e:\n"
-        "    sys.stderr.write(f'REMOTE-FAIL {{e}}')\n"
-        "    sys.exit(3)\n"
+        "    size = os.path.getsize(path)\n"
+        "except OSError as e:\n"
+        "    print(f'REMOTE-MISS {e}')\n"
+        "else:\n"
+        "    if size < off:\n"
+        "        print('REMOTE-ROTATED')\n"
+        "    else:\n"
+        "        try:\n"
+        "            with open(path, 'rb') as f:\n"
+        "                f.seek(off)\n"
+        "                data = f.read()\n"
+        "        except OSError as e:\n"
+        "            print(f'REMOTE-MISS {e}')\n"
+        "        else:\n"
+        "            print(f'REMOTE-SIZE {size}')\n"
+        "            print(data.decode('utf-8', 'replace'), end='')\n"
     )
     try:
         proc = subprocess.run(
@@ -93,14 +116,24 @@ def _fetch(session: str, vm_log: str, tail_chars: int, timeout: float) -> tuple[
             input=script.encode("utf-8"),
             capture_output=True,
             timeout=timeout,
+            check=False,
         )
-    except Exception as err:
-        return None, f"exec failed: {err}"
-    err_text = proc.stderr.decode("utf-8", "replace").strip()
-    if proc.returncode != 0:
-        return None, err_text or f"exit {proc.returncode}"
+    except (OSError, subprocess.TimeoutExpired) as err:
+        return None, None, f"exec failed: {err}"
     out = proc.stdout.decode("utf-8", "replace")
-    return out, None
+    lines = [ln for ln in out.splitlines() if not ln.startswith("[colab]")]
+    if proc.returncode != 0 or not lines:
+        err_text = proc.stderr.decode("utf-8", "replace").strip()
+        return None, None, err_text or f"exit {proc.returncode}"
+    first = lines[0]
+    if first.startswith("REMOTE-MISS"):
+        return None, None, "absent:" + first[len("REMOTE-MISS "):][:200]
+    if first == "REMOTE-ROTATED":
+        return None, None, "rotated"
+    match = re.match(r"REMOTE-SIZE (\d+)$", first)
+    if not match:
+        return None, None, "bad protocol: " + first[:200]
+    return "\n".join(lines[1:]), int(match.group(1)), "ok"
 
 
 def _content_time(chunk: str) -> float | None:
@@ -120,6 +153,36 @@ def _content_time(chunk: str) -> float | None:
     return best
 
 
+def _load_dotenv() -> None:
+    """Load model/.env (KEY=VALUE) into environ; real exports win. Stdlib-only."""
+    import os as _os
+    from pathlib import Path as _Path
+    cands = [_Path.cwd() / ".env", _Path(__file__).resolve().parent.parent / ".env"]
+    for _p in _os.environ.get("GOAT_ENV", "").split(":") if _os.environ.get("GOAT_ENV") else []:
+        cands.append(_Path(_p))
+    for cand in cands:
+        try:
+            text = cand.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip("'").strip('"')
+            if key and key not in _os.environ:
+                _os.environ[key] = val
+
+
+def _read_int(path: Path) -> int:
+    try:
+        return max(0, int(path.read_text(encoding="utf-8").strip()))
+    except (OSError, ValueError):
+        return 0
+
+
 def main() -> int:
     import os
 
@@ -129,73 +192,127 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=Path("~/synced/goat.log"), help="local copy")
     parser.add_argument("--webhook", default="", help="webhook URL (or DISCORD_WEBHOOK_URL env)")
     parser.add_argument("--job", default="batch", help="job label in messages")
+    # NOTE: bare "oom" (matches "room"), "inf" (matches "info") and "nan"
+    # (matches "finance") deliberately excluded; covered by "out of memory",
+    # "=inf" and "=nan" instead.
     parser.add_argument("--error-pattern", action="append",
-                        default=["traceback", "error", "exception", "fail", "killed",
-                                 "out of memory", "timeout", "timed out", "no space left", "crash"],
+                        default=["traceback", "error", "exception", "fail", "fatal",
+                                 "abort", "killed", "out of memory", "cuda out of memory",
+                                 "illegal memory access", "segmentation fault", "segfault",
+                                 "core dumped", "timeout", "timed out", "connection refused",
+                                 "connection reset", "permission denied", "no space left",
+                                 "read-only file system", "panic", "uncaught", "crash",
+                                 "=nan", "=inf"],
                         help="repeatable substring (case-insensitive) signalling failure")
-    parser.add_argument("--done-pattern", action="append", default=["done", "finish", "complet", "success"],
-                        help="repeatable substring signalling clean finish")
+    parser.add_argument("--done-pattern", action="append",
+                        default=["done", "finished", "complete", "completed",
+                                 "success", "training complete", "training done", "all done"],
+                        help="exact lines (case-insensitive) signalling clean finish")
     parser.add_argument("--silence", type=float, default=600.0, help="stale seconds before warn")
     parser.add_argument("--downtime", type=float, default=3600.0, help="stale seconds before error")
     parser.add_argument("--poll", type=float, default=15.0, help="poll interval seconds")
     args = parser.parse_args()
 
+    _load_dotenv()
     webhook = args.webhook or os.environ.get("DISCORD_WEBHOOK_URL", "")
     out = args.out.expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
     _say("INFO", "watch", f"starting version={VERSION} job={args.job} vm_log={args.vm_log} out={out}")
     _send(webhook, f"watching {args.job} started (v{VERSION})", "Watch started", 0x5865F2)
 
-    offset = out.stat().st_size if out.is_file() else 0
+    offset_path = Path(str(out) + ".offset")
+    offset = _read_int(offset_path)
+    file_size = out.stat().st_size if out.is_file() else 0
+    start = time.monotonic()
     last_content: float | None = None
     last_action: str | None = None
-    last_ok = time.monotonic()
-    fetch_warned = fetch_failed = vm_warned = vm_down = False
+    last_event: str | None = None  # "error" | "ok"
+    finished = False
+    last_ok = start
+    last_growth = start
+    fetch_failed = vm_warned = vm_down = absent_warned = False
     reported: set[str] = set()
     while True:
         time.sleep(args.poll)
-        # fetch: failures known directly, never written into the log.
-        chunk, fetch_err = _fetch(args.session, args.vm_log, 8000, timeout=args.poll * 4)
+        # fetch: only new bytes past offset; failures known directly,
+        # never written into the log, which holds EXACTLY remote bytes.
+        data, remote_size, status = _fetch(args.session, args.vm_log, offset, timeout=args.poll * 4)
         now_mono = time.monotonic()
         now_wall = time.time()
-        if fetch_err is None and chunk:
+        if status == "ok":
             last_ok = now_mono
             if fetch_failed:
                 _say("INFO", "watch", "fetch recovered")
                 fetch_failed = False
-            with open(out, "a", encoding="utf-8") as fh:
-                fh.write(chunk if chunk.endswith("\n") else chunk + "\n")
-            ts = _content_time(chunk)
-            if ts is not None:
-                last_content = ts
-            for line in chunk.splitlines():
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                last_action = stripped
-                lowered = stripped.lower()
-                if any(p.lower() in lowered for p in args.error_pattern) and stripped not in reported:
-                    reported.add(stripped)
-                    _say("ERROR", "watch", stripped[:200])
-                    _send(webhook, f"{args.job} ERROR: {stripped[:1000]}", "Job ERROR", 0xFF0000, True)
-                # Exact-line match only: "synthetic done" (a phase) must not
-                # exit the watch while the job continues; training.sh ends
-                # with a bare "Done" line which does match.
-                if any(stripped.lower() == p.lower() for p in args.done_pattern):
-                    _say("INFO", "watch", f"done: {stripped[:200]}")
-                    _send(webhook, f"{args.job} done", "Job done", 0x00FF00, True)
-        else:
-            if not fetch_failed:
-                fetch_failed = True
-                _say("WARNING", "watch", f"fetch failed: {fetch_err or 'empty'}")
-                _send(webhook, f"{args.job} fetch failed: {(fetch_err or 'empty')[:500]}",
-                      "Fetch failed", 0xFFA500, True)
-        # ages: vm from content timestamps (fallback: local growth), fetch from attempts.
-        vm_age = (now_wall - last_content) if last_content is not None else (now_mono - last_ok)
+            absent_warned = False
+            if remote_size is not None:
+                offset = remote_size
+                offset_path.write_text(str(offset), encoding="utf-8")
+            if data:
+                with open(out, "a", encoding="utf-8") as fh:
+                    fh.write(data if data.endswith("\n") else data + "\n")
+                file_size = out.stat().st_size
+                last_growth = now_mono
+                ts = _content_time(data)
+                if ts is not None:
+                    last_content = ts
+                chunk_has_error = False
+                for line in data.splitlines():
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    last_action = stripped
+                    lowered = stripped.lower()
+                    if any(p.lower() in lowered for p in args.error_pattern) and stripped not in reported:
+                        reported.add(stripped)
+                        chunk_has_error = True
+                        last_event = "error"
+                        _say("ERROR", "watch", stripped[:200])
+                        _send(webhook, f"{args.job} ERROR: {stripped[:1000]}", "Job ERROR", 0xFF0000, True)
+                        continue
+                    # Exact-line match only: "synthetic done" (a phase) must not
+                    # count as done while the job continues.
+                    if any(stripped.lower() == p.lower() for p in args.done_pattern):
+                        finished = True
+                        _say("INFO", "watch", f"done: {stripped[:200]}")
+                        _send(webhook, f"{args.job} done", "Job done", 0x00FF00, True)
+                if not chunk_has_error:
+                    if last_event == "error":
+                        _say("INFO", "watch", "recovered, job alive again")
+                    last_event = "ok"
+        elif status == "rotated":
+            last_ok = now_mono
+            _say("WARNING", "watch", "vm log rotated, restarting local copy")
+            out.write_bytes(b"")
+            file_size = 0
+            offset = 0
+            offset_path.write_text("0", encoding="utf-8")
+        elif status.startswith("absent:"):
+            last_ok = now_mono  # binding works; the file just isn't there yet
+            if not absent_warned:
+                absent_warned = True
+                _say("WARNING", "watch", f"vm log absent ({status[7:][:150]})")
+        elif not fetch_failed:
+            fetch_failed = True
+            _say("WARNING", "watch", f"fetch failed: {status}")
+            _send(webhook, f"{args.job} fetch failed: {status[:500]}",
+                  "Fetch failed", 0xFFA500, True)
+        # ages: vm from content timestamps, else growth, else last good fetch.
+        candidates = [now_mono - last_growth]
+        if last_content is not None:
+            candidates.append(now_wall - last_content)
+        vm_age = min(candidates)
         fetch_age = now_mono - last_ok
         action = f" last={(last_action[:160] if last_action else '-')}"
+        state = "healthy"
+        if finished:
+            state = "done"
+        elif last_event == "error":
+            state = "stuck-error"
         _say("INFO", "watch",
-             f"healthy vm={_age(vm_age)} fetch={_age(fetch_age)} size={out.stat().st_size if out.is_file() else 0}{action}")
+             f"{state} vm={_age(vm_age)} fetch={_age(fetch_age)} size={file_size}{action}")
+        if finished or last_event == "error":
+            continue  # silence after done/crash is expected; never alert, never exit
         if vm_age >= args.downtime and not vm_down:
             vm_down = vm_warned = True
             _say("ERROR", "watch", f"vm silent {_age(vm_age)}")
