@@ -8,6 +8,7 @@ validation CER tracking and result writing.
 
 from __future__ import annotations
 
+import gc
 import json
 from pathlib import Path
 
@@ -193,6 +194,7 @@ def run_ocr_finetune(
                 _info("ocr-train", "resuming configs", done=len(grid_results), partial=str(partial_path))
     total = len(OCR_GRID_LEARNING_RATES) * len(OCR_GRID_BATCH_SIZES)
     done = 0
+    skipped: list[str] = []
     for lr in OCR_GRID_LEARNING_RATES:
         for batch in OCR_GRID_BATCH_SIZES:
             done += 1
@@ -200,6 +202,8 @@ def run_ocr_finetune(
             if cfg_key in grid_results:
                 _info("ocr-train", "skip done", config=cfg_key)
                 continue
+            gc.collect()
+            torch.cuda.empty_cache()
             _info("ocr-train", "loading model", done=done, total=total, lr=lr, batch=batch)
             setup_seed(seed)
             model = VisionEncoderDecoderModel.from_pretrained(THAITROCR_MODEL_ID)
@@ -218,7 +222,8 @@ def run_ocr_finetune(
                 output_dir=str(out_dir),
                 learning_rate=lr,
                 per_device_train_batch_size=batch,
-                per_device_eval_batch_size=batch,
+                per_device_eval_batch_size=min(batch, 8),
+                gradient_checkpointing=True,
                 num_train_epochs=OCR_GRID_EPOCHS[1],
                 optim="adamw_torch",
                 eval_strategy="epoch",
@@ -251,10 +256,18 @@ def run_ocr_finetune(
             from transformers.trainer_utils import get_last_checkpoint
 
             last_ckpt = get_last_checkpoint(out_dir)
-            trainer.train(resume_from_checkpoint=last_ckpt if last_ckpt else False)
-            model.save_pretrained(out_dir)
+            try:
+                trainer.train(resume_from_checkpoint=last_ckpt if last_ckpt else False)
+                model.save_pretrained(out_dir)
 
-            val_cer = _infer_cer(model, test_ds, processor, batch, test_refs)
+                val_cer = _infer_cer(model, test_ds, processor, batch, test_refs)
+            except torch.OutOfMemoryError as err:
+                _warn("ocr-train", "config OOM - skipped", config=cfg_key, error=str(err)[:200])
+                skipped.append(cfg_key)
+                del model
+                gc.collect()
+                torch.cuda.empty_cache()
+                continue
             del model
             torch.cuda.empty_cache()
 
@@ -267,6 +280,8 @@ def run_ocr_finetune(
 
     assert grid_results, "no grid config evaluated"
     assert best is not None, "no grid config evaluated"
+    if skipped:
+        _warn("ocr-train", "skipped OOM configs", configs=skipped)
     partial_path.unlink(missing_ok=True)
     write_json(
         result_path,

@@ -34,6 +34,9 @@ export HF_HUB_CACHE="$DRIVE/hf_cache"
 # so logs read correctly with plain `tail`, no `tr`/`grep` post-processing.
 export TQDM_DISABLE=1
 
+# Fight CUDA fragmentation (seen: 746MB reserved-but-unallocated before OOM).
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 # Witness for vanishing jobs: every python dumps a traceback on fatal signals,
 # and the shell logs signal/exit receipt with timestamps (preemption/OOM leaves a mark).
 export PYTHONFAULTHANDLER=1
