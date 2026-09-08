@@ -228,6 +228,7 @@ def run_ocr_finetune(
                 metric_for_best_model=OCR_EARLY_STOP_METRIC,
                 greater_is_better=False,
                 predict_with_generate=True,
+                eval_accumulation_steps=4,
                 seed=seed,
                 logging_steps=10,
                 disable_tqdm=False,
