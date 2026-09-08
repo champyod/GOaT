@@ -183,13 +183,33 @@ def _reap_kernels(session: str, timeout: float) -> str:
     return "reap bad protocol: " + out[:200]
 
 
+_RESET_SNIPPET = (
+    "from colab_cli.common import state as _s; "
+    "s = _s.store.get('{session}'); "
+    "print('NOSESSION' if s is None else ('OK' if (setattr(s, 'kernel_id', None), setattr(s, 'session_id', None), _s.store.add(s)) else ''))"
+)
+
+
 def _reset_binding(session: str) -> str:
     """Clear stored kernel/session ids so the next exec POSTs one fresh
     kernel. Best-effort: without colab_cli importable there is nothing to do."""
     try:
         from colab_cli.common import state as _cli_state
     except ImportError:
-        return "no colab_cli, skip"
+        cli_py = _cli_python()
+        if cli_py is None:
+            return "no colab_cli, skip"
+        try:
+            proc = subprocess.run(
+                [cli_py, "-c", _RESET_SNIPPET.format(session=session)],
+                capture_output=True, timeout=30, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as err:
+            return f"cli python failed: {err}"
+        out = proc.stdout.decode("utf-8", "replace").strip()
+        if "OK" in out:
+            return "binding cleared via cli python, next exec POSTs fresh"
+        return "cli python reset unclear: " + out[:100]
     try:
         s = _cli_state.store.get(session)
         if s is None:
@@ -200,6 +220,25 @@ def _reset_binding(session: str) -> str:
         return "binding cleared, next exec POSTs fresh"
     except Exception as err:
         return f"reset failed: {err}"
+
+
+def _cli_python() -> str | None:
+    """Locate the colab CLI's own python (has colab_cli importable)."""
+    import shutil
+    colab = shutil.which("colab")
+    if not colab:
+        return None
+    try:
+        with open(colab, "rb") as fh:
+            first = fh.readline().decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+    if first.startswith("#!") and "python" in first:
+        cand = first[2:].strip().split()[0]
+        import os
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
 
 
 def _fetch(session: str, vm_log: str, offset: int, timeout: float) -> tuple[str | None, int | None, str]:
