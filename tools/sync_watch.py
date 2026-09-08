@@ -251,80 +251,6 @@ def _short_exec_error(proc) -> str:
     return f"exit {proc.returncode}: {short[:200]}"
 
 
-def _session_target(session: str) -> tuple[str | None, str | None]:
-    """(https8000_base, token) for the session, via colab_cli or its python."""
-    snippet = (
-        "from colab_cli.common import state as _s; "
-        "e = _s.store.get('{session}'); "
-        "print('NONE' if e is None else (e.url + ' ' + (e.token or '')))"
-    ).format(session=session)
-    out = None
-    try:
-        from colab_cli.common import state as _cli_state
-        e = _cli_state.store.get(session)
-        out = None if e is None else (e.url + " " + (e.token or ""))
-    except ImportError:
-        cli_py = _cli_python()
-        if cli_py is None:
-            return None, None
-        try:
-            proc = subprocess.run(
-                [cli_py, "-c", snippet],
-                capture_output=True, timeout=30, check=False,
-            )
-            out = proc.stdout.decode("utf-8", "replace").strip() or None
-        except (OSError, subprocess.TimeoutExpired):
-            return None, None
-    except Exception:
-        return None, None
-    if not out or out == "NONE":
-        return None, None
-    url, _, token = out.partition(" ")
-    base = re.sub(r"^https://\d+-", "https://8000-", url)
-    return base, token or None
-
-
-def _fetch_http(base: str, token: str | None, name: str, offset: int,
-                timeout: float) -> tuple[str | None, int | None, str]:
-    """Range-GET past offset from the VM :8000 file server. No kernels."""
-    url = base.rstrip("/") + "/" + name
-    last = "http failed"
-    for auth in (f"?token={token}" if token else "",):
-        try:
-            req = urllib.request.Request(
-                url + auth, headers={"Range": f"bytes={offset}-"},
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                if resp.status == 206:
-                    cr = resp.headers.get("Content-Range", "")
-                    m = re.match(r"bytes \d+-\d+/(\d+)", cr)
-                    total = int(m.group(1)) if m else None
-                    return resp.read().decode("utf-8", "replace"), total, "ok"
-                if resp.status == 200:
-                    # Full body (Range ignored): slice bytes past offset.
-                    raw = resp.read()
-                    return raw[offset:].decode("utf-8", "replace"), len(raw), "ok"
-                return None, None, f"http {resp.status}"
-        except Exception as err:
-            last = f"http failed: {err}"
-    if token:
-        try:
-            req = urllib.request.Request(
-                url, headers={"Range": f"bytes={offset}-",
-                              "Authorization": f"token {token}"},
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                if resp.status == 206:
-                    return resp.read().decode("utf-8", "replace"), None, "ok"
-                if resp.status == 200:
-                    raw = resp.read()
-                    return raw[offset:].decode("utf-8", "replace"), len(raw), "ok"
-                return None, None, f"http {resp.status}"
-        except Exception as err:
-            return None, None, f"http failed: {err}"
-    return None, None, last
-
-
 def _fetch(session: str, vm_log: str, offset: int, timeout: float) -> tuple[str | None, int | None, str]:
     """(data, remote_size, status). Only bytes past offset are returned, so the
     local log holds exactly remote bytes with no duplicates.
@@ -457,8 +383,6 @@ def main() -> int:
     parser.add_argument("--poll", type=float, default=15.0, help="poll interval seconds")
     parser.add_argument("--reap-every", type=int, default=20,
                         help="run kernel reaper every N polls (0 disables)")
-    parser.add_argument("--http-after", type=int, default=3,
-                        help="after N straight exec fails, Range-GET the VM :8000 file server (0 disables)")
     args = parser.parse_args()
 
     _load_dotenv()
@@ -471,17 +395,6 @@ def main() -> int:
     offset_path = Path(str(out) + ".offset")
     offset = _read_int(offset_path)
     file_size = out.stat().st_size if out.is_file() else 0
-    http_base, http_token = (None, None)
-    if args.http_after > 0:
-        http_base, http_token = _session_target(args.session)
-        _say("INFO", "watch", f"http fallback: {'ready' if http_base else 'unavailable (no session target)'}")
-    # NOTE: the VM :8000 server roots at /tmp, so vm_log must live under it.
-    if args.vm_log.startswith("/tmp/"):
-        http_name = args.vm_log[len("/tmp/"):]
-    else:
-        http_name = ""
-        http_base = None
-        _say("INFO", "watch", "http fallback off: vm_log not under /tmp")
     start = time.monotonic()
     last_content: float | None = None
     last_action: str | None = None
@@ -503,13 +416,6 @@ def main() -> int:
         # fetch: only new bytes past offset; failures known directly,
         # never written into the log, which holds EXACTLY remote bytes.
         data, remote_size, status = _fetch(args.session, args.vm_log, offset, timeout=args.poll * 4)
-        via = "exec"
-        if status != "ok" and not status.startswith("absent:") and status != "rotated":
-            if args.http_after > 0 and http_base and consec_fail + 1 >= args.http_after:
-                data, remote_size, status = _fetch_http(
-                    http_base, http_token, http_name, offset, timeout=args.poll * 4)
-                if status == "ok":
-                    via = "http"
         now_mono = time.monotonic()
         now_wall = time.time()
         if status == "ok":
@@ -592,7 +498,7 @@ def main() -> int:
         elif last_event == "error":
             state = "stuck-error"
         _say("INFO", "watch",
-             f"{state} via={via} vm={_age(vm_age)} fetch={_age(fetch_age)} size={file_size}{action}")
+             f"{state} vm={_age(vm_age)} fetch={_age(fetch_age)} size={file_size}{action}")
         if finished or last_event == "error":
             continue  # silence after done/crash is expected; never alert, never exit
         if vm_age >= args.downtime and not vm_down:
