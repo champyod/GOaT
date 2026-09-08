@@ -108,13 +108,13 @@ _REAP_SCRIPT = (
     "def api(path):\n"
     "    try:\n"
     "        with urllib.request.urlopen(f'http://localhost:9000/api/{path}', timeout=10) as r:\n"
-    "            return json.load(r)\n"
-    "    except Exception:\n"
-    "        return None\n"
-    "kernels = api('kernels')\n"
-    "sessions = api('sessions')\n"
+    "            return json.load(r), ''\n"
+    "    except Exception as e:\n"
+    "        return None, type(e).__name__\n"
+    "kernels, kerr = api('kernels')\n"
+    "sessions, serr = api('sessions')\n"
     "if kernels is None or sessions is None:\n"
-    "    print('REAPED -1 API-DOWN')\n"
+    "    print(f'REAPED -1 API-DOWN kernels={kerr} sessions={serr}')\n"
     "else:\n"
     "    busy = set()\n"
     "    for s in sessions:\n"
@@ -404,7 +404,7 @@ def main() -> int:
     last_growth = start
     polls = 0
     consec_fail = 0
-    fetch_failed = vm_warned = vm_down = absent_warned = False
+    fetch_failed = fetch_alerted = vm_warned = vm_down = absent_warned = False
     reported: set[str] = set()
     while True:
         time.sleep(args.poll)
@@ -423,7 +423,9 @@ def main() -> int:
             consec_fail = 0
             if fetch_failed:
                 _say("INFO", "watch", "fetch recovered")
-                _send(webhook, f"{args.job} sync recovered", "Sync back", 0x00FF00)
+                if fetch_alerted:
+                    _send(webhook, f"{args.job} sync recovered", "Sync back", 0x00FF00)
+                    fetch_alerted = False
                 fetch_failed = False
             absent_warned = False
             if remote_size is not None:
@@ -481,11 +483,16 @@ def main() -> int:
                 _say("WARNING", "watch", f"vm log absent ({status[7:][:150]})")
         elif not fetch_failed:
             fetch_failed = True
+            fetch_alerted = False
             _say("WARNING", "watch", f"fetch failed: {status}")
-            _send(webhook, f"{args.job} fetch failed: {status[:500]}",
-                  "Fetch failed", 0xFFA500, True)
         else:
             consec_fail += 1
+            # Discord only on 3rd straight failure; recovery pings only if
+            # an alert went out. Log lines stay verbose, Discord stays quiet.
+            if consec_fail == 2 and not fetch_alerted:
+                fetch_alerted = True
+                _send(webhook, f"{args.job} fetch failed: {status[:500]}",
+                      "Fetch failed", 0xFFA500, True)
             # Poisoned stored kernel binding fails every poll the same way;
             # every 3rd consecutive failure, drop it so one fresh POST happens.
             if consec_fail % 3 == 0:
