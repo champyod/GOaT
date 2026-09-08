@@ -37,6 +37,12 @@ nohup bash -c 'while true; do cp /tmp/goat_training_log.txt /content/drive/MyDri
 watch -n 3 'tail -n 25 /tmp/goat_training_log.txt; echo ---; free -h | head -2; df -h / /tmp | tail -2; (nvidia-smi --query-gpu=utilization.gpu,memory.used,temperature.gpu,power.draw --format=csv,noheader 2>/dev/null || echo "no gpu"); ps -o pcpu,pmem,etime,args -p $(pgrep -f "train_mt|train_ocr" | head -5); echo ---; ps -eo pcpu,pmem,etime,args --sort=-%mem | head -8; echo ---; cat /content/drive/MyDrive/GOaT/logs/ram_train_ocr.json 2>/dev/null'
 ```
 
+RAM curve (paste after training starts; JSON lives on Drive, shown inside watch):
+```bash
+TRAIN_PID=$(pgrep -f "notebooks/training/train_ocr.py" | head -1)
+nohup uv run --project /content/GOaT/model python scripts/monitor_ram.py --pid $TRAIN_PID --duration 86400 --interval 5 --output /content/drive/MyDrive/GOaT/logs/ram_train_ocr.json > /tmp/ram_watch.log 2>&1 &
+```
+
 ### Training debug
 Same commands with `--debug` on the script call — reaches train_mt, train_ocr and generate_synthetic.
 ```bash
