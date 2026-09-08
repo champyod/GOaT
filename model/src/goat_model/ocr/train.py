@@ -8,6 +8,7 @@ validation CER tracking and result writing.
 
 from __future__ import annotations
 
+import gc
 import json
 from pathlib import Path
 
@@ -254,8 +255,10 @@ def run_ocr_finetune(
             trainer.train(resume_from_checkpoint=last_ckpt if last_ckpt else False)
             model.save_pretrained(out_dir)
 
-            val_cer = _infer_cer(model, test_ds, processor, batch, test_refs)
+            val_cer = _infer_cer(model, test_ds, processor, min(batch, 8), test_refs)
+            del trainer
             del model
+            gc.collect()
             torch.cuda.empty_cache()
 
             key = {"lr": lr, "batch_size": batch}
