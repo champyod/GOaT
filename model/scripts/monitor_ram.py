@@ -40,7 +40,11 @@ def main() -> None:
     deadline = time.monotonic() + args.duration
     _info("ram", "sampling", pid=proc.pid, duration_s=args.duration, interval_s=args.interval)
     while time.monotonic() < deadline:
-        samples.append(proc.memory_info().rss / 1_000_000)
+        try:
+            samples.append(proc.memory_info().rss / 1_000_000)
+        except psutil.NoSuchProcess:
+            _warn("ram", "target exited", pid=proc.pid, samples=len(samples))
+            break
         if len(samples) % 60 == 0:
             write_json(
                 args.output,
