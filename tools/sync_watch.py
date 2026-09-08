@@ -423,6 +423,7 @@ def main() -> int:
             consec_fail = 0
             if fetch_failed:
                 _say("INFO", "watch", "fetch recovered")
+                _send(webhook, f"{args.job} sync recovered", "Sync back", 0x00FF00)
                 fetch_failed = False
             absent_warned = False
             if remote_size is not None:
@@ -433,6 +434,10 @@ def main() -> int:
                     fh.write(data if data.endswith("\n") else data + "\n")
                 file_size = out.stat().st_size
                 last_growth = now_mono
+                if vm_warned or vm_down:
+                    vm_warned = vm_down = False
+                    _say("INFO", "watch", "session is back")
+                    _send(webhook, f"{args.job} is back - log flowing again", "Session back", 0x00FF00)
                 ts = _content_time(data)
                 if ts is not None:
                     last_content = ts
