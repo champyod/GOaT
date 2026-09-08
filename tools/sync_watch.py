@@ -183,6 +183,25 @@ def _reap_kernels(session: str, timeout: float) -> str:
     return "reap bad protocol: " + out[:200]
 
 
+def _reset_binding(session: str) -> str:
+    """Clear stored kernel/session ids so the next exec POSTs one fresh
+    kernel. Best-effort: without colab_cli importable there is nothing to do."""
+    try:
+        from colab_cli.common import state as _cli_state
+    except ImportError:
+        return "no colab_cli, skip"
+    try:
+        s = _cli_state.store.get(session)
+        if s is None:
+            return "no stored session"
+        s.kernel_id = None
+        s.session_id = None
+        _cli_state.store.add(s)
+        return "binding cleared, next exec POSTs fresh"
+    except Exception as err:
+        return f"reset failed: {err}"
+
+
 def _fetch(session: str, vm_log: str, offset: int, timeout: float) -> tuple[str | None, int | None, str]:
     """(data, remote_size, status). Only bytes past offset are returned, so the
     local log holds exactly remote bytes with no duplicates.
@@ -336,6 +355,7 @@ def main() -> int:
     last_ok = start
     last_growth = start
     polls = 0
+    consec_fail = 0
     fetch_failed = vm_warned = vm_down = absent_warned = False
     reported: set[str] = set()
     while True:
@@ -352,6 +372,7 @@ def main() -> int:
         now_wall = time.time()
         if status == "ok":
             last_ok = now_mono
+            consec_fail = 0
             if fetch_failed:
                 _say("INFO", "watch", "fetch recovered")
                 fetch_failed = False
@@ -393,6 +414,7 @@ def main() -> int:
                     last_event = "ok"
         elif status == "rotated":
             last_ok = now_mono
+            consec_fail = 0
             _say("WARNING", "watch", "vm log rotated, restarting local copy")
             out.write_bytes(b"")
             file_size = 0
@@ -400,6 +422,7 @@ def main() -> int:
             offset_path.write_text("0", encoding="utf-8")
         elif status.startswith("absent:"):
             last_ok = now_mono  # binding works; the file just isn't there yet
+            consec_fail = 0
             if not absent_warned:
                 absent_warned = True
                 _say("WARNING", "watch", f"vm log absent ({status[7:][:150]})")
@@ -408,6 +431,12 @@ def main() -> int:
             _say("WARNING", "watch", f"fetch failed: {status}")
             _send(webhook, f"{args.job} fetch failed: {status[:500]}",
                   "Fetch failed", 0xFFA500, True)
+        else:
+            consec_fail += 1
+            # Poisoned stored kernel binding fails every poll the same way;
+            # every 3rd consecutive failure, drop it so one fresh POST happens.
+            if consec_fail % 3 == 0:
+                _say("INFO", "watch", f"binding reset: {_reset_binding(args.session)}")
         # ages: vm from content timestamps, else growth, else last good fetch.
         candidates = [now_mono - last_growth]
         if last_content is not None:
