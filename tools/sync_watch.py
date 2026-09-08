@@ -241,6 +241,16 @@ def _cli_python() -> str | None:
     return None
 
 
+def _short_exec_error(proc) -> str:
+    """One-line exec failure: skip Rich traceback boxes, keep the error."""
+    raw = proc.stderr.decode("utf-8", "replace").splitlines()
+    text = [ln.strip() for ln in raw if ln.strip()]
+    text = [ln for ln in text if not ln[0] in "│╭╰─"]
+    hit = next((ln for ln in reversed(text) if "Error" in ln), None)
+    short = hit or (text[-1] if text else f"exit {proc.returncode}")
+    return f"exit {proc.returncode}: {short[:200]}"
+
+
 def _fetch(session: str, vm_log: str, offset: int, timeout: float) -> tuple[str | None, int | None, str]:
     """(data, remote_size, status). Only bytes past offset are returned, so the
     local log holds exactly remote bytes with no duplicates.
@@ -284,8 +294,7 @@ def _fetch(session: str, vm_log: str, offset: int, timeout: float) -> tuple[str 
     out = proc.stdout.decode("utf-8", "replace")
     lines = [ln for ln in out.splitlines() if not ln.startswith("[colab]")]
     if proc.returncode != 0 or not lines:
-        err_text = proc.stderr.decode("utf-8", "replace").strip()
-        return None, None, err_text or f"exit {proc.returncode}"
+        return None, None, _short_exec_error(proc)
     first = lines[0]
     if first.startswith("REMOTE-MISS"):
         return None, None, "absent:" + first[len("REMOTE-MISS "):][:200]
