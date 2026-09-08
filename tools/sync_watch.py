@@ -80,6 +80,66 @@ def _send(webhook: str, text: str, title: str, color: int, ping: bool = False) -
         _say("WARNING", "watch", f"notify failed: {err}")
 
 
+def _exec_raw(session: str, script: str, timeout: float) -> str | None:
+    """Run script on the VM via colab exec; return stdout or None on failure."""
+    try:
+        proc = subprocess.run(
+            ["colab", "exec", "-s", session],
+            input=script.encode("utf-8"),
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    lines = [ln for ln in proc.stdout.decode("utf-8", "replace").splitlines() if not ln.startswith("[colab]")]
+    return "\n".join(lines) if lines else None
+
+
+_REAP_SCRIPT = (
+    "import os, signal, subprocess\n"
+    "rows = subprocess.run(['ps', '-eo', 'pid,etimes,args'], capture_output=True, text=True).stdout.splitlines()\n"
+    "cands = []\n"
+    "for ln in rows[1:]:\n"
+    "    parts = ln.split(None, 2)\n"
+    "    if len(parts) != 3:\n"
+    "        continue\n"
+    "    toks = parts[2].split()\n"
+    "    if not any(toks[i] == '-m' and toks[i + 1] == 'colab_kernel_launcher'\n"
+    "               for i in range(len(toks) - 1)):\n"
+    "        continue\n"
+    "    try:\n"
+    "        cands.append((int(parts[1]), int(parts[0])))\n"
+    "    except ValueError:\n"
+    "        pass\n"
+    "cands.sort()\n"
+    "mine = os.getpid()\n"
+    "keep = set(pid for _, pid in cands[:2]) | {mine}\n"
+    "killed = 0\n"
+    "for _, pid in cands:\n"
+    "    if pid not in keep:\n"
+    "        try:\n"
+    "            os.kill(pid, signal.SIGKILL)\n"
+    "            killed += 1\n"
+    "        except OSError:\n"
+    "            pass\n"
+    "print(f'REAPED {killed} KEPT {len(keep)}')\n"
+)
+
+
+def _reap_kernels(session: str, timeout: float) -> str:
+    """Kill stale colab kernels on the VM, keep 2 newest (incl. the runner)."""
+    out = _exec_raw(session, _REAP_SCRIPT, timeout)
+    if out is None:
+        return "reap exec failed"
+    for ln in out.splitlines():
+        if ln.startswith("REAPED"):
+            return ln
+    return "reap bad protocol: " + out[:200]
+
+
 def _fetch(session: str, vm_log: str, offset: int, timeout: float) -> tuple[str | None, int | None, str]:
     """(data, remote_size, status). Only bytes past offset are returned, so the
     local log holds exactly remote bytes with no duplicates.
@@ -211,6 +271,8 @@ def main() -> int:
     parser.add_argument("--silence", type=float, default=600.0, help="stale seconds before warn")
     parser.add_argument("--downtime", type=float, default=3600.0, help="stale seconds before error")
     parser.add_argument("--poll", type=float, default=15.0, help="poll interval seconds")
+    parser.add_argument("--reap-every", type=int, default=20,
+                        help="run kernel reaper every N polls (0 disables)")
     args = parser.parse_args()
 
     _load_dotenv()
@@ -230,10 +292,16 @@ def main() -> int:
     finished = False
     last_ok = start
     last_growth = start
+    polls = 0
     fetch_failed = vm_warned = vm_down = absent_warned = False
     reported: set[str] = set()
     while True:
         time.sleep(args.poll)
+        polls += 1
+        # reap: every exec spawns a VM kernel that is never culled; kill
+        # stale ones, keep 2 newest. The reaper exec itself adds one.
+        if args.reap_every > 0 and polls % args.reap_every == 0:
+            _say("INFO", "watch", f"reap: {_reap_kernels(args.session, timeout=args.poll * 4)}")
         # fetch: only new bytes past offset; failures known directly,
         # never written into the log, which holds EXACTLY remote bytes.
         data, remote_size, status = _fetch(args.session, args.vm_log, offset, timeout=args.poll * 4)
