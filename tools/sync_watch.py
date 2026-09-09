@@ -247,6 +247,11 @@ def _short_exec_error(proc) -> str:
     text = [ln.strip() for ln in raw if ln.strip()]
     text = [ln for ln in text if not ln[0] in "│╭╰─"]
     hit = next((ln for ln in reversed(text) if "Error" in ln), None)
+    if hit is not None and hit.endswith(":"):
+        # Rich wraps details on the next line ("ReadTimeoutError:" + url).
+        i = text.index(hit)
+        if i + 1 < len(text):
+            hit = f"{hit} {text[i + 1][:120]}"
     short = hit or (text[-1] if text else f"exit {proc.returncode}")
     return f"exit {proc.returncode}: {short[:200]}"
 
