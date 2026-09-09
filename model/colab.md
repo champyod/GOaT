@@ -34,7 +34,7 @@ uv run python notebooks/selection/select_mt.py --mt-test-dir $MT_TEST_DIR --outp
 ```bash
 nohup bash /content/GOaT/model/notebooks/training.sh /content/drive/MyDrive/GOaT > /tmp/goat_training_log.txt 2>&1 &
 nohup bash -c 'while true; do cp /tmp/goat_training_log.txt /content/drive/MyDrive/GOaT/logs/goat_training_log.txt; sleep 300; done' > /dev/null 2>&1 &
-watch -n 3 'tail -n 25 /tmp/goat_training_log.txt; echo ---; free -h | head -2; df -h / /tmp | tail -2; (nvidia-smi --query-gpu=utilization.gpu,memory.used,temperature.gpu,power.draw --format=csv,noheader 2>/dev/null || echo "no gpu"); ps -o pcpu,pmem,etime,args -p $(pgrep -f "train_mt|train_ocr" | head -5); echo ---; ps -eo pcpu,pmem,etime,args --sort=-%mem | head -8; echo ---; cat /content/drive/MyDrive/GOaT/logs/ram_train_ocr.json 2>/dev/null'
+watch -n 3 'tail -n 30 /tmp/goat_training_log.txt; echo ---; free -h | head -2; df -h / /tmp | tail -2; (nvidia-smi --query-gpu=utilization.gpu,memory.used,temperature.gpu,power.draw --format=csv,noheader 2>/dev/null || echo "no gpu"); ps -o pcpu,pmem,etime,args -p $(pgrep -f "train_mt|train_ocr" | head -5); echo ---; ps -eo pcpu,pmem,etime,args --sort=-%mem | head -8; echo ---; cat /content/drive/MyDrive/GOaT/logs/ram_train_ocr.json 2>/dev/null'
 ```
 
 RAM curve (paste after training starts; JSON lives on Drive, shown inside watch):
@@ -48,7 +48,11 @@ Same commands with `--debug` on the script call — reaches train_mt, train_ocr 
 ```bash
 nohup bash /content/GOaT/model/notebooks/training.sh /content/drive/MyDrive/GOaT --debug > /tmp/goat_training_log.txt 2>&1 &
 nohup bash -c 'while true; do cp /tmp/goat_training_log.txt /content/drive/MyDrive/GOaT/logs/goat_training_log.txt; sleep 300; done' > /dev/null 2>&1 &
-watch -n 3 'tail -n 25 /tmp/goat_training_log.txt; echo ---; free -h | head -2; df -h / /tmp | tail -2; (nvidia-smi --query-gpu=utilization.gpu,memory.used,temperature.gpu,power.draw --format=csv,noheader 2>/dev/null || echo "no gpu"); ps -o pcpu,pmem,etime,args -p $(pgrep -f "train_mt|train_ocr" | head -5); echo ---; ps -eo pcpu,pmem,etime,args --sort=-%mem | head -8; echo ---; cat /content/drive/MyDrive/GOaT/logs/ram_train_ocr.json 2>/dev/null'
+
+until TRAIN_PID=$(pgrep -f "notebooks/training/train_ocr.py" | head -1) && [ -n "$TRAIN_PID" ]; do sleep 30; done
+nohup uv run --project /content/GOaT/model python scripts/monitor_ram.py --pid "$TRAIN_PID" --duration 86400 --interval 5 --output /content/drive/MyDrive/GOaT/logs/ram_train_ocr.json > /tmp/ram_watch.log 2>&1 &
+
+watch -n 3 'tail -n 15 /tmp/goat_training_log.txt; echo ---; free -h | head -2; df -h / /tmp | tail -2; (nvidia-smi --query-gpu=utilization.gpu,memory.used,temperature.gpu,power.draw --format=csv,noheader 2>/dev/null || echo "no gpu"); ps -o pcpu,pmem,etime,args -p $(pgrep -f "train_mt|train_ocr" | head -5); echo ---; ps -eo pcpu,pmem,etime,args --sort=-%mem | head -8; echo ---; cat /content/drive/MyDrive/GOaT/logs/ram_train_ocr.json 2>/dev/null'
 ```
 Isolated single-script rerun:
 ```bash
