@@ -85,123 +85,6 @@ def _send(webhook: str, text: str, title: str, color: int, ping: bool = False) -
         _say("WARNING", "watch", f"notify failed: {err}")
 
 
-def _exec_raw(session: str, script: str, timeout: float) -> str | None:
-    """Run script on the VM via colab exec; return stdout or None on failure."""
-    try:
-        proc = subprocess.run(
-            ["colab", "exec", "-s", session],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0:
-        return None
-    lines = [ln for ln in proc.stdout.decode("utf-8", "replace").splitlines() if not ln.startswith("[colab]")]
-    return "\n".join(lines) if lines else None
-
-
-_REAP_SCRIPT = (
-    "import datetime, json, os, signal, socket, subprocess, urllib.request\n"
-    "def hosts():\n"
-    "    hs = ['127.0.0.1']\n"
-    "    try:\n"
-    "        ip = socket.gethostbyname(socket.gethostname())\n"
-    "        if ip not in hs:\n"
-    "            hs.append(ip)\n"
-    "    except OSError:\n"
-    "        pass\n"
-    "    return hs\n"
-    "def call(method, path):\n"
-    "    err = ''\n"
-    "    for h in hosts():\n"
-    "        try:\n"
-    "            req = urllib.request.Request(f'http://{h}:9000/api/{path}', method=method)\n"
-    "            with urllib.request.urlopen(req, timeout=10) as r:\n"
-    "                return r.read(), ''\n"
-    "        except Exception as e:\n"
-    "            err = type(e).__name__\n"
-    "    return None, err\n"
-    "def api(path):\n"
-    "    data, err = call('GET', path)\n"
-    "    if data is None:\n"
-    "        return None, err\n"
-    "    try:\n"
-    "        return json.loads(data), ''\n"
-    "    except Exception as e:\n"
-    "        return None, type(e).__name__\n"
-    "kernels, kerr = api('kernels')\n"
-    "sessions, serr = api('sessions')\n"
-    "if kernels is None or sessions is None:\n"
-    "    print(f'REAPED -1 API-DOWN kernels={kerr} sessions={serr}')\n"
-    "else:\n"
-    "    busy = set()\n"
-    "    for s in sessions:\n"
-    "        kid = (s.get('kernel') or {}).get('id')\n"
-    "        if kid:\n"
-    "            busy.add(kid)\n"
-    "    now = datetime.datetime.now(datetime.timezone.utc)\n"
-    "    killable = set()\n"
-    "    for k in kernels:\n"
-    "        kid = k.get('id')\n"
-    "        if not kid or kid in busy:\n"
-    "            continue\n"
-    "        if (k.get('execution_state') or '') != 'idle':\n"
-    "            continue\n"
-    "        try:\n"
-    "            last = datetime.datetime.fromisoformat(k['last_activity'])\n"
-    "        except (KeyError, ValueError):\n"
-    "            continue\n"
-    "        if (now - last).total_seconds() > 300:\n"
-    "            killable.add(kid)\n"
-    "    rows = subprocess.run(['ps', '-eo', 'pid,args'], capture_output=True, text=True).stdout.splitlines()\n"
-    "    mine = os.getpid()\n"
-    "    killed = 0\n"
-    "    for ln in rows[1:]:\n"
-    "        parts = ln.split(None, 1)\n"
-    "        if len(parts) != 2:\n"
-    "            continue\n"
-    "        toks = parts[1].split()\n"
-    "        if not any(toks[i] == '-m' and toks[i + 1] == 'colab_kernel_launcher'\n"
-    "                   for i in range(len(toks) - 1)):\n"
-    "            continue\n"
-    "        import re\n"
-    "        m = re.search(r'kernel-([0-9a-f-]{36})\\.json', parts[1])\n"
-    "        if not m or m.group(1) not in killable:\n"
-    "            continue\n"
-    "        try:\n"
-    "            pid = int(parts[0])\n"
-    "        except ValueError:\n"
-    "            continue\n"
-    "        if pid == mine:\n"
-    "            continue\n"
-    "        kid = m.group(1)\n"
-    "        _, derr = call('DELETE', f'kernels/{kid}')\n"
-    "        if derr == '':\n"
-    "            killed += 1\n"
-    "            continue\n"
-    "        try:\n"
-    "            os.kill(pid, signal.SIGKILL)\n"
-    "            killed += 1\n"
-    "        except OSError:\n"
-    "            pass\n"
-    "    print(f'REAPED {killed} IDLE-ORPHANS')\n"
-)
-
-
-def _reap_kernels(session: str, timeout: float) -> str:
-    """Kill stale colab kernels on the VM, keep 2 newest (incl. the runner)."""
-    out = _exec_raw(session, _REAP_SCRIPT, timeout)
-    if out is None:
-        return "reap exec failed"
-    for ln in out.splitlines():
-        if ln.startswith("REAPED"):
-            return ln
-    return "reap bad protocol: " + out[:200]
-
-
 _RESET_SNIPPET = (
     "from colab_cli.common import state as _s; "
     "s = _s.store.get('{session}'); "
@@ -405,8 +288,6 @@ def main() -> int:
     parser.add_argument("--silence", type=float, default=600.0, help="stale seconds before warn")
     parser.add_argument("--downtime", type=float, default=3600.0, help="stale seconds before error")
     parser.add_argument("--poll", type=float, default=15.0, help="poll interval seconds")
-    parser.add_argument("--reap-every", type=int, default=20,
-                        help="run kernel reaper every N polls (0 disables)")
     args = parser.parse_args()
 
     _load_dotenv()
@@ -433,12 +314,10 @@ def main() -> int:
     while True:
         time.sleep(args.poll)
         polls += 1
-        # reap: every exec spawns a VM kernel that is never culled; kill
-        # stale ones, keep 2 newest. The reaper exec itself adds one.
-        if args.reap_every > 0 and polls % args.reap_every == 0:
-            _say("INFO", "watch", f"reap: {_reap_kernels(args.session, timeout=args.poll * 4)}")
         # fetch: only new bytes past offset; failures known directly,
         # never written into the log, which holds EXACTLY remote bytes.
+        # Kernel hygiene lives VM-side (tools/vm_reaper.py); this loop
+        # spawns nothing beyond the single reused exec kernel.
         data, remote_size, status = _fetch(args.session, args.vm_log, offset, timeout=args.poll * 4)
         now_mono = time.monotonic()
         now_wall = time.time()
