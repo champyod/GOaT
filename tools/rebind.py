@@ -195,8 +195,8 @@ def main() -> None:
             else:
                 refresh(args.name, args.endpoint, args.pick)
             bound = True
-        except (SystemExit, EOFError) as err:
-            print(f"rebind: {err}", flush=True)
+        except Exception as err:  # noqa: BLE001 - rebind never dies; retry forever
+            print(f"rebind: {type(err).__name__}: {str(err)[:150]}", flush=True)
             bound = False
             if not args.loop:
                 raise SystemExit(1) from err
