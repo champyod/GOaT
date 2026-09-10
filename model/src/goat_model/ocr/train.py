@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gc
 import json
+import time
 from pathlib import Path
 
 import torch
@@ -206,18 +207,23 @@ def run_ocr_finetune(
             torch.cuda.empty_cache()
             _info("ocr-train", "loading model", done=done, total=total, lr=lr, batch=batch)
             setup_seed(seed)
+            _info("ocr-train", "loading base model", model=THAITROCR_MODEL_ID)
             model = VisionEncoderDecoderModel.from_pretrained(THAITROCR_MODEL_ID)
             model.config.decoder_start_token_id = processor.tokenizer.cls_token_id
             model.config.pad_token_id = processor.tokenizer.pad_token_id
             device = resolve_device("cuda")
             model = model.to(device)
+            _info("ocr-train", "model on device", device=device)
 
             out_dir = out_root / f"lr{lr}_bs{batch}"
             ckpt_mirror = result_path.parent / "checkpoints" / f"lr{lr}_bs{batch}"
             if ckpt_mirror.is_dir() and not any(out_dir.glob("checkpoint-*")):
                 _info("ocr-train", "restoring checkpoints from Drive", src=str(ckpt_mirror))
                 out_dir.mkdir(parents=True, exist_ok=True)
-                sync_dir(ckpt_mirror, out_dir)
+                t0 = time.monotonic()
+                n_copied, n_skipped = sync_dir(ckpt_mirror, out_dir)
+                _info("ocr-train", "checkpoints restored", copied=n_copied, skipped=n_skipped,
+                      elapsed_s=round(time.monotonic() - t0, 1))
             args = Seq2SeqTrainingArguments(
                 output_dir=str(out_dir),
                 learning_rate=lr,
