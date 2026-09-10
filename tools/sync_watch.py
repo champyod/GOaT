@@ -396,9 +396,10 @@ def main() -> int:
                 fetch_alerted = True
                 _send(webhook, f"{args.job} fetch failed: {status[:500]}",
                       "Fetch failed", 0xFFA500, True)
-            # Poisoned stored kernel binding fails every poll the same way;
-            # every 3rd consecutive failure, drop it so one fresh POST happens.
-            if consec_fail % 3 == 0:
+            # Binding reset only on poison (500/terminal), never on load:
+            # a timeout means the server is slow, the binding is fine, and
+            # clearing it would orphan a kernel per reset.
+            if consec_fail % 3 == 0 and re.search(r"500|HTTPError|session|kernel", status, re.IGNORECASE):
                 _say("INFO", "watch", f"binding reset: {_reset_binding(args.session)}")
         # ages: vm from content timestamps, else growth, else last good fetch.
         candidates = [now_mono - last_growth]
