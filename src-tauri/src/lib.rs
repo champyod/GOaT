@@ -4,8 +4,11 @@ mod models;
 
 use std::sync::Mutex;
 
+const DEFAULT_HOTKEY: &str = "Ctrl+Shift+S";
+
 struct AppState {
-    ocr: Mutex<Option<models::OcrModels>>,
+    ocr: Mutex<Option<paddleocr_rs_onnx::OcrEngine>>,
+    hotkey: Mutex<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -28,25 +31,41 @@ fn ping() -> String {
 fn init_models(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let mut guard = state.ocr.lock().map_err(|e| e.to_string())?;
     if guard.is_none() {
-        let ocr_models = models::load_ocr_models().map_err(|e| format!("{e}"))?;
-        *guard = Some(ocr_models);
+        let engine = models::load_ocr_engine().map_err(|e| format!("{e}"))?;
+        *guard = Some(engine);
     }
     Ok("OCR models loaded".to_string())
 }
 
 #[tauri::command]
-fn ocr(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let guard = state.ocr.lock().map_err(|e| e.to_string())?;
-    guard
-        .as_ref()
-        .ok_or_else(|| "models not loaded, call init_models first".to_string())?;
-    Ok("OCR placeholder".to_string())
+fn models_status() -> models::ModelsStatus {
+    models::models_status()
+}
+
+fn ensure_engine<'a>(
+    guard: &'a mut std::sync::MutexGuard<'_, Option<paddleocr_rs_onnx::OcrEngine>>,
+) -> Result<&'a paddleocr_rs_onnx::OcrEngine, String> {
+    if guard.is_none() {
+        let engine = models::load_ocr_engine().map_err(|e| format!("{e}"))?;
+        **guard = Some(engine);
+    }
+    guard.as_ref().ok_or_else(|| "OCR engine not loaded".to_string())
+}
+
+#[tauri::command]
+fn ocr(
+    state: tauri::State<'_, AppState>,
+    image: capture::CapturedImage,
+) -> Result<String, String> {
+    let dynamic = image.to_dynamic_image()?;
+    let mut guard = state.ocr.lock().map_err(|e| e.to_string())?;
+    let engine = ensure_engine(&mut guard)?;
+    models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}"))
 }
 
 #[tauri::command]
 fn translate(text: String) -> Result<String, String> {
-    let _translator = models::load_translator().map_err(|e| format!("{e}"))?;
-    Ok(text)
+    models::run_translate(&text).map_err(|e| format!("{e}"))
 }
 
 #[tauri::command]
@@ -76,17 +95,35 @@ fn is_autostart(app: tauri::AppHandle) -> Result<bool, String> {
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn capture_primary(app: tauri::AppHandle) -> Result<ResultPayload, String> {
+fn run_pipeline(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> Result<ResultPayload, String> {
     use tauri::Emitter;
     let image = capture::capture_primary()?;
+    let dynamic = image.to_dynamic_image()?;
+    let ocr_text = {
+        let mut guard = state.ocr.lock().map_err(|e| e.to_string())?;
+        let engine = ensure_engine(&mut guard)?;
+        models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}"))?
+    };
+    let translated_text = if ocr_text.trim().is_empty() {
+        String::new()
+    } else {
+        models::run_translate(&ocr_text).map_err(|e| format!("{e}"))?
+    };
     let payload = ResultPayload {
         image,
-        ocr_text: String::new(),
-        translated_text: String::new(),
+        ocr_text,
+        translated_text,
     };
     let _ = app.emit("capture-result", &payload);
     Ok(payload)
+}
+
+#[tauri::command]
+fn capture_primary(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<ResultPayload, String> {
+    run_pipeline(&app, &state)
 }
 
 #[cfg(desktop)]
@@ -135,24 +172,166 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 #[cfg(desktop)]
 fn setup_shortcut(app: &tauri::AppHandle) -> tauri::Result<()> {
-    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-
-    let hotkey = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyS);
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
     app.plugin(
         tauri_plugin_global_shortcut::Builder::new()
-            .with_handler(move |app, shortcut, event| {
-                if shortcut == &hotkey && event.state == ShortcutState::Pressed {
+            .with_handler(move |app, _shortcut, event| {
+                use tauri::Manager;
+                if event.state == ShortcutState::Pressed {
                     show_main_window(app);
+                    let state: tauri::State<'_, AppState> = app.state();
+                    let _ = run_pipeline(app, &state);
                 }
             })
             .build(),
     )?;
 
+    let hotkey = parse_shortcut(DEFAULT_HOTKEY).expect("default hotkey parses");
     app.global_shortcut()
         .register(hotkey)
         .map_err(|e| tauri::Error::Anyhow(anyhow::Error::msg(e)))?;
     Ok(())
+}
+
+fn parse_key_code(lower: &str) -> Option<tauri_plugin_global_shortcut::Code> {
+    use tauri_plugin_global_shortcut::Code;
+    if lower.len() == 1 {
+        let c = lower.chars().next()?;
+        if c.is_ascii_alphabetic() {
+            return match c {
+                'a' => Some(Code::KeyA),
+                'b' => Some(Code::KeyB),
+                'c' => Some(Code::KeyC),
+                'd' => Some(Code::KeyD),
+                'e' => Some(Code::KeyE),
+                'f' => Some(Code::KeyF),
+                'g' => Some(Code::KeyG),
+                'h' => Some(Code::KeyH),
+                'i' => Some(Code::KeyI),
+                'j' => Some(Code::KeyJ),
+                'k' => Some(Code::KeyK),
+                'l' => Some(Code::KeyL),
+                'm' => Some(Code::KeyM),
+                'n' => Some(Code::KeyN),
+                'o' => Some(Code::KeyO),
+                'p' => Some(Code::KeyP),
+                'q' => Some(Code::KeyQ),
+                'r' => Some(Code::KeyR),
+                's' => Some(Code::KeyS),
+                't' => Some(Code::KeyT),
+                'u' => Some(Code::KeyU),
+                'v' => Some(Code::KeyV),
+                'w' => Some(Code::KeyW),
+                'x' => Some(Code::KeyX),
+                'y' => Some(Code::KeyY),
+                'z' => Some(Code::KeyZ),
+                _ => None,
+            };
+        }
+        if c.is_ascii_digit() {
+            return match c {
+                '0' => Some(Code::Digit0),
+                '1' => Some(Code::Digit1),
+                '2' => Some(Code::Digit2),
+                '3' => Some(Code::Digit3),
+                '4' => Some(Code::Digit4),
+                '5' => Some(Code::Digit5),
+                '6' => Some(Code::Digit6),
+                '7' => Some(Code::Digit7),
+                '8' => Some(Code::Digit8),
+                '9' => Some(Code::Digit9),
+                _ => None,
+            };
+        }
+        return None;
+    }
+    match lower {
+        "space" => Some(Code::Space),
+        "enter" => Some(Code::Enter),
+        "tab" => Some(Code::Tab),
+        "escape" | "esc" => Some(Code::Escape),
+        "backspace" => Some(Code::Backspace),
+        "delete" => Some(Code::Delete),
+        "up" => Some(Code::ArrowUp),
+        "down" => Some(Code::ArrowDown),
+        "left" => Some(Code::ArrowLeft),
+        "right" => Some(Code::ArrowRight),
+        "f1" => Some(Code::F1),
+        "f2" => Some(Code::F2),
+        "f3" => Some(Code::F3),
+        "f4" => Some(Code::F4),
+        "f5" => Some(Code::F5),
+        "f6" => Some(Code::F6),
+        "f7" => Some(Code::F7),
+        "f8" => Some(Code::F8),
+        "f9" => Some(Code::F9),
+        "f10" => Some(Code::F10),
+        "f11" => Some(Code::F11),
+        "f12" => Some(Code::F12),
+        _ => None,
+    }
+}
+
+fn parse_shortcut(s: &str) -> Option<tauri_plugin_global_shortcut::Shortcut> {
+    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
+    let mut mods = Modifiers::empty();
+    let mut key: Option<Code> = None;
+    for part in s.split('+').map(str::trim).filter(|p| !p.is_empty()) {
+        let lower = part.to_ascii_lowercase();
+        match lower.as_str() {
+            "ctrl" | "control" => mods |= Modifiers::CONTROL,
+            "shift" => mods |= Modifiers::SHIFT,
+            "alt" => mods |= Modifiers::ALT,
+            "super" | "win" | "meta" | "cmd" | "command" => mods |= Modifiers::SUPER,
+            _ => {
+                if key.is_some() {
+                    return None;
+                }
+                key = Some(parse_key_code(&lower)?);
+            }
+        }
+    }
+    Some(Shortcut::new(
+        if mods.is_empty() { None } else { Some(mods) },
+        key?,
+    ))
+}
+
+#[tauri::command]
+fn get_hotkey(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    state
+        .hotkey
+        .lock()
+        .map(|g| g.clone())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_hotkey(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    hotkey: String,
+) -> Result<String, String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let new_shortcut = parse_shortcut(&hotkey)
+        .ok_or_else(|| format!("invalid shortcut \"{hotkey}\", use e.g. Ctrl+Shift+S"))?;
+    let old = state
+        .hotkey
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    if let Some(old_shortcut) = parse_shortcut(&old) {
+        let _ = app.global_shortcut().unregister(old_shortcut);
+    }
+    app.global_shortcut().register(new_shortcut).map_err(|e| {
+        if let Some(old_shortcut) = parse_shortcut(&old) {
+            let _ = app.global_shortcut().register(old_shortcut);
+        }
+        format!("failed to register shortcut \"{hotkey}\": {e}")
+    })?;
+    *state.hotkey.lock().map_err(|e| e.to_string())? = hotkey.clone();
+    Ok(hotkey)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -165,6 +344,7 @@ pub fn run() {
         ))
         .manage(AppState {
             ocr: Mutex::new(None),
+            hotkey: Mutex::new(DEFAULT_HOTKEY.to_string()),
         })
         .setup(|app| {
             #[cfg(desktop)]
@@ -188,13 +368,16 @@ pub fn run() {
             greet,
             ping,
             init_models,
+            models_status,
             ocr,
             translate,
             capture::capture_screen,
             capture_primary,
             hide_window,
             set_autostart,
-            is_autostart
+            is_autostart,
+            get_hotkey,
+            set_hotkey
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

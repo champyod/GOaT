@@ -1,11 +1,24 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use xcap::Monitor;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CapturedImage {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+}
+
+impl CapturedImage {
+    pub fn to_dynamic_image(&self) -> Result<image::DynamicImage, String> {
+        image::RgbaImage::from_raw(self.width, self.height, self.rgba.clone())
+            .map(image::DynamicImage::ImageRgba8)
+            .ok_or_else(|| {
+                format!(
+                    "captured image buffer does not match {}x{}",
+                    self.width, self.height
+                )
+            })
+    }
 }
 
 #[tauri::command]
