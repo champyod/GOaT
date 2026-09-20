@@ -1,0 +1,5 @@
+# ct2rs, sentencepiece-sys and esaxx-rs all build their C++ with static CRT
+# (/MT) on Windows and expect the Rust side to match, otherwise the final
+# link mixes MT_StaticRelease and MD_DynamicRelease objects (LNK2038/LNK2005).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
