@@ -7,7 +7,7 @@ use std::sync::Mutex;
 const DEFAULT_HOTKEY: &str = "Ctrl+Shift+S";
 
 struct AppState {
-    ocr: Mutex<Option<paddleocr_rs_onnx::OcrEngine>>,
+    ocr: Mutex<Option<pure_onnx_ocr_sync::OcrEngine>>,
     hotkey: Mutex<String>,
 }
 
@@ -44,8 +44,8 @@ fn models_status(app: tauri::AppHandle) -> models::ModelsStatus {
 
 fn ensure_engine<'a>(
     app: &tauri::AppHandle,
-    guard: &'a mut std::sync::MutexGuard<'_, Option<paddleocr_rs_onnx::OcrEngine>>,
-) -> Result<&'a paddleocr_rs_onnx::OcrEngine, String> {
+    guard: &'a mut std::sync::MutexGuard<'_, Option<pure_onnx_ocr_sync::OcrEngine>>,
+) -> Result<&'a pure_onnx_ocr_sync::OcrEngine, String> {
     if guard.is_none() {
         let engine = models::load_ocr_engine(app).map_err(|e| format!("{e}"))?;
         **guard = Some(engine);

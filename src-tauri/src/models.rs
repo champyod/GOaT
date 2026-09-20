@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use paddleocr_rs_onnx::{OcrEngine, OrderBy};
+use pure_onnx_ocr_sync::{OcrEngine, OcrEngineBuilder};
 
 // Placeholder local model paths. Models are never downloaded by the app;
 // place the files here yourself. All paths are local only.
@@ -66,15 +66,6 @@ pub fn models_status(app: &tauri::AppHandle) -> ModelsStatus {
     }
 }
 
-fn read_model_file(path: &PathBuf, label: &str) -> anyhow::Result<Vec<u8>> {
-    std::fs::read(path).map_err(|_| {
-        anyhow::anyhow!(
-            "{label} model file not found at {} (placeholder path, place the file there)",
-            path.display()
-        )
-    })
-}
-
 fn require_file(app: &tauri::AppHandle, name: &str, label: &str) -> anyhow::Result<PathBuf> {
     find_file(app, name).ok_or_else(|| {
         anyhow::anyhow!(
@@ -88,21 +79,22 @@ pub fn load_ocr_engine(app: &tauri::AppHandle) -> anyhow::Result<OcrEngine> {
     let det_path = require_file(app, OCR_DETECTION_MODEL, "detection")?;
     let rec_path = require_file(app, OCR_RECOGNITION_MODEL, "recognition")?;
     let keys_file = require_file(app, OCR_KEYS_FILE, "keys")?;
-    let det_model = read_model_file(&det_path, "detection")?;
-    let rec_model = read_model_file(&rec_path, "recognition")?;
-    let keys_data = read_model_file(&keys_file, "keys")?;
-    let engine = OcrEngine::new(&det_model, &rec_model, &keys_data)
+    let engine = OcrEngineBuilder::new()
+        .det_model_path(&det_path)
+        .rec_model_path(&rec_path)
+        .dictionary_path(&keys_file)
+        .build()
         .map_err(|e| anyhow::anyhow!("failed to build OCR engine: {e}"))?;
     Ok(engine)
 }
 
 pub fn run_ocr(engine: &OcrEngine, image: &image::DynamicImage) -> anyhow::Result<String> {
-    let blocks = engine
-        .recognize_all(image, OrderBy::Horizontal)
+    let results = engine
+        .run_from_image(image)
         .map_err(|e| anyhow::anyhow!("OCR inference failed: {e}"))?;
-    let text = blocks
+    let text = results
         .iter()
-        .map(|b| b.text.trim())
+        .map(|r| r.text.trim())
         .filter(|t| !t.is_empty())
         .collect::<Vec<_>>()
         .join("\n");

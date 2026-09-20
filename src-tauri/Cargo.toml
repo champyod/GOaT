@@ -19,7 +19,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 xcap = "0.9.8"
-ort = "=2.0.0-rc.12"
 ct2rs = "0.10.1"
-paddleocr_rs_onnx = "0.2"
+pure-onnx-ocr-sync = "0.2"
 image = "0.25"
