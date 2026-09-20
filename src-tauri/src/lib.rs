@@ -28,25 +28,26 @@ fn ping() -> String {
 }
 
 #[tauri::command]
-fn init_models(state: tauri::State<'_, AppState>) -> Result<String, String> {
+fn init_models(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<String, String> {
     let mut guard = state.ocr.lock().map_err(|e| e.to_string())?;
     if guard.is_none() {
-        let engine = models::load_ocr_engine().map_err(|e| format!("{e}"))?;
+        let engine = models::load_ocr_engine(&app).map_err(|e| format!("{e}"))?;
         *guard = Some(engine);
     }
     Ok("OCR models loaded".to_string())
 }
 
 #[tauri::command]
-fn models_status() -> models::ModelsStatus {
-    models::models_status()
+fn models_status(app: tauri::AppHandle) -> models::ModelsStatus {
+    models::models_status(&app)
 }
 
 fn ensure_engine<'a>(
+    app: &tauri::AppHandle,
     guard: &'a mut std::sync::MutexGuard<'_, Option<paddleocr_rs_onnx::OcrEngine>>,
 ) -> Result<&'a paddleocr_rs_onnx::OcrEngine, String> {
     if guard.is_none() {
-        let engine = models::load_ocr_engine().map_err(|e| format!("{e}"))?;
+        let engine = models::load_ocr_engine(app).map_err(|e| format!("{e}"))?;
         **guard = Some(engine);
     }
     guard.as_ref().ok_or_else(|| "OCR engine not loaded".to_string())
@@ -54,18 +55,19 @@ fn ensure_engine<'a>(
 
 #[tauri::command]
 fn ocr(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     image: capture::CapturedImage,
 ) -> Result<String, String> {
     let dynamic = image.to_dynamic_image()?;
     let mut guard = state.ocr.lock().map_err(|e| e.to_string())?;
-    let engine = ensure_engine(&mut guard)?;
+    let engine = ensure_engine(&app, &mut guard)?;
     models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}"))
 }
 
 #[tauri::command]
-fn translate(text: String) -> Result<String, String> {
-    models::run_translate(&text).map_err(|e| format!("{e}"))
+fn translate(app: tauri::AppHandle, text: String) -> Result<String, String> {
+    models::run_translate(&app, &text).map_err(|e| format!("{e}"))
 }
 
 #[tauri::command]
@@ -101,13 +103,13 @@ fn run_pipeline(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> R
     let dynamic = image.to_dynamic_image()?;
     let ocr_text = {
         let mut guard = state.ocr.lock().map_err(|e| e.to_string())?;
-        let engine = ensure_engine(&mut guard)?;
+        let engine = ensure_engine(app, &mut guard)?;
         models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}"))?
     };
     let translated_text = if ocr_text.trim().is_empty() {
         String::new()
     } else {
-        models::run_translate(&ocr_text).map_err(|e| format!("{e}"))?
+        models::run_translate(app, &ocr_text).map_err(|e| format!("{e}"))?
     };
     let payload = ResultPayload {
         image,
@@ -381,4 +383,50 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tauri_plugin_global_shortcut::{Code, Modifiers};
+
+    #[test]
+    fn parses_default_hotkey() {
+        let s = parse_shortcut(DEFAULT_HOTKEY).expect("default parses");
+        assert_eq!(s.key, Code::KeyS);
+        assert!(s.mods.contains(Modifiers::CONTROL));
+        assert!(s.mods.contains(Modifiers::SHIFT));
+    }
+
+    #[test]
+    fn parse_is_case_and_space_tolerant() {
+        let s = parse_shortcut("ctrl + shift + u").expect("parses");
+        assert_eq!(s.key, Code::KeyU);
+        assert!(s.mods.contains(Modifiers::CONTROL));
+        assert!(s.mods.contains(Modifiers::SHIFT));
+    }
+
+    #[test]
+    fn parse_supports_digits_function_and_alt() {
+        let s = parse_shortcut("Alt+F4").expect("parses");
+        assert_eq!(s.key, Code::F4);
+        assert!(s.mods.contains(Modifiers::ALT));
+        let s = parse_shortcut("Ctrl+5").expect("parses");
+        assert_eq!(s.key, Code::Digit5);
+    }
+
+    #[test]
+    fn parse_rejects_modifiers_only() {
+        assert!(parse_shortcut("Ctrl+Shift").is_none());
+    }
+
+    #[test]
+    fn parse_rejects_unknown_key() {
+        assert!(parse_shortcut("Ctrl+NoSuchKey").is_none());
+    }
+
+    #[test]
+    fn parse_rejects_two_keys() {
+        assert!(parse_shortcut("Ctrl+A+B").is_none());
+    }
 }

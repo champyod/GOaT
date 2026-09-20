@@ -27,27 +27,36 @@ pub fn models_dir() -> PathBuf {
     PathBuf::from(MODELS_DIR)
 }
 
-pub fn detection_path() -> PathBuf {
-    models_dir().join(OCR_DETECTION_MODEL)
+// Final builds bundle models with the app (resource dir) or place them in
+// the app data dir. Dev placeholder comes last.
+pub fn candidate_base_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    use tauri::Manager;
+    let mut dirs = Vec::new();
+    if let Ok(res) = app.path().resource_dir() {
+        dirs.push(res.join("models"));
+    }
+    if let Ok(data) = app.path().app_data_dir() {
+        dirs.push(data.join("models"));
+    }
+    dirs.push(models_dir());
+    dirs
 }
 
-pub fn recognition_path() -> PathBuf {
-    models_dir().join(OCR_RECOGNITION_MODEL)
+fn find_file(app: &tauri::AppHandle, name: &str) -> Option<PathBuf> {
+    candidate_base_dirs(app)
+        .into_iter()
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
 }
 
-pub fn keys_path() -> PathBuf {
-    models_dir().join(OCR_KEYS_FILE)
-}
-
-pub fn nllb_dir() -> PathBuf {
-    models_dir().join(NLLB_MODEL_DIR)
-}
-
-pub fn models_status() -> ModelsStatus {
-    let detection = detection_path().is_file();
-    let recognition = recognition_path().is_file();
-    let keys = keys_path().is_file();
-    let nllb = nllb_dir().join("model.bin").is_file();
+pub fn models_status(app: &tauri::AppHandle) -> ModelsStatus {
+    let detection = find_file(app, OCR_DETECTION_MODEL).is_some();
+    let recognition = find_file(app, OCR_RECOGNITION_MODEL).is_some();
+    let keys = find_file(app, OCR_KEYS_FILE).is_some();
+    let nllb = candidate_base_dirs(app)
+        .into_iter()
+        .map(|d| d.join(NLLB_MODEL_DIR).join("model.bin"))
+        .any(|p| p.is_file());
     ModelsStatus {
         detection,
         recognition,
@@ -66,10 +75,22 @@ fn read_model_file(path: &PathBuf, label: &str) -> anyhow::Result<Vec<u8>> {
     })
 }
 
-pub fn load_ocr_engine() -> anyhow::Result<OcrEngine> {
-    let det_model = read_model_file(&detection_path(), "detection")?;
-    let rec_model = read_model_file(&recognition_path(), "recognition")?;
-    let keys_data = read_model_file(&keys_path(), "keys")?;
+fn require_file(app: &tauri::AppHandle, name: &str, label: &str) -> anyhow::Result<PathBuf> {
+    find_file(app, name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{label} model file {name} not found in bundled resources, app data dir, or {}",
+            models_dir().display()
+        )
+    })
+}
+
+pub fn load_ocr_engine(app: &tauri::AppHandle) -> anyhow::Result<OcrEngine> {
+    let det_path = require_file(app, OCR_DETECTION_MODEL, "detection")?;
+    let rec_path = require_file(app, OCR_RECOGNITION_MODEL, "recognition")?;
+    let keys_file = require_file(app, OCR_KEYS_FILE, "keys")?;
+    let det_model = read_model_file(&det_path, "detection")?;
+    let rec_model = read_model_file(&rec_path, "recognition")?;
+    let keys_data = read_model_file(&keys_file, "keys")?;
     let engine = OcrEngine::new(&det_model, &rec_model, &keys_data)
         .map_err(|e| anyhow::anyhow!("failed to build OCR engine: {e}"))?;
     Ok(engine)
@@ -88,20 +109,23 @@ pub fn run_ocr(engine: &OcrEngine, image: &image::DynamicImage) -> anyhow::Resul
     Ok(text)
 }
 
-pub fn load_translator() -> anyhow::Result<ct2rs::Translator<ct2rs::tokenizers::auto::Tokenizer>> {
-    let model_dir = nllb_dir();
-    if !model_dir.join("model.bin").is_file() {
-        return Err(anyhow::anyhow!(
-            "translation model not found at {} (placeholder path, place the converted CTranslate2 model there)",
-            model_dir.display()
-        ));
-    }
+pub fn load_translator(app: &tauri::AppHandle) -> anyhow::Result<ct2rs::Translator<ct2rs::tokenizers::auto::Tokenizer>> {
+    let model_dir = candidate_base_dirs(app)
+        .into_iter()
+        .map(|d| d.join(NLLB_MODEL_DIR))
+        .find(|d| d.join("model.bin").is_file())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "translation model {NLLB_MODEL_DIR} not found in bundled resources, app data dir, or {}",
+                models_dir().display()
+            )
+        })?;
     let translator = ct2rs::Translator::new(model_dir, &ct2rs::Config::default())?;
     Ok(translator)
 }
 
-pub fn run_translate(text: &str) -> anyhow::Result<String> {
-    let translator = load_translator()?;
+pub fn run_translate(app: &tauri::AppHandle, text: &str) -> anyhow::Result<String> {
+    let translator = load_translator(app)?;
     let sources = vec![text.to_string()];
     let target_prefixes = vec![vec![TRANSLATE_TARGET_LANG.to_string()]];
     let options = ct2rs::TranslationOptions::<String, String>::default();
