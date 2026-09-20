@@ -30,6 +30,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Install frontend deps
         run: bun install --cwd app
+      - name: Install Tauri CLI
+        run: bun install
 
       - name: Install Rust toolchain (all macOS targets)
         uses: dtolnay/rust-toolchain@stable
@@ -57,7 +59,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
 
       - name: Regenerate icons
-        run: bunx -p @tauri-apps/cli@^2.11.2 tauri icon icon.png
+        run: bun run tauri icon icon.png
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -73,7 +75,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tauriScript: bunx -p @tauri-apps/cli@^2.11.2 tauri
+          tauriScript: bun run tauri
           tagName: v__VERSION__
           releaseName: GOaT v__VERSION__
           releaseBody: "See the assets to download and install this version."
