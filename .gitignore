@@ -124,6 +124,9 @@ src-tauri/.tauri/
 # Placeholder icons and generated icon assets
 src-tauri/icons/
 
+# App-runtime model weights (never commit; publish exports to HuggingFace)
+/models/
+
 # Local Environment Variables
 .env.*.local
 .env.development
