@@ -134,3 +134,11 @@ Thumbs.db
 
 # Rust specific
 **/*.rs.bk
+
+# App-runtime model weights (never commit; publish exports to HuggingFace)
+/models/
+
+# Personal OpenCode customization — local only, not tracked
+.opencode/
+opencode.jsonc
+AGENTS.md
