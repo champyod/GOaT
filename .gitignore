@@ -10,12 +10,6 @@ lerna-debug.log*
 # database
 *.sqlite
 
-# package-json
-package-json.lock
-
-# bun deploy file
-node_modules.bun
-
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
@@ -143,3 +137,11 @@ Thumbs.db
 
 # Rust specific
 **/*.rs.bk
+
+# App-runtime model weights (never commit; publish exports to HuggingFace)
+/models/
+
+# Personal OpenCode customization — local only, not tracked
+.opencode/
+opencode.jsonc
+AGENTS.md
