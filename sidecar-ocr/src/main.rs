@@ -15,10 +15,23 @@ fn run() -> anyhow::Result<()> {
     let path = std::env::args()
         .nth(1)
         .ok_or_else(|| anyhow::anyhow!("usage: tesseract-ocr <image.png>"))?;
+    // Prefer eng+tha; if Thai data isn't embedded, degrade to eng alone
+    // instead of failing outright.
+    match init_api("eng+tha") {
+        Ok(api) => ocr_with(&api, &path),
+        Err(_) => ocr_with(&init_api("eng")?, &path),
+    }
+}
+
+fn init_api(langs: &str) -> anyhow::Result<tesseract_rs::TesseractAPI> {
     let api = tesseract_rs::TesseractAPI::new();
-    api.init_embedded("eng+tha")
+    api.init_embedded(langs)
         .map_err(|e| anyhow::anyhow!("tesseract init failed: {e}"))?;
-    let img = image::open(&path)
+    Ok(api)
+}
+
+fn ocr_with(api: &tesseract_rs::TesseractAPI, path: &str) -> anyhow::Result<()> {
+    let img = image::open(path)
         .map_err(|e| anyhow::anyhow!("failed to open {path}: {e}"))?
         .to_rgb8();
     let (width, height) = (img.width(), img.height());
