@@ -10,6 +10,16 @@
     rgba: number[];
   };
 
+  type MonitorInfo = {
+    index: number;
+    name: string;
+    is_primary: boolean;
+    width: number;
+    height: number;
+    x: number;
+    y: number;
+  };
+
   type ResultPayload = {
     image: CapturedImage;
     ocr_text: string;
@@ -18,9 +28,7 @@
   };
 
   type ModelsStatus = {
-    detection: boolean;
-    recognition: boolean;
-    keys: boolean;
+    ocr: boolean;
     nllb: boolean;
     ready: boolean;
   };
@@ -37,6 +45,8 @@
   let hotkeyError = $state('');
   let hasImage = $state(false);
   let isFullscreen = $state(false);
+  let monitors = $state<MonitorInfo[]>([]);
+  let monitor = $state(0);
 
   function draw(image: CapturedImage) {
     if (!canvasEl) return;
@@ -113,6 +123,20 @@
       .catch((e) => {
         error = String(e);
       });
+    invoke<MonitorInfo[]>('list_monitors')
+      .then((value) => {
+        monitors = value;
+      })
+      .catch((e) => {
+        error = String(e);
+      });
+    invoke<number>('get_monitor')
+      .then((value) => {
+        monitor = value;
+      })
+      .catch((e) => {
+        error = String(e);
+      });
     return () => {
       unlisten.then((f) => f());
     };
@@ -134,6 +158,17 @@
       hotkey = await invoke<string>('set_hotkey', { hotkey: newHotkey });
     } catch (e) {
       hotkeyError = String(e);
+    }
+  }
+
+  async function saveMonitor(event: Event) {
+    const select = event.currentTarget as HTMLSelectElement;
+    try {
+      monitor = await invoke<number>('set_monitor', {
+        monitor: Number(select.value),
+      });
+    } catch (e) {
+      error = String(e);
     }
   }
 
@@ -213,6 +248,16 @@
     {#if hotkeyError}
       <span class="error">{hotkeyError}</span>
     {/if}
+    <label>
+      Monitor
+      <select value={monitor} onchange={saveMonitor}>
+        {#each monitors as m}
+          <option value={m.index}>
+            {m.name}{m.is_primary ? ' (primary)' : ''} — {m.width}x{m.height}
+          </option>
+        {/each}
+      </select>
+    </label>
   </div>
 </main>
 
@@ -322,6 +367,18 @@
     border: 1px solid rgba(255, 255, 255, 0.4);
     border-radius: 0.4rem;
     padding: 0.3rem 0.6rem;
+  }
+
+  .settings select {
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    border-radius: 0.4rem;
+    padding: 0.3rem 0.6rem;
+  }
+
+  .settings select option {
+    color: #000;
   }
 
   section textarea {

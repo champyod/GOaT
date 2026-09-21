@@ -9,6 +9,44 @@ const DEFAULT_HOTKEY: &str = "Ctrl+Shift+S";
 struct AppState {
     ocr: Mutex<Option<pure_onnx_ocr_sync::OcrEngine>>,
     hotkey: Mutex<String>,
+    monitor: Mutex<usize>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct UserConfig {
+    hotkey: String,
+    monitor: usize,
+}
+
+impl Default for UserConfig {
+    fn default() -> Self {
+        Self {
+            hotkey: DEFAULT_HOTKEY.to_string(),
+            monitor: 0,
+        }
+    }
+}
+
+fn config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("config.json"))
+}
+
+fn load_config(app: &tauri::AppHandle) -> UserConfig {
+    config_path(app)
+        .and_then(|p| std::fs::read_to_string(p).map_err(|e| e.to_string()))
+        .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
+        .unwrap_or_default()
+}
+
+fn save_config(app: &tauri::AppHandle, cfg: &UserConfig) -> Result<(), String> {
+    let path = config_path(app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let s = serde_json::to_string(cfg).map_err(|e| e.to_string())?;
+    std::fs::write(path, s).map_err(|e| e.to_string())
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -99,8 +137,27 @@ fn is_autostart(app: tauri::AppHandle) -> Result<bool, String> {
 }
 
 async fn run_pipeline(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> Result<ResultPayload, String> {
+    let monitor = *state.monitor.lock().map_err(|e| e.to_string())?;
+    let image = capture::capture_monitor(monitor).or_else(|_| capture::capture_primary())?;
+    run_pipeline_with_image(app, state, image).await
+}
+
+#[tauri::command]
+async fn capture_region(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    monitor: usize,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> Result<ResultPayload, String> {
+    let image = capture::capture_monitor_region(monitor, x, y, width, height)?;
+    run_pipeline_with_image(&app, &state, image).await
+}
+
+async fn run_pipeline_with_image(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>, image: capture::CapturedImage) -> Result<ResultPayload, String> {
     use tauri::Emitter;
-    let image = capture::capture_primary()?;
     let dynamic = image.to_dynamic_image()?;
     let mut error = String::new();
     let ocr_text = {
@@ -217,10 +274,24 @@ fn setup_shortcut(app: &tauri::AppHandle) -> tauri::Result<()> {
             .build(),
     )?;
 
-    let hotkey = parse_shortcut(DEFAULT_HOTKEY).expect("default hotkey parses");
+    let saved = load_config(app);
+    let hotkey_str = if parse_shortcut(&saved.hotkey).is_some() {
+        saved.hotkey.clone()
+    } else {
+        DEFAULT_HOTKEY.to_string()
+    };
+    let hotkey = parse_shortcut(&hotkey_str).expect("hotkey parses");
     app.global_shortcut()
         .register(hotkey)
         .map_err(|e| tauri::Error::Anyhow(anyhow::Error::msg(e)))?;
+    {
+        use tauri::Manager;
+        let state = app.state::<AppState>();
+        *state.hotkey.lock().map_err(|e| tauri::Error::Anyhow(anyhow::anyhow!("{e}")))? =
+            hotkey_str;
+        *state.monitor.lock().map_err(|e| tauri::Error::Anyhow(anyhow::anyhow!("{e}")))? =
+            saved.monitor;
+    }
     Ok(())
 }
 
@@ -361,7 +432,36 @@ fn set_hotkey(
         format!("failed to register shortcut \"{hotkey}\": {e}")
     })?;
     *state.hotkey.lock().map_err(|e| e.to_string())? = hotkey.clone();
+    let monitor = *state.monitor.lock().map_err(|e| e.to_string())?;
+    save_config(
+        &app,
+        &UserConfig {
+            hotkey: hotkey.clone(),
+            monitor,
+        },
+    )?;
     Ok(hotkey)
+}
+
+#[tauri::command]
+fn get_monitor(state: tauri::State<'_, AppState>) -> Result<usize, String> {
+    state
+        .monitor
+        .lock()
+        .map(|g| *g)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_monitor(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    monitor: usize,
+) -> Result<usize, String> {
+    *state.monitor.lock().map_err(|e| e.to_string())? = monitor;
+    let hotkey = state.hotkey.lock().map_err(|e| e.to_string())?.clone();
+    save_config(&app, &UserConfig { hotkey, monitor })?;
+    Ok(monitor)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -375,6 +475,7 @@ pub fn run() {
         .manage(AppState {
             ocr: Mutex::new(None),
             hotkey: Mutex::new(DEFAULT_HOTKEY.to_string()),
+            monitor: Mutex::new(0),
         })
         .setup(|app| {
             #[cfg(desktop)]
@@ -402,7 +503,11 @@ pub fn run() {
             ocr,
             translate,
             capture::capture_screen,
+            capture::list_monitors,
             capture_primary,
+            capture_region,
+            get_monitor,
+            set_monitor,
             hide_window,
             set_autostart,
             is_autostart,
