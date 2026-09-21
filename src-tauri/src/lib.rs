@@ -109,9 +109,14 @@ fn run_pipeline(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> R
             .and_then(|engine| models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}")))
         {
             Ok(text) => text,
-            Err(e) => {
-                error = e;
-                String::new()
+            Err(primary_err) => {
+                match models::run_ocr_fallback(&dynamic).map_err(|e| format!("{e}")) {
+                    Ok(text) => text,
+                    Err(fallback_err) => {
+                        error = format!("{primary_err}; fallback OCR also failed: {fallback_err}");
+                        String::new()
+                    }
+                }
             }
         }
     };

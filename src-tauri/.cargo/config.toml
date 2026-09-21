@@ -3,3 +3,7 @@
 # link mixes MT_StaticRelease and MD_DynamicRelease objects (LNK2038/LNK2005).
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# tesseract-rs embed-tessdata: always embed English + Thai.
+[env]
+TESSERACT_EMBED_LANGUAGES = "eng,tha"

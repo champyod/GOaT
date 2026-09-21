@@ -101,6 +101,24 @@ pub fn run_ocr(engine: &OcrEngine, image: &image::DynamicImage) -> anyhow::Resul
     Ok(text)
 }
 
+// Fallback OCR via tesseract (embedded tessdata) when the primary
+// tract engine errors for any reason.
+pub const OCR_FALLBACK_LANGS: &str = "eng+tha";
+
+pub fn run_ocr_fallback(image: &image::DynamicImage) -> anyhow::Result<String> {
+    let api = tesseract_rs::TesseractAPI::new();
+    api.init_embedded(OCR_FALLBACK_LANGS)
+        .map_err(|e| anyhow::anyhow!("fallback OCR init failed: {e}"))?;
+    let rgb = image.to_rgb8();
+    let (width, height) = (rgb.width(), rgb.height());
+    api.set_image(&rgb.into_raw(), width as i32, height as i32, 3, 3 * width as i32)
+        .map_err(|e| anyhow::anyhow!("fallback OCR set_image failed: {e}"))?;
+    let text = api
+        .get_utf8_text()
+        .map_err(|e| anyhow::anyhow!("fallback OCR inference failed: {e}"))?;
+    Ok(text.trim().to_string())
+}
+
 pub fn load_translator(app: &tauri::AppHandle) -> anyhow::Result<ct2rs::Translator<ct2rs::tokenizers::auto::Tokenizer>> {
     let model_dir = candidate_base_dirs(app)
         .into_iter()
