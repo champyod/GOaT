@@ -10,6 +10,7 @@ struct AppState {
     ocr: Mutex<Option<pure_onnx_ocr_sync::OcrEngine>>,
     hotkey: Mutex<String>,
     monitor: Mutex<usize>,
+    last_image: Mutex<Option<capture::CapturedImage>>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -158,6 +159,10 @@ async fn capture_region(
 
 async fn run_pipeline_with_image(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>, image: capture::CapturedImage) -> Result<ResultPayload, String> {
     use tauri::Emitter;
+    *state
+        .last_image
+        .lock()
+        .map_err(|e| e.to_string())? = Some(image.clone());
     let dynamic = image.to_dynamic_image()?;
     let mut error = String::new();
     let ocr_text = {
@@ -200,6 +205,25 @@ async fn run_pipeline_with_image(app: &tauri::AppHandle, state: &tauri::State<'_
     };
     let _ = app.emit("capture-result", &payload);
     Ok(payload)
+}
+
+#[tauri::command]
+async fn ocr_selection(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> Result<ResultPayload, String> {
+    let image = state
+        .last_image
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .ok_or_else(|| "no screenshot yet, capture first".to_string())?;
+    let crop = image.crop(x, y, width, height)?;
+    run_pipeline_with_image(&app, &state, crop).await
 }
 
 #[tauri::command]
@@ -476,6 +500,7 @@ pub fn run() {
             ocr: Mutex::new(None),
             hotkey: Mutex::new(DEFAULT_HOTKEY.to_string()),
             monitor: Mutex::new(0),
+            last_image: Mutex::new(None),
         })
         .setup(|app| {
             #[cfg(desktop)]
@@ -506,6 +531,7 @@ pub fn run() {
             capture::list_monitors,
             capture_primary,
             capture_region,
+            ocr_selection,
             get_monitor,
             set_monitor,
             hide_window,

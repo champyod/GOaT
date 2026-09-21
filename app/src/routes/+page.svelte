@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
-  import { getCurrentWindow, PhysicalPosition } from '@tauri-apps/api/window';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
 
   type CapturedImage = {
     width: number;
@@ -52,8 +52,7 @@
   let selRect = $state<{ x: number; y: number; w: number; h: number } | null>(
     null
   );
-  let selOrigin = $state<{ x: number; y: number } | null>(null);
-  let selScale = $state(1);
+  let imgSize = $state<{ width: number; height: number } | null>(null);
 
   function draw(image: CapturedImage) {
     if (!canvasEl) return;
@@ -72,6 +71,7 @@
 
   function applyResult(result: ResultPayload) {
     draw(result.image);
+    imgSize = { width: result.image.width, height: result.image.height };
     ocrText = result.ocr_text;
     translatedText = result.translated_text;
     error = result.error;
@@ -187,38 +187,22 @@
   }
 
   async function startSelect() {
-    const win = getCurrentWindow();
-    const mon = monitors.find((m) => m.index === monitor) ?? monitors[0];
-    if (!mon) {
-      error = 'No monitor info available';
+    if (!hasImage) {
+      error = 'Capture a screenshot first, then drag on it to select a region';
       return;
     }
     error = '';
-    if (isFullscreen) {
-      await win.setFullscreen(false);
-      isFullscreen = false;
-    }
-    await win.setPosition(new PhysicalPosition(mon.x, mon.y));
-    await win.setFullscreen(true);
-    isFullscreen = true;
-    selOrigin = { x: mon.x, y: mon.y };
-    selScale = await win.scaleFactor();
     selStart = null;
     selRect = null;
     selecting = true;
     window.addEventListener('keydown', cancelSelectOnEsc);
   }
 
-  async function stopSelectMode() {
+  function stopSelectMode() {
     selecting = false;
     selStart = null;
     selRect = null;
     window.removeEventListener('keydown', cancelSelectOnEsc);
-    const win = getCurrentWindow();
-    if (await win.isFullscreen()) {
-      await win.setFullscreen(false);
-      isFullscreen = false;
-    }
   }
 
   function cancelSelectOnEsc(event: KeyboardEvent) {
@@ -227,50 +211,56 @@
     }
   }
 
+  function canvasPos(event: MouseEvent) {
+    const wrap = event.currentTarget as HTMLDivElement;
+    const box = wrap.getBoundingClientRect();
+    return { x: event.clientX - box.left, y: event.clientY - box.top };
+  }
+
   function onSelDown(event: MouseEvent) {
-    selStart = { x: event.clientX, y: event.clientY };
-    selRect = { x: event.clientX, y: event.clientY, w: 0, h: 0 };
+    if (!selecting) return;
+    const p = canvasPos(event);
+    selStart = p;
+    selRect = { x: p.x, y: p.y, w: 0, h: 0 };
   }
 
   function onSelMove(event: MouseEvent) {
-    if (!selStart) return;
-    const x = Math.min(selStart.x, event.clientX);
-    const y = Math.min(selStart.y, event.clientY);
+    if (!selecting || !selStart || !canvasEl) return;
+    const box = canvasEl.getBoundingClientRect();
+    const cx = event.clientX - box.left;
+    const cy = event.clientY - box.top;
+    const x = Math.max(0, Math.min(selStart.x, cx));
+    const y = Math.max(0, Math.min(selStart.y, cy));
     selRect = {
       x,
       y,
-      w: Math.abs(event.clientX - selStart.x),
-      h: Math.abs(event.clientY - selStart.y),
+      w: Math.max(0, Math.min(cx, box.width) - x),
+      h: Math.max(0, Math.min(cy, box.height) - y),
     };
   }
 
   async function onSelUp() {
-    if (!selRect || !selOrigin || busy) {
-      if (!busy) await stopSelectMode();
+    if (!selecting || !selRect || !canvasEl || !imgSize || busy) {
       return;
     }
-    const x = Math.max(
-      0,
-      Math.round(selRect.x * selScale + selOrigin.x)
-    );
-    const y = Math.max(
-      0,
-      Math.round(selRect.y * selScale + selOrigin.y)
-    );
-    const width = Math.max(1, Math.round(selRect.w * selScale));
-    const height = Math.max(1, Math.round(selRect.h * selScale));
+    const box = canvasEl.getBoundingClientRect();
+    const scaleX = imgSize.width / box.width;
+    const scaleY = imgSize.height / box.height;
+    const x = Math.max(0, Math.round(selRect.x * scaleX));
+    const y = Math.max(0, Math.round(selRect.y * scaleY));
+    const width = Math.max(1, Math.round(selRect.w * scaleX));
+    const height = Math.max(1, Math.round(selRect.h * scaleY));
     const tooSmall = selRect.w < 4 || selRect.h < 4;
-    await stopSelectMode();
+    stopSelectMode();
     if (tooSmall) {
       status = 'Selection too small';
       return;
     }
     busy = true;
     error = '';
-    status = 'Capturing region...';
+    status = 'Reading selection...';
     try {
-      const result = await invoke<ResultPayload>('capture_region', {
-        monitor,
+      const result = await invoke<ResultPayload>('ocr_selection', {
         x,
         y,
         width,
@@ -279,7 +269,7 @@
       applyResult(result);
     } catch (e) {
       error = String(e);
-      status = 'Capture failed';
+      status = 'Selection failed';
     } finally {
       busy = false;
     }
@@ -291,26 +281,6 @@
 </script>
 
 <main>
-  {#if selecting}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
-      Full-screen drag surface; Esc to cancel is handled on window keydown. -->
-    <div
-      class="overlay"
-      role="application"
-      aria-label="Drag to select a screen region"
-      onmousedown={onSelDown}
-      onmousemove={onSelMove}
-      onmouseup={onSelUp}
-    >
-      <p class="overlay-hint">Drag to select a region — Esc to cancel</p>
-      {#if selRect}
-        <div
-          class="selrect"
-          style="left: {selRect.x}px; top: {selRect.y}px; width: {selRect.w}px; height: {selRect.h}px;"
-        ></div>
-      {/if}
-    </div>
-  {:else}
   <div class="toolbar" data-tauri-drag-region>
     <h1 data-tauri-drag-region>GOaT</h1>
     <span class="hotkey-hint" data-tauri-drag-region>{hotkey}</span>
@@ -339,7 +309,28 @@
       {#if !hasImage}
         <p class="placeholder">No screenshot yet — press {hotkey} or Capture.</p>
       {/if}
-      <canvas bind:this={canvasEl}></canvas>
+      {#if selecting}
+        <p class="placeholder">Drag on the screenshot, release to read — Esc to cancel.</p>
+      {/if}
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
+        Drag surface over the screenshot; Esc to cancel is on window keydown. -->
+      <div
+        class="shotwrap"
+        class:armed={selecting}
+        role="application"
+        aria-label="Drag on the screenshot to select a region"
+        onmousedown={onSelDown}
+        onmousemove={onSelMove}
+        onmouseup={onSelUp}
+      >
+        <canvas bind:this={canvasEl}></canvas>
+        {#if selRect}
+          <div
+            class="selrect"
+            style="left: {selRect.x}px; top: {selRect.y}px; width: {selRect.w}px; height: {selRect.h}px;"
+          ></div>
+        {/if}
+      </div>
     </section>
 
     <div class="side">
@@ -386,7 +377,6 @@
       </select>
     </label>
   </div>
-  {/if}
 </main>
 
 <style>
@@ -509,28 +499,22 @@
     color: #000;
   }
 
-  .overlay {
-    position: fixed;
-    inset: 0;
-    cursor: crosshair;
-    background: rgba(0, 0, 0, 0.15);
-    z-index: 10;
+  .shotwrap {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
   }
 
-  .overlay-hint {
-    position: fixed;
-    top: 1rem;
-    left: 50%;
-    transform: translateX(-50%);
-    margin: 0;
-    padding: 0.4rem 0.8rem;
-    background: rgba(0, 0, 0, 0.6);
-    border-radius: 0.4rem;
+  .shotwrap.armed {
+    cursor: crosshair;
+  }
+
+  .shotwrap.armed canvas {
     pointer-events: none;
   }
 
   .selrect {
-    position: fixed;
+    position: absolute;
     border: 2px dashed #fff;
     background: rgba(255, 255, 255, 0.08);
     pointer-events: none;

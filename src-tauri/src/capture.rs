@@ -19,6 +19,25 @@ impl CapturedImage {
                 )
             })
     }
+
+    pub fn crop(&self, x: u32, y: u32, width: u32, height: u32) -> Result<CapturedImage, String> {
+        if width == 0 || height == 0 {
+            return Err("empty selection".to_string());
+        }
+        if x.saturating_add(width) > self.width || y.saturating_add(height) > self.height {
+            return Err("selection outside image bounds".to_string());
+        }
+        let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+        for row in y..y + height {
+            let start = ((row * self.width + x) * 4) as usize;
+            rgba.extend_from_slice(&self.rgba[start..start + width as usize * 4]);
+        }
+        Ok(CapturedImage {
+            width,
+            height,
+            rgba,
+        })
+    }
 }
 
 #[derive(Clone, Serialize)]
