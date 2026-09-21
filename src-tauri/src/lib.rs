@@ -16,6 +16,7 @@ struct ResultPayload {
     image: capture::CapturedImage,
     ocr_text: String,
     translated_text: String,
+    error: String,
 }
 
 #[tauri::command]
@@ -101,20 +102,37 @@ fn run_pipeline(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> R
     use tauri::Emitter;
     let image = capture::capture_primary()?;
     let dynamic = image.to_dynamic_image()?;
+    let mut error = String::new();
     let ocr_text = {
         let mut guard = state.ocr.lock().map_err(|e| e.to_string())?;
-        let engine = ensure_engine(app, &mut guard)?;
-        models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}"))?
+        match ensure_engine(app, &mut guard)
+            .and_then(|engine| models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}")))
+        {
+            Ok(text) => text,
+            Err(e) => {
+                error = e;
+                String::new()
+            }
+        }
     };
     let translated_text = if ocr_text.trim().is_empty() {
         String::new()
     } else {
-        models::run_translate(app, &ocr_text).map_err(|e| format!("{e}"))?
+        match models::run_translate(app, &ocr_text).map_err(|e| format!("{e}")) {
+            Ok(text) => text,
+            Err(e) => {
+                if error.is_empty() {
+                    error = e;
+                }
+                String::new()
+            }
+        }
     };
     let payload = ResultPayload {
         image,
         ocr_text,
         translated_text,
+        error,
     };
     let _ = app.emit("capture-result", &payload);
     Ok(payload)

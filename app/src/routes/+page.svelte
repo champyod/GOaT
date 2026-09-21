@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
 
   type CapturedImage = {
     width: number;
@@ -13,6 +14,7 @@
     image: CapturedImage;
     ocr_text: string;
     translated_text: string;
+    error: string;
   };
 
   type ModelsStatus = {
@@ -34,6 +36,7 @@
   let newHotkey = $state('Ctrl+Shift+S');
   let hotkeyError = $state('');
   let hasImage = $state(false);
+  let isFullscreen = $state(false);
 
   function draw(image: CapturedImage) {
     if (!canvasEl) return;
@@ -54,7 +57,12 @@
     draw(result.image);
     ocrText = result.ocr_text;
     translatedText = result.translated_text;
-    status = ocrText.trim() ? 'Result ready' : 'No text detected';
+    error = result.error;
+    if (error) {
+      status = 'Capture incomplete';
+    } else {
+      status = ocrText.trim() ? 'Result ready' : 'No text detected';
+    }
   }
 
   async function capture() {
@@ -129,6 +137,13 @@
     }
   }
 
+  async function toggleFullscreen() {
+    const win = getCurrentWindow();
+    const next = !(await win.isFullscreen());
+    await win.setFullscreen(next);
+    isFullscreen = next;
+  }
+
   function copy(text: string) {
     navigator.clipboard.writeText(text);
   }
@@ -144,6 +159,9 @@
     </label>
     <button onclick={capture} disabled={busy}>
       {busy ? 'Working...' : 'Capture'}
+    </button>
+    <button onclick={toggleFullscreen}>
+      {isFullscreen ? 'Unfullscreen' : 'Fullscreen'}
     </button>
     <button onclick={close}>Close (hide)</button>
   </div>
@@ -204,6 +222,29 @@
     padding: 0;
     background: transparent;
     font-family: system-ui, sans-serif;
+    scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+  }
+
+  :global(::-webkit-scrollbar) {
+    width: 10px;
+    height: 10px;
+    background: transparent;
+  }
+
+  :global(::-webkit-scrollbar-track) {
+    background: transparent;
+    border: none;
+  }
+
+  :global(::-webkit-scrollbar-thumb) {
+    background: rgba(255, 255, 255, 0.25);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 8px;
+  }
+
+  :global(::-webkit-scrollbar-corner) {
+    background: transparent;
   }
 
   main {
@@ -255,7 +296,9 @@
   }
 
   .shot canvas {
-    max-width: 100%;
+    width: 100%;
+    height: auto;
+    display: block;
     border: 1px solid rgba(255, 255, 255, 0.3);
     background: rgba(0, 0, 0, 0.3);
   }
