@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { getCurrentWindow, PhysicalPosition } from '@tauri-apps/api/window';
 
   type CapturedImage = {
     width: number;
@@ -47,6 +47,13 @@
   let isFullscreen = $state(false);
   let monitors = $state<MonitorInfo[]>([]);
   let monitor = $state(0);
+  let selecting = $state(false);
+  let selStart = $state<{ x: number; y: number } | null>(null);
+  let selRect = $state<{ x: number; y: number; w: number; h: number } | null>(
+    null
+  );
+  let selOrigin = $state<{ x: number; y: number } | null>(null);
+  let selScale = $state(1);
 
   function draw(image: CapturedImage) {
     if (!canvasEl) return;
@@ -179,12 +186,131 @@
     isFullscreen = next;
   }
 
+  async function startSelect() {
+    const win = getCurrentWindow();
+    const mon = monitors.find((m) => m.index === monitor) ?? monitors[0];
+    if (!mon) {
+      error = 'No monitor info available';
+      return;
+    }
+    error = '';
+    if (isFullscreen) {
+      await win.setFullscreen(false);
+      isFullscreen = false;
+    }
+    await win.setPosition(new PhysicalPosition(mon.x, mon.y));
+    await win.setFullscreen(true);
+    isFullscreen = true;
+    selOrigin = { x: mon.x, y: mon.y };
+    selScale = await win.scaleFactor();
+    selStart = null;
+    selRect = null;
+    selecting = true;
+    window.addEventListener('keydown', cancelSelectOnEsc);
+  }
+
+  async function stopSelectMode() {
+    selecting = false;
+    selStart = null;
+    selRect = null;
+    window.removeEventListener('keydown', cancelSelectOnEsc);
+    const win = getCurrentWindow();
+    if (await win.isFullscreen()) {
+      await win.setFullscreen(false);
+      isFullscreen = false;
+    }
+  }
+
+  function cancelSelectOnEsc(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      stopSelectMode();
+    }
+  }
+
+  function onSelDown(event: MouseEvent) {
+    selStart = { x: event.clientX, y: event.clientY };
+    selRect = { x: event.clientX, y: event.clientY, w: 0, h: 0 };
+  }
+
+  function onSelMove(event: MouseEvent) {
+    if (!selStart) return;
+    const x = Math.min(selStart.x, event.clientX);
+    const y = Math.min(selStart.y, event.clientY);
+    selRect = {
+      x,
+      y,
+      w: Math.abs(event.clientX - selStart.x),
+      h: Math.abs(event.clientY - selStart.y),
+    };
+  }
+
+  async function onSelUp() {
+    if (!selRect || !selOrigin || busy) {
+      if (!busy) await stopSelectMode();
+      return;
+    }
+    const x = Math.max(
+      0,
+      Math.round(selRect.x * selScale + selOrigin.x)
+    );
+    const y = Math.max(
+      0,
+      Math.round(selRect.y * selScale + selOrigin.y)
+    );
+    const width = Math.max(1, Math.round(selRect.w * selScale));
+    const height = Math.max(1, Math.round(selRect.h * selScale));
+    const tooSmall = selRect.w < 4 || selRect.h < 4;
+    await stopSelectMode();
+    if (tooSmall) {
+      status = 'Selection too small';
+      return;
+    }
+    busy = true;
+    error = '';
+    status = 'Capturing region...';
+    try {
+      const result = await invoke<ResultPayload>('capture_region', {
+        monitor,
+        x,
+        y,
+        width,
+        height,
+      });
+      applyResult(result);
+    } catch (e) {
+      error = String(e);
+      status = 'Capture failed';
+    } finally {
+      busy = false;
+    }
+  }
+
   function copy(text: string) {
     navigator.clipboard.writeText(text);
   }
 </script>
 
 <main>
+  {#if selecting}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
+      Full-screen drag surface; Esc to cancel is handled on window keydown. -->
+    <div
+      class="overlay"
+      role="application"
+      aria-label="Drag to select a screen region"
+      onmousedown={onSelDown}
+      onmousemove={onSelMove}
+      onmouseup={onSelUp}
+    >
+      <p class="overlay-hint">Drag to select a region — Esc to cancel</p>
+      {#if selRect}
+        <div
+          class="selrect"
+          style="left: {selRect.x}px; top: {selRect.y}px; width: {selRect.w}px; height: {selRect.h}px;"
+        ></div>
+      {/if}
+    </div>
+  {:else}
   <div class="toolbar" data-tauri-drag-region>
     <h1 data-tauri-drag-region>GOaT</h1>
     <span class="hotkey-hint" data-tauri-drag-region>{hotkey}</span>
@@ -195,6 +321,7 @@
     <button onclick={capture} disabled={busy}>
       {busy ? 'Working...' : 'Capture'}
     </button>
+    <button onclick={startSelect} disabled={busy}>Select region</button>
     <button onclick={toggleFullscreen}>
       {isFullscreen ? 'Unfullscreen' : 'Fullscreen'}
     </button>
@@ -259,6 +386,7 @@
       </select>
     </label>
   </div>
+  {/if}
 </main>
 
 <style>
@@ -379,6 +507,33 @@
 
   .settings select option {
     color: #000;
+  }
+
+  .overlay {
+    position: fixed;
+    inset: 0;
+    cursor: crosshair;
+    background: rgba(0, 0, 0, 0.15);
+    z-index: 10;
+  }
+
+  .overlay-hint {
+    position: fixed;
+    top: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    margin: 0;
+    padding: 0.4rem 0.8rem;
+    background: rgba(0, 0, 0, 0.6);
+    border-radius: 0.4rem;
+    pointer-events: none;
+  }
+
+  .selrect {
+    position: fixed;
+    border: 2px dashed #fff;
+    background: rgba(255, 255, 255, 0.08);
+    pointer-events: none;
   }
 
   section textarea {
