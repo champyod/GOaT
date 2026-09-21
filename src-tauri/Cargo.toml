@@ -21,5 +21,4 @@ anyhow = "1"
 xcap = "0.9.8"
 ct2rs = "0.10.1"
 pure-onnx-ocr-sync = "0.2"
-tesseract-rs = { version = "0.4", default-features = false, features = ["build-tesseract", "embed-tessdata"] }
 image = "0.25"

@@ -1,0 +1,9 @@
+[package]
+name = "tesseract-ocr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+image = "0.25"
+tesseract-rs = { version = "0.4", default-features = false, features = ["build-tesseract", "embed-tessdata"] }

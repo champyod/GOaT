@@ -101,22 +101,39 @@ pub fn run_ocr(engine: &OcrEngine, image: &image::DynamicImage) -> anyhow::Resul
     Ok(text)
 }
 
-// Fallback OCR via tesseract (embedded tessdata) when the primary
-// tract engine errors for any reason.
-pub const OCR_FALLBACK_LANGS: &str = "eng+tha";
+// Fallback OCR via the tesseract sidecar exe (embedded eng+tha tessdata)
+// when the primary tract engine errors for any reason. Runs out-of-process
+// because tesseract's dynamic-CRT objects cannot link into this binary.
+pub const OCR_SIDECAR_NAME: &str = "tesseract-ocr";
 
-pub fn run_ocr_fallback(image: &image::DynamicImage) -> anyhow::Result<String> {
-    let api = tesseract_rs::TesseractAPI::new();
-    api.init_embedded(OCR_FALLBACK_LANGS)
-        .map_err(|e| anyhow::anyhow!("fallback OCR init failed: {e}"))?;
-    let rgb = image.to_rgb8();
-    let (width, height) = (rgb.width(), rgb.height());
-    api.set_image(&rgb.into_raw(), width as i32, height as i32, 3, 3 * width as i32)
-        .map_err(|e| anyhow::anyhow!("fallback OCR set_image failed: {e}"))?;
-    let text = api
-        .get_utf8_text()
-        .map_err(|e| anyhow::anyhow!("fallback OCR inference failed: {e}"))?;
-    Ok(text.trim().to_string())
+static OCR_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub async fn run_ocr_fallback(
+    app: &tauri::AppHandle,
+    image: &image::DynamicImage,
+) -> anyhow::Result<String> {
+    use tauri_plugin_shell::ShellExt;
+    let n = OCR_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("goat-ocr-{}-{n}.png", std::process::id()));
+    image
+        .save(&path)
+        .map_err(|e| anyhow::anyhow!("failed to write temp image: {e}"))?;
+    let out = app
+        .shell()
+        .sidecar(OCR_SIDECAR_NAME)
+        .map_err(|e| anyhow::anyhow!("fallback OCR sidecar missing: {e}"))?
+        .args([path.to_string_lossy().to_string()])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("fallback OCR spawn failed: {e}"))?;
+    let _ = std::fs::remove_file(&path);
+    if !out.status.success() {
+        return Err(anyhow::anyhow!(
+            "fallback OCR failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 pub fn load_translator(app: &tauri::AppHandle) -> anyhow::Result<ct2rs::Translator<ct2rs::tokenizers::auto::Tokenizer>> {

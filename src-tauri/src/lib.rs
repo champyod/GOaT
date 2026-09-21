@@ -98,19 +98,21 @@ fn is_autostart(app: tauri::AppHandle) -> Result<bool, String> {
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
 }
 
-fn run_pipeline(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> Result<ResultPayload, String> {
+async fn run_pipeline(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> Result<ResultPayload, String> {
     use tauri::Emitter;
     let image = capture::capture_primary()?;
     let dynamic = image.to_dynamic_image()?;
     let mut error = String::new();
     let ocr_text = {
-        let mut guard = state.ocr.lock().map_err(|e| e.to_string())?;
-        match ensure_engine(app, &mut guard)
-            .and_then(|engine| models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}")))
-        {
+        let primary: Result<String, String> = {
+            let mut guard = state.ocr.lock().map_err(|e| e.to_string())?;
+            ensure_engine(app, &mut guard)
+                .and_then(|engine| models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}")))
+        };
+        match primary {
             Ok(text) => text,
             Err(primary_err) => {
-                match models::run_ocr_fallback(&dynamic).map_err(|e| format!("{e}")) {
+                match models::run_ocr_fallback(app, &dynamic).await.map_err(|e| format!("{e}")) {
                     Ok(text) => text,
                     Err(fallback_err) => {
                         error = format!("{primary_err}; fallback OCR also failed: {fallback_err}");
@@ -144,11 +146,11 @@ fn run_pipeline(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> R
 }
 
 #[tauri::command]
-fn capture_primary(
+async fn capture_primary(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<ResultPayload, String> {
-    run_pipeline(&app, &state)
+    run_pipeline(&app, &state).await
 }
 
 #[cfg(desktop)]
@@ -205,8 +207,11 @@ fn setup_shortcut(app: &tauri::AppHandle) -> tauri::Result<()> {
                 use tauri::Manager;
                 if event.state == ShortcutState::Pressed {
                     show_main_window(app);
-                    let state: tauri::State<'_, AppState> = app.state();
-                    let _ = run_pipeline(app, &state);
+                    let app_handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app_handle.state::<AppState>();
+                        let _ = run_pipeline(&app_handle, &state).await;
+                    });
                 }
             })
             .build(),

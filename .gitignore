@@ -121,6 +121,10 @@ src-tauri/icons/
 # App-runtime model weights (never commit; publish exports to HuggingFace)
 /models/
 
+# Built tesseract sidecar + helper target dir (binaries never committed)
+src-tauri/binaries/
+sidecar-ocr/target/
+
 # Local Environment Variables
 .env.*.local
 .env.development

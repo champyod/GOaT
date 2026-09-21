@@ -8,6 +8,16 @@
     "core:window:allow-is-fullscreen",
     "core:window:allow-set-fullscreen",
     "shell:allow-spawn",
-    "shell:allow-execute"
+    "shell:allow-execute",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/tesseract-ocr",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    }
   ]
 }
