@@ -12,6 +12,7 @@ struct AppState {
     hotkey: Mutex<String>,
     monitor: Mutex<usize>,
     last_image: Mutex<Option<capture::CapturedImage>>,
+    full_image: Mutex<Option<capture::CapturedImage>>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -56,6 +57,7 @@ struct ResultPayload {
     image: capture::CapturedImage,
     ocr_text: String,
     translated_text: String,
+    ocr_engine: String,
     error: String,
 }
 
@@ -141,6 +143,10 @@ fn is_autostart(app: tauri::AppHandle) -> Result<bool, String> {
 async fn run_pipeline(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> Result<ResultPayload, String> {
     let monitor = *state.monitor.lock().map_err(|e| e.to_string())?;
     let image = capture::capture_monitor(monitor).or_else(|_| capture::capture_primary())?;
+    *state
+        .full_image
+        .lock()
+        .map_err(|e| e.to_string())? = Some(image.clone());
     run_pipeline_with_image(app, state, image).await
 }
 
@@ -155,6 +161,10 @@ async fn capture_region(
     height: u32,
 ) -> Result<ResultPayload, String> {
     let image = capture::capture_monitor_region(monitor, x, y, width, height)?;
+    *state
+        .full_image
+        .lock()
+        .map_err(|e| e.to_string())? = Some(image.clone());
     run_pipeline_with_image(&app, &state, image).await
 }
 
@@ -168,6 +178,7 @@ async fn run_pipeline_with_image(app: &tauri::AppHandle, state: &tauri::State<'_
     let _ = app.emit("capture-image", &image);
     let dynamic = image.to_dynamic_image()?;
     let mut error = String::new();
+    let mut ocr_engine = String::new();
     let ocr_text = {
         let primary: Result<String, String> = {
             let mut guard = state.ocr.lock().map_err(|e| e.to_string())?;
@@ -175,10 +186,16 @@ async fn run_pipeline_with_image(app: &tauri::AppHandle, state: &tauri::State<'_
                 .and_then(|engine| models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}")))
         };
         match primary {
-            Ok(text) => text,
+            Ok(text) => {
+                ocr_engine = "tract".to_string();
+                text
+            }
             Err(primary_err) => {
                 match models::run_ocr_fallback(app, &dynamic).await.map_err(|e| format!("{e}")) {
-                    Ok(text) => text,
+                    Ok(text) => {
+                        ocr_engine = "tesseract".to_string();
+                        text
+                    }
                     Err(fallback_err) => {
                         error = format!("{primary_err}; fallback OCR also failed: {fallback_err}");
                         String::new()
@@ -204,6 +221,7 @@ async fn run_pipeline_with_image(app: &tauri::AppHandle, state: &tauri::State<'_
         image,
         ocr_text,
         translated_text,
+        ocr_engine,
         error,
     };
     let _ = app.emit("capture-result", &payload);
@@ -220,7 +238,7 @@ async fn ocr_selection(
     height: u32,
 ) -> Result<ResultPayload, String> {
     let image = state
-        .last_image
+        .full_image
         .lock()
         .map_err(|e| e.to_string())?
         .clone()
@@ -538,6 +556,7 @@ pub fn run() {
             hotkey: Mutex::new(DEFAULT_HOTKEY.to_string()),
             monitor: Mutex::new(0),
             last_image: Mutex::new(None),
+            full_image: Mutex::new(None),
         })
         .setup(|app| {
             #[cfg(desktop)]

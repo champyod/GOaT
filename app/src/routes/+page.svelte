@@ -24,6 +24,7 @@
     image: CapturedImage;
     ocr_text: string;
     translated_text: string;
+    ocr_engine: string;
     error: string;
   };
 
@@ -54,6 +55,7 @@
     null
   );
   let imgSize = $state<{ width: number; height: number } | null>(null);
+  let selOffset = $state({ x: 0, y: 0 });
 
   function draw(image: CapturedImage) {
     if (!canvasEl) return;
@@ -70,16 +72,24 @@
     hasImage = true;
   }
 
-  function applyResult(result: ResultPayload) {
+  function applyResult(
+    result: ResultPayload,
+    origin: { x: number; y: number } | null = null
+  ) {
     draw(result.image);
     imgSize = { width: result.image.width, height: result.image.height };
+    selOffset = origin ?? { x: 0, y: 0 };
     ocrText = result.ocr_text;
     translatedText = result.translated_text;
     error = result.error;
-    if (error) {
+    if (ocrText.trim()) {
+      status = result.ocr_engine
+        ? `Result ready (${result.ocr_engine})`
+        : 'Result ready';
+    } else if (error) {
       status = 'Capture incomplete';
     } else {
-      status = ocrText.trim() ? 'Result ready' : 'No text detected';
+      status = 'No text detected';
     }
   }
 
@@ -102,6 +112,7 @@
   function drawImage(image: CapturedImage) {
     draw(image);
     imgSize = { width: image.width, height: image.height };
+    selOffset = { x: 0, y: 0 };
     status = 'Reading text...';
   }
 
@@ -175,6 +186,10 @@
 
   async function close() {
     await invoke('hide_window');
+  }
+
+  async function minimize() {
+    await getCurrentWindow().minimize();
   }
 
   async function toggleAutostart() {
@@ -358,6 +373,8 @@
       1,
       Math.min(Math.round(selRect.h * scaleY), imgSize.height - y)
     );
+    const fullX = selOffset.x + x;
+    const fullY = selOffset.y + y;
     const tooSmall = selRect.w < 4 || selRect.h < 4;
     stopSelectMode();
     if (tooSmall) {
@@ -369,12 +386,12 @@
     status = 'Reading selection...';
     try {
       const result = await invoke<ResultPayload>('ocr_selection', {
-        x,
-        y,
+        x: fullX,
+        y: fullY,
         width,
         height,
       });
-      applyResult(result);
+      applyResult(result, { x: fullX, y: fullY });
     } catch (e) {
       error = String(e);
       status = 'Selection failed';
@@ -423,6 +440,7 @@
     <button onclick={toggleFullscreen}>
       {isFullscreen ? 'Unfullscreen' : 'Fullscreen'}
     </button>
+    <button onclick={minimize}>Minimize</button>
     <button onclick={close}>Close (hide)</button>
   </div>
 
