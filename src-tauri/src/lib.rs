@@ -5,11 +5,16 @@ mod models;
 use std::sync::Mutex;
 
 const DEFAULT_HOTKEY: &str = "Ctrl+Shift+S";
-const DEFAULT_SELECT_HOTKEY: &str = "Ctrl+Shift+R";
+const DEFAULT_SELECT_HOTKEY: &str = "Ctrl+Shift+E";
+
+fn default_select_hotkey() -> String {
+    DEFAULT_SELECT_HOTKEY.to_string()
+}
 
 struct AppState {
     ocr: Mutex<Option<pure_onnx_ocr_sync::OcrEngine>>,
     hotkey: Mutex<String>,
+    select_hotkey: Mutex<String>,
     monitor: Mutex<usize>,
     last_image: Mutex<Option<capture::CapturedImage>>,
     full_image: Mutex<Option<capture::CapturedImage>>,
@@ -18,6 +23,8 @@ struct AppState {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct UserConfig {
     hotkey: String,
+    #[serde(default = "default_select_hotkey")]
+    select_hotkey: String,
     monitor: usize,
 }
 
@@ -25,6 +32,7 @@ impl Default for UserConfig {
     fn default() -> Self {
         Self {
             hotkey: DEFAULT_HOTKEY.to_string(),
+            select_hotkey: default_select_hotkey(),
             monitor: 0,
         }
     }
@@ -327,14 +335,25 @@ fn enter_screen_select(app: &tauri::AppHandle) {
 fn setup_shortcut(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
-    let select_hotkey =
-        parse_shortcut(DEFAULT_SELECT_HOTKEY).expect("select hotkey parses");
     app.plugin(
         tauri_plugin_global_shortcut::Builder::new()
             .with_handler(move |app, shortcut, event| {
                 use tauri::Manager;
                 if event.state == ShortcutState::Pressed {
-                    if shortcut == &select_hotkey {
+                    // Compare by key+mods from live state so remaps and
+                    // repeats always route correctly.
+                    let is_select = {
+                        let state = app.state::<AppState>();
+                        let sel = state
+                            .select_hotkey
+                            .lock()
+                            .map(|g| g.clone())
+                            .unwrap_or_default();
+                        parse_shortcut(&sel).is_some_and(|s| {
+                            s.key == shortcut.key && s.mods == shortcut.mods
+                        })
+                    };
+                    if is_select {
                         enter_screen_select(app);
                         return;
                     }
@@ -359,8 +378,13 @@ fn setup_shortcut(app: &tauri::AppHandle) -> tauri::Result<()> {
     app.global_shortcut()
         .register(hotkey)
         .map_err(|e| tauri::Error::Anyhow(anyhow::Error::msg(e)))?;
+    let select_str = if parse_shortcut(&saved.select_hotkey).is_some() {
+        saved.select_hotkey.clone()
+    } else {
+        default_select_hotkey()
+    };
     // Best effort: screen-select hotkey may collide with a user remap.
-    if let Some(select_hotkey) = parse_shortcut(DEFAULT_SELECT_HOTKEY) {
+    if let Some(select_hotkey) = parse_shortcut(&select_str) {
         let _ = app.global_shortcut().register(select_hotkey);
     }
     {
@@ -368,6 +392,8 @@ fn setup_shortcut(app: &tauri::AppHandle) -> tauri::Result<()> {
         let state = app.state::<AppState>();
         *state.hotkey.lock().map_err(|e| tauri::Error::Anyhow(anyhow::anyhow!("{e}")))? =
             hotkey_str;
+        *state.select_hotkey.lock().map_err(|e| tauri::Error::Anyhow(anyhow::anyhow!("{e}")))? =
+            select_str;
         *state.monitor.lock().map_err(|e| tauri::Error::Anyhow(anyhow::anyhow!("{e}")))? =
             saved.monitor;
     }
@@ -512,10 +538,62 @@ fn set_hotkey(
     })?;
     *state.hotkey.lock().map_err(|e| e.to_string())? = hotkey.clone();
     let monitor = *state.monitor.lock().map_err(|e| e.to_string())?;
+    let select_hotkey = state
+        .select_hotkey
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
     save_config(
         &app,
         &UserConfig {
             hotkey: hotkey.clone(),
+            select_hotkey,
+            monitor,
+        },
+    )?;
+    Ok(hotkey)
+}
+
+#[tauri::command]
+fn get_select_hotkey(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    state
+        .select_hotkey
+        .lock()
+        .map(|g| g.clone())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_select_hotkey(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    hotkey: String,
+) -> Result<String, String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let new_shortcut = parse_shortcut(&hotkey)
+        .ok_or_else(|| format!("invalid shortcut \"{hotkey}\", use e.g. Ctrl+Shift+E"))?;
+    let old = state
+        .select_hotkey
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    if let Some(old_shortcut) = parse_shortcut(&old) {
+        let _ = app.global_shortcut().unregister(old_shortcut);
+    }
+    app.global_shortcut().register(new_shortcut).map_err(|e| {
+        if let Some(old_shortcut) = parse_shortcut(&old) {
+            let _ = app.global_shortcut().register(old_shortcut);
+        }
+        format!("failed to register shortcut \"{hotkey}\": {e}")
+    })?;
+    *state.select_hotkey.lock().map_err(|e| e.to_string())? = hotkey.clone();
+    let monitor = *state.monitor.lock().map_err(|e| e.to_string())?;
+    let main_hotkey = state.hotkey.lock().map_err(|e| e.to_string())?.clone();
+    save_config(
+        &app,
+        &UserConfig {
+            hotkey: main_hotkey,
+            select_hotkey: hotkey.clone(),
             monitor,
         },
     )?;
@@ -539,7 +617,19 @@ fn set_monitor(
 ) -> Result<usize, String> {
     *state.monitor.lock().map_err(|e| e.to_string())? = monitor;
     let hotkey = state.hotkey.lock().map_err(|e| e.to_string())?.clone();
-    save_config(&app, &UserConfig { hotkey, monitor })?;
+    let select_hotkey = state
+        .select_hotkey
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    save_config(
+        &app,
+        &UserConfig {
+            hotkey,
+            select_hotkey,
+            monitor,
+        },
+    )?;
     Ok(monitor)
 }
 
@@ -554,6 +644,7 @@ pub fn run() {
         .manage(AppState {
             ocr: Mutex::new(None),
             hotkey: Mutex::new(DEFAULT_HOTKEY.to_string()),
+            select_hotkey: Mutex::new(default_select_hotkey()),
             monitor: Mutex::new(0),
             last_image: Mutex::new(None),
             full_image: Mutex::new(None),
@@ -594,7 +685,9 @@ pub fn run() {
             set_autostart,
             is_autostart,
             get_hotkey,
-            set_hotkey
+            set_hotkey,
+            get_select_hotkey,
+            set_select_hotkey
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

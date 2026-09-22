@@ -44,6 +44,9 @@
   let hotkey = $state('Ctrl+Shift+S');
   let newHotkey = $state('Ctrl+Shift+S');
   let hotkeyError = $state('');
+  let selectHotkey = $state('Ctrl+Shift+E');
+  let newSelectHotkey = $state('Ctrl+Shift+E');
+  let selectHotkeyError = $state('');
   let hasImage = $state(false);
   let isFullscreen = $state(false);
   let monitors = $state<MonitorInfo[]>([]);
@@ -163,6 +166,14 @@
       .catch((e) => {
         error = String(e);
       });
+    invoke<string>('get_select_hotkey')
+      .then((value) => {
+        selectHotkey = value;
+        newSelectHotkey = value;
+      })
+      .catch((e) => {
+        error = String(e);
+      });
     invoke<MonitorInfo[]>('list_monitors')
       .then((value) => {
         monitors = value;
@@ -204,6 +215,17 @@
       hotkey = await invoke<string>('set_hotkey', { hotkey: newHotkey });
     } catch (e) {
       hotkeyError = String(e);
+    }
+  }
+
+  async function saveSelectHotkey() {
+    selectHotkeyError = '';
+    try {
+      selectHotkey = await invoke<string>('set_select_hotkey', {
+        hotkey: newSelectHotkey,
+      });
+    } catch (e) {
+      selectHotkeyError = String(e);
     }
   }
 
@@ -511,6 +533,14 @@
     <button onclick={saveHotkey}>Save hotkey</button>
     {#if hotkeyError}
       <span class="error">{hotkeyError}</span>
+    {/if}
+    <label>
+      Region hotkey
+      <input bind:value={newSelectHotkey} placeholder="Ctrl+Shift+E" />
+    </label>
+    <button onclick={saveSelectHotkey}>Save region hotkey</button>
+    {#if selectHotkeyError}
+      <span class="error">{selectHotkeyError}</span>
     {/if}
     <label>
       Monitor
