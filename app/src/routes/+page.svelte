@@ -48,6 +48,7 @@
   let monitors = $state<MonitorInfo[]>([]);
   let monitor = $state(0);
   let selecting = $state(false);
+  let screenMode = $state(false);
   let selStart = $state<{ x: number; y: number } | null>(null);
   let selRect = $state<{ x: number; y: number; w: number; h: number } | null>(
     null
@@ -111,6 +112,18 @@
     const unlistenImage = listen<CapturedImage>('capture-image', (event) => {
       drawImage(event.payload);
     });
+    const unlistenRegion = listen('region-select', () => {
+      if (monitors.length === 0) {
+        error = 'No monitor info available';
+        return;
+      }
+      error = '';
+      selStart = null;
+      selRect = null;
+      selecting = true;
+      screenMode = true;
+      window.addEventListener('keydown', cancelSelectOnEsc);
+    });
     invoke<ModelsStatus>('models_status')
       .then((value) => {
         if (value.ready) {
@@ -156,6 +169,7 @@
     return () => {
       unlistenResult.then((f) => f());
       unlistenImage.then((f) => f());
+      unlistenRegion.then((f) => f());
     };
   });
 
@@ -209,10 +223,21 @@
   }
 
   function stopSelectMode() {
+    const wasScreen = screenMode;
     selecting = false;
+    screenMode = false;
     selStart = null;
     selRect = null;
     window.removeEventListener('keydown', cancelSelectOnEsc);
+    if (wasScreen) {
+      const win = getCurrentWindow();
+      win.isFullscreen().then((full) => {
+        if (full) {
+          win.setFullscreen(false);
+          isFullscreen = false;
+        }
+      });
+    }
   }
 
   function cancelSelectOnEsc(event: KeyboardEvent) {
@@ -229,28 +254,89 @@
 
   function onSelDown(event: MouseEvent) {
     if (!selecting) return;
-    const p = canvasPos(event);
+    let p: { x: number; y: number };
+    if (screenMode) {
+      p = { x: event.clientX, y: event.clientY };
+    } else {
+      p = canvasPos(event);
+    }
     selStart = p;
     selRect = { x: p.x, y: p.y, w: 0, h: 0 };
   }
 
   function onSelMove(event: MouseEvent) {
-    if (!selecting || !selStart || !canvasEl) return;
-    const box = canvasEl.getBoundingClientRect();
-    const cx = event.clientX - box.left;
-    const cy = event.clientY - box.top;
+    if (!selecting || !selStart) return;
+    let cx: number;
+    let cy: number;
+    let maxW: number;
+    let maxH: number;
+    if (screenMode) {
+      cx = event.clientX;
+      cy = event.clientY;
+      maxW = window.innerWidth;
+      maxH = window.innerHeight;
+    } else {
+      if (!canvasEl) return;
+      const box = canvasEl.getBoundingClientRect();
+      cx = event.clientX - box.left;
+      cy = event.clientY - box.top;
+      maxW = box.width;
+      maxH = box.height;
+    }
     const x = Math.max(0, Math.min(selStart.x, cx));
     const y = Math.max(0, Math.min(selStart.y, cy));
     selRect = {
       x,
       y,
-      w: Math.max(0, Math.min(cx, box.width) - x),
-      h: Math.max(0, Math.min(cy, box.height) - y),
+      w: Math.max(0, Math.min(cx, maxW) - x),
+      h: Math.max(0, Math.min(cy, maxH) - y),
     };
   }
 
+  async function finishScreenSelect() {
+    const rect = selRect;
+    const mon = monitors.find((m) => m.index === monitor) ?? monitors[0];
+    const scale = await getCurrentWindow().scaleFactor();
+    const tooSmall = !rect || rect.w < 4 || rect.h < 4;
+    stopSelectMode();
+    if (tooSmall || !rect || !mon) {
+      if (!mon) error = 'No monitor info available';
+      else status = 'Selection too small';
+      return;
+    }
+    const x = Math.max(0, Math.round(rect.x * scale + mon.x));
+    const y = Math.max(0, Math.round(rect.y * scale + mon.y));
+    const width = Math.max(1, Math.round(rect.w * scale));
+    const height = Math.max(1, Math.round(rect.h * scale));
+    busy = true;
+    error = '';
+    status = 'Capturing region...';
+    try {
+      const result = await invoke<ResultPayload>('capture_region', {
+        monitor,
+        x,
+        y,
+        width,
+        height,
+      });
+      applyResult(result);
+    } catch (e) {
+      error = String(e);
+      status = 'Capture failed';
+    } finally {
+      busy = false;
+    }
+  }
+
   async function onSelUp() {
-    if (!selecting || !selRect || !canvasEl || !imgSize || busy) {
+    if (!selecting || !selRect || busy) {
+      return;
+    }
+    if (screenMode) {
+      await finishScreenSelect();
+      return;
+    }
+    if (!canvasEl || !imgSize) {
       return;
     }
     const box = canvasEl.getBoundingClientRect();
@@ -303,6 +389,26 @@
 </script>
 
 <main>
+  {#if selecting && screenMode}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
+      Full-screen drag surface; Esc to cancel is on window keydown. -->
+    <div
+      class="overlay"
+      role="application"
+      aria-label="Drag to select a screen region"
+      onmousedown={onSelDown}
+      onmousemove={onSelMove}
+      onmouseup={onSelUp}
+    >
+      <p class="overlay-hint">Drag to select a region. Esc cancels.</p>
+      {#if selRect}
+        <div
+          class="selrect screen"
+          style="left: {selRect.x}px; top: {selRect.y}px; width: {selRect.w}px; height: {selRect.h}px;"
+        ></div>
+      {/if}
+    </div>
+  {:else}
   <div class="toolbar" data-tauri-drag-region>
     <h1 data-tauri-drag-region>GOaT</h1>
     <span class="hotkey-hint" data-tauri-drag-region>{hotkey}</span>
@@ -399,6 +505,7 @@
       </select>
     </label>
   </div>
+  {/if}
 </main>
 
 <style>
@@ -446,16 +553,27 @@
   }
 
   .error {
+    display: inline-block;
+    margin: 0.5rem 0 0;
+    padding: 0.25rem 0.6rem;
+    background: rgba(0, 0, 0, 0.75);
+    border-radius: 0.4rem;
     color: #ff9d9d;
   }
 
   .hotkey-hint {
-    opacity: 0.7;
+    padding: 0.25rem 0.6rem;
+    background: rgba(0, 0, 0, 0.75);
+    border-radius: 0.4rem;
     font-size: 0.85rem;
   }
 
   .placeholder {
-    opacity: 0.6;
+    display: inline-block;
+    margin: 0.5rem 0;
+    padding: 0.25rem 0.6rem;
+    background: rgba(0, 0, 0, 0.75);
+    border-radius: 0.4rem;
     font-size: 0.85rem;
   }
 
@@ -470,7 +588,11 @@
   }
 
   .status {
-    opacity: 0.7;
+    display: inline-block;
+    margin: 0.75rem 0 0;
+    padding: 0.25rem 0.6rem;
+    background: rgba(0, 0, 0, 0.75);
+    border-radius: 0.4rem;
   }
 
   .content {
@@ -535,6 +657,30 @@
     pointer-events: none;
   }
 
+  .overlay {
+    position: fixed;
+    inset: 0;
+    cursor: crosshair;
+    background: rgba(0, 0, 0, 0.15);
+    z-index: 10;
+  }
+
+  .overlay-hint {
+    position: fixed;
+    top: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    margin: 0;
+    padding: 0.4rem 0.8rem;
+    background: rgba(0, 0, 0, 0.75);
+    border-radius: 0.4rem;
+    pointer-events: none;
+  }
+
+  .selrect.screen {
+    position: fixed;
+  }
+
   .selrect {
     position: absolute;
     border: 2px dashed #fff;
@@ -547,8 +693,8 @@
     box-sizing: border-box;
     min-height: 5rem;
     padding: 0.5rem;
-    background: rgba(255, 255, 255, 0.12);
-    border: 1px solid transparent;
+    background: rgba(0, 0, 0, 0.75);
+    border: 1px solid rgba(255, 255, 255, 0.25);
     border-radius: 0.4rem;
     color: #fff;
     font: inherit;

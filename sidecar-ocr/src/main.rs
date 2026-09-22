@@ -44,6 +44,10 @@ fn load_api() -> anyhow::Result<tesseract_rs::TesseractAPI> {
     let api = tesseract_rs::TesseractAPI::new();
     api.init(dir_str, &spec)
         .map_err(|e| anyhow::anyhow!("tesseract init failed: {e}"))?;
+    // Sparse text: screenshots are scattered UI text, full page
+    // segmentation is far slower for no accuracy gain here.
+    api.set_variable("tessedit_pageseg_mode", "11")
+        .map_err(|e| anyhow::anyhow!("tesseract set PSM failed: {e}"))?;
     Ok(api)
 }
 
@@ -63,8 +67,32 @@ fn ocr_with(api: &tesseract_rs::TesseractAPI, path: &str) -> anyhow::Result<()> 
     let text = api
         .get_utf8_text()
         .map_err(|e| anyhow::anyhow!("tesseract inference failed: {e}"))?;
-    print!("{text}");
+    print!("{}", join_thai_spaces(text.trim()));
     Ok(())
+}
+
+// Tesseract inserts spaces between every Thai glyph, shredding words.
+// Thai normally runs without inter-word spaces, so drop a space when it
+// sits between two Thai-block characters. Spaces touching Latin, digits
+// or punctuation are preserved.
+fn is_thai(c: char) -> bool {
+    ('\u{0E00}'..='\u{0E7F}').contains(&c)
+}
+
+fn join_thai_spaces(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if c == ' ' {
+            let prev = i.checked_sub(1).and_then(|j| chars.get(j));
+            let next = chars.get(i + 1);
+            if matches!(prev, Some(&p) if is_thai(p)) && matches!(next, Some(&n) if is_thai(n)) {
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -87,6 +115,17 @@ mod tests {
             langs.contains(&"tha"),
             "tha missing from embedded tessdata: {langs:?}"
         );
+    }
+
+    #[test]
+    fn thai_spaces_join() {
+        assert_eq!(join_thai_spaces("ไต ร ฟี"), "ไตรฟี");
+        assert_eq!(join_thai_spaces("ส ิ พ 065"), "สิพ 065");
+        assert_eq!(
+            join_thai_spaces("tracking 100 จาก 100"),
+            "tracking 100 จาก 100"
+        );
+        assert_eq!(join_thai_spaces("Google ไต"), "Google ไต");
     }
 
     #[test]

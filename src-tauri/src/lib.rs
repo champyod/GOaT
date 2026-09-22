@@ -5,6 +5,7 @@ mod models;
 use std::sync::Mutex;
 
 const DEFAULT_HOTKEY: &str = "Ctrl+Shift+S";
+const DEFAULT_SELECT_HOTKEY: &str = "Ctrl+Shift+R";
 
 struct AppState {
     ocr: Mutex<Option<pure_onnx_ocr_sync::OcrEngine>>,
@@ -281,14 +282,44 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 }
 
 #[cfg(desktop)]
+fn enter_screen_select(app: &tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    let (mx, my) = {
+        let state = app.state::<AppState>();
+        let index = *state.monitor.lock().unwrap_or_else(|e| e.into_inner());
+        capture::list_monitors()
+            .ok()
+            .and_then(|ms| ms.into_iter().find(|m| m.index == index))
+            .map(|m| (m.x, m.y))
+            .unwrap_or((0, 0))
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x: mx,
+            y: my,
+        }));
+        let _ = window.set_fullscreen(true);
+        let _ = window.set_focus();
+    }
+    let _ = app.emit("region-select", ());
+}
+
+#[cfg(desktop)]
 fn setup_shortcut(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+    let select_hotkey =
+        parse_shortcut(DEFAULT_SELECT_HOTKEY).expect("select hotkey parses");
     app.plugin(
         tauri_plugin_global_shortcut::Builder::new()
-            .with_handler(move |app, _shortcut, event| {
+            .with_handler(move |app, shortcut, event| {
                 use tauri::Manager;
                 if event.state == ShortcutState::Pressed {
+                    if shortcut == &select_hotkey {
+                        enter_screen_select(app);
+                        return;
+                    }
                     show_main_window(app);
                     let app_handle = app.clone();
                     tauri::async_runtime::spawn(async move {
@@ -310,6 +341,10 @@ fn setup_shortcut(app: &tauri::AppHandle) -> tauri::Result<()> {
     app.global_shortcut()
         .register(hotkey)
         .map_err(|e| tauri::Error::Anyhow(anyhow::Error::msg(e)))?;
+    // Best effort: screen-select hotkey may collide with a user remap.
+    if let Some(select_hotkey) = parse_shortcut(DEFAULT_SELECT_HOTKEY) {
+        let _ = app.global_shortcut().register(select_hotkey);
+    }
     {
         use tauri::Manager;
         let state = app.state::<AppState>();
