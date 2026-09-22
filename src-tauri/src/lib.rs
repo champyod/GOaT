@@ -163,6 +163,8 @@ async fn run_pipeline_with_image(app: &tauri::AppHandle, state: &tauri::State<'_
         .last_image
         .lock()
         .map_err(|e| e.to_string())? = Some(image.clone());
+    // Show the screenshot immediately; OCR/translate follow on the full image.
+    let _ = app.emit("capture-image", &image);
     let dynamic = image.to_dynamic_image()?;
     let mut error = String::new();
     let ocr_text = {

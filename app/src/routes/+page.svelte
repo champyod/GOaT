@@ -98,9 +98,18 @@
     }
   }
 
+  function drawImage(image: CapturedImage) {
+    draw(image);
+    imgSize = { width: image.width, height: image.height };
+    status = 'Reading text...';
+  }
+
   onMount(() => {
-    const unlisten = listen<ResultPayload>('capture-result', (event) => {
+    const unlistenResult = listen<ResultPayload>('capture-result', (event) => {
       applyResult(event.payload);
+    });
+    const unlistenImage = listen<CapturedImage>('capture-image', (event) => {
+      drawImage(event.payload);
     });
     invoke<ModelsStatus>('models_status')
       .then((value) => {
@@ -145,7 +154,8 @@
         error = String(e);
       });
     return () => {
-      unlisten.then((f) => f());
+      unlistenResult.then((f) => f());
+      unlistenImage.then((f) => f());
     };
   });
 
@@ -319,10 +329,10 @@
     <section class="shot">
       <h2>Screenshot</h2>
       {#if !hasImage}
-        <p class="placeholder">No screenshot yet — press {hotkey} or Capture.</p>
+        <p class="placeholder">No screenshot yet. Press {hotkey} or Capture.</p>
       {/if}
       {#if selecting}
-        <p class="placeholder">Drag on the screenshot, release to read — Esc to cancel.</p>
+        <p class="placeholder">Drag on the screenshot, release to read. Esc cancels.</p>
       {/if}
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
         Drag surface over the screenshot; Esc to cancel is on window keydown. -->
@@ -383,7 +393,7 @@
       <select value={monitor} onchange={saveMonitor}>
         {#each monitors as m}
           <option value={m.index}>
-            {m.name}{m.is_primary ? ' (primary)' : ''} — {m.width}x{m.height}
+            {m.name}{m.is_primary ? ' (primary)' : ''} {m.width}x{m.height}
           </option>
         {/each}
       </select>
