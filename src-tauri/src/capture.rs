@@ -21,11 +21,15 @@ impl CapturedImage {
     }
 
     pub fn crop(&self, x: u32, y: u32, width: u32, height: u32) -> Result<CapturedImage, String> {
+        if x >= self.width || y >= self.height {
+            return Err("selection outside image bounds".to_string());
+        }
+        // Clamp to the image: drag coordinates arrive in resized-display
+        // space and rounding can overshoot the true edge by a pixel.
+        let width = width.min(self.width - x);
+        let height = height.min(self.height - y);
         if width == 0 || height == 0 {
             return Err("empty selection".to_string());
-        }
-        if x.saturating_add(width) > self.width || y.saturating_add(height) > self.height {
-            return Err("selection outside image bounds".to_string());
         }
         let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
         for row in y..y + height {

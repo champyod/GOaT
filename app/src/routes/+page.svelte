@@ -246,10 +246,22 @@
     const box = canvasEl.getBoundingClientRect();
     const scaleX = imgSize.width / box.width;
     const scaleY = imgSize.height / box.height;
-    const x = Math.max(0, Math.round(selRect.x * scaleX));
-    const y = Math.max(0, Math.round(selRect.y * scaleY));
-    const width = Math.max(1, Math.round(selRect.w * scaleX));
-    const height = Math.max(1, Math.round(selRect.h * scaleY));
+    const x = Math.min(
+      imgSize.width - 1,
+      Math.max(0, Math.round(selRect.x * scaleX))
+    );
+    const y = Math.min(
+      imgSize.height - 1,
+      Math.max(0, Math.round(selRect.y * scaleY))
+    );
+    const width = Math.max(
+      1,
+      Math.min(Math.round(selRect.w * scaleX), imgSize.width - x)
+    );
+    const height = Math.max(
+      1,
+      Math.min(Math.round(selRect.h * scaleY), imgSize.height - y)
+    );
     const tooSmall = selRect.w < 4 || selRect.h < 4;
     stopSelectMode();
     if (tooSmall) {
