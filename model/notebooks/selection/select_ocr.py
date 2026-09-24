@@ -13,13 +13,14 @@ import traceback
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
 from goat_model.data import dataset_revisions
-from goat_model.metrics import cohens_d, paired_t_test
+from goat_model.metrics import cohens_d, paired_t_test, trace_cer
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
 from goat_model.log import dump as _dump
@@ -59,6 +60,26 @@ def _recs(triples: list) -> list[dict]:
 
 
 @log_call
+def _samples_path(output: Path, run_id: str) -> Path:
+    return output.with_name(f"{output.stem}.samples_{run_id}.jsonl")
+
+
+def _result_snapshot(output: Path, run_id: str) -> Path:
+    return output.with_name(f"{output.stem}.{run_id}.result.json")
+
+
+def _dump_samples(path: Path, rows: list[dict]) -> None:
+    """Append expected-vs-got rows to the per-run sample log (never overwritten)."""
+    try:
+        with path.open("a", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except OSError as err:
+        _warn("select-ocr", "sample log write failed", path=str(path), error=str(err))
+
+
+
+@log_call
 def main() -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(description="OCR selection experiment (CER decision rule).")
@@ -72,6 +93,8 @@ def main() -> None:
     args = parser.parse_args()
     _info("select-ocr", "args", **vars(args))
     _err_out = args.output
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    samples_path = _samples_path(args.output, run_id)
     try:
         if not args.force and args.output.is_file():
             _info("select-ocr", "skipped - already selected (use --force to rerun)", out=str(args.output))
@@ -109,10 +132,24 @@ def main() -> None:
                 prog.n = done
                 runs = [_recs(r) for r in stored]
                 triples = [list(r) for r in stored]
-                for _ in range(done, args.repeats):
+                for i in range(done, args.repeats):
                     recs = evaluate.run_ocr(backend, assets, img_size, seed=args.seed)
                     runs.append(recs)
                     triples.append([[rec["cer"], rec["word_accuracy"], rec["latency_ms"]] for rec in recs])
+                    _dump_samples(
+                        samples_path,
+                        [
+                            {
+                                "repeat_index": i,
+                                "model": model,
+                                "dataset": dataset,
+                                **rec,
+                                "trace": trace_cer(rec["reference"], rec["hypothesis"]),
+                                "verdict": "pass" if rec["cer"] <= c.OCR_CER_THRESHOLD else "fail",
+                            }
+                            for rec in recs
+                        ],
+                    )
                     saved_runs[key] = triples
                     write_json(partial_path, {"seed": args.seed, "runs": args.repeats, "runs_data": saved_runs})
                     prog.update()
@@ -149,7 +186,11 @@ def main() -> None:
             "selected": decision,
         }
         write_json(args.output, results)
+        snapshot = _result_snapshot(args.output, run_id)
+        write_json(snapshot, results)
+        _info("select-ocr", "wrote result snapshot", out=str(snapshot))
         partial_path.unlink(missing_ok=True)
+        Path(str(args.output) + ".error.json").unlink(missing_ok=True)
 
         _info("select-ocr", "mean CER", thaitrocr=round(thai_mean, 4), pp_ocrv5=round(pp_mean, 4))
         _info("select-ocr", "paired t-test", p=round(test['p_value'], 4), significant=test['significant'])
