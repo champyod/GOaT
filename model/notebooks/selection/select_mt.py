@@ -12,13 +12,14 @@ import traceback
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
 from goat_model.data import dataset_revisions
-from goat_model.metrics import cohens_d, paired_t_test, summarize
+from goat_model.metrics import cohens_d, paired_t_test, summarize, trace_corpus_bleu
 from goat_model.mt import evaluate
 from goat_model.mt.engine import get_mt
 from goat_model.log import dump as _dump
@@ -58,6 +59,37 @@ def _flush_partial(path: Path, seed: int, repeats: int, bleu, lat, hyp) -> None:
 
 
 @log_call
+def _samples_path(output: Path, run_id: str) -> Path:
+    return output.with_name(f"{output.stem}.samples_{run_id}.jsonl")
+
+
+def _result_snapshot(output: Path, run_id: str) -> Path:
+    return output.with_name(f"{output.stem}.{run_id}.result.json")
+
+
+def _th_tokens(texts: list[str]) -> list[list[str]]:
+    """Thai word segmentation (newmm) with whitespace tokens dropped.
+
+    pythainlp is an mt-extra dependency, so it is imported lazily: the
+    notebook runs selectors via uv which resolves the environment.
+    """
+    from pythainlp.tokenize import word_tokenize
+
+    return [[t for t in word_tokenize(t, engine="newmm") if t.strip()] for t in texts]
+
+
+def _dump_samples(path: Path, rows: list[dict]) -> None:
+    """Append expected-vs-got rows to the per-run sample log (never overwritten)."""
+    try:
+        with path.open("a", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except OSError as err:
+        _warn("select-mt", "sample log write failed", path=str(path), error=str(err))
+
+
+
+@log_call
 def main() -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(
@@ -76,6 +108,8 @@ def main() -> None:
     args = parser.parse_args()
     _info("select-mt", "args", **vars(args))
     _err_out = args.output
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    samples_path = _samples_path(args.output, run_id)
     try:
         if not args.force and args.output.is_file():
             _info("select-mt", "skipped - already selected (use --force to rerun)", out=str(args.output))
@@ -132,6 +166,37 @@ def main() -> None:
                 bleu_series[model].append(run["bleu"])
                 latency_series[model].append(run["average_ms_per_sentence"] / 1000.0)
                 last_by_model[model] = run
+                ref_tokens = _th_tokens(refs)
+                hyp_tokens = _th_tokens(run["hypotheses"])
+                _dump_samples(
+                    samples_path,
+                    [
+                        {
+                            "repeat_index": rep,
+                            "model": model,
+                            "src": args.src,
+                            "tgt": args.tgt,
+                            "domain": tags[k],
+                            "source": sources[k],
+                            "reference": refs[k],
+                            "hypothesis": run["hypotheses"][k],
+                            "ref_tokens": ref_tokens[k],
+                            "hyp_tokens": hyp_tokens[k],
+                        }
+                        for k in range(len(run["hypotheses"]))
+                    ],
+                )
+                _dump_samples(
+                    samples_path,
+                    [
+                        {
+                            "repeat_index": rep,
+                            "model": model,
+                            "kind": "bleu_trace",
+                            "trace": trace_corpus_bleu(refs, run["hypotheses"]),
+                        }
+                    ],
+                )
                 _flush_partial(partial_path, args.seed, args.repeats, bleu_series, latency_series, {m: last_by_model[m]["hypotheses"] for m in last_by_model if last_by_model[m].get("hypotheses")})
                 prog.update()
             prog.close()
@@ -171,7 +236,11 @@ def main() -> None:
             "selected": selected,
         }
         write_json(args.output, results)
+        snapshot = _result_snapshot(args.output, run_id)
+        write_json(snapshot, results)
+        _info("select-mt", "wrote result snapshot", out=str(snapshot))
         partial_path.unlink(missing_ok=True)
+        Path(str(args.output) + ".error.json").unlink(missing_ok=True)
 
         for model in c.MT_MODELS:
             m = results["models"][model]
