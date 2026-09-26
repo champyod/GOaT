@@ -61,6 +61,27 @@ jobs:
       - name: Regenerate icons
         run: bun run tauri icon icon.png
 
+      # build.sh smoke-tests by running the sidecar it just built, so the x86_64
+      # cross-build is executed on macos-latest's arm64 image and needs Rosetta 2
+      # to start. Scoped to this one row: the install accepts a licence.
+      - name: Install Rosetta 2
+        if: matrix.platform == 'macos-latest' && contains(matrix.args, 'x86_64-apple-darwin')
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+
+      # externalBin requires binaries/tesseract-ocr-<triple> and that directory
+      # is gitignored, so every runner has to build the sidecar itself before the
+      # bundler below runs. shell: bash is explicit because Windows runners
+      # default run: to PowerShell, which cannot execute this script.
+      # matrix.args has to reach build.sh: macos-latest is an arm64 image, so with
+      # the host default both macOS rows would install an aarch64 sidecar and the
+      # bundler could not resolve tesseract-ocr-x86_64-apple-darwin for the x86_64
+      # row. It is deliberately unquoted, so an empty args field leaves the
+      # command with no argument at all. build.sh runs the sidecar it just built,
+      # so the x86_64 row needs the Rosetta 2 step above.
+      - name: Build OCR sidecar
+        shell: bash
+        run: bash sidecar-ocr/build.sh ${{ matrix.args }}
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

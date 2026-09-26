@@ -19,25 +19,28 @@ fn run() -> anyhow::Result<()> {
     ocr_with(&api, &path)
 }
 
+// Both languages are the point of this sidecar: Thai-only screens OCR to
+// garbage without "tha", so a missing one means the binary was mis-built and
+// must not degrade quietly.
+const REQUIRED_LANGS: [&str; 2] = ["eng", "tha"];
+
 // init_embedded() only accepts a single embedded key, so "eng+tha" can
-// never match. Extract whatever is embedded (eng, plus tha when present)
-// into a temp tessdata dir and init normally for true multi-language OCR.
+// never match. Extract the embedded tessdata into a temp dir and init
+// normally for true multi-language OCR.
 fn load_api() -> anyhow::Result<tesseract_rs::TesseractAPI> {
+    let embedded: Vec<(&str, &'static [u8])> = REQUIRED_LANGS
+        .iter()
+        .filter_map(|lang| tesseract_rs::get_embedded_tessdata(lang).map(|data| (*lang, data)))
+        .collect();
+    let found: Vec<&str> = embedded.iter().map(|(lang, _)| *lang).collect();
+    let spec = init_spec(&found)?;
     let dir = std::env::temp_dir().join("goat-tessdata");
     std::fs::create_dir_all(&dir)
         .map_err(|e| anyhow::anyhow!("failed to create temp tessdata dir: {e}"))?;
-    let mut langs = Vec::new();
-    for lang in ["eng", "tha"] {
-        if let Some(data) = tesseract_rs::get_embedded_tessdata(lang) {
-            std::fs::write(dir.join(format!("{lang}.traineddata")), data)
-                .map_err(|e| anyhow::anyhow!("failed to stage {lang} tessdata: {e}"))?;
-            langs.push(lang);
-        }
+    for (lang, data) in &embedded {
+        std::fs::write(dir.join(format!("{lang}.traineddata")), data)
+            .map_err(|e| anyhow::anyhow!("failed to stage {lang} tessdata: {e}"))?;
     }
-    if langs.is_empty() {
-        return Err(anyhow::anyhow!("no embedded tessdata (eng/tha) in binary"));
-    }
-    let spec = langs.join("+");
     let dir_str = dir
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("temp tessdata path not UTF-8"))?;
@@ -49,6 +52,27 @@ fn load_api() -> anyhow::Result<tesseract_rs::TesseractAPI> {
     api.set_variable("tessedit_pageseg_mode", "11")
         .map_err(|e| anyhow::anyhow!("tesseract set PSM failed: {e}"))?;
     Ok(api)
+}
+
+/// Resolve the tesseract init spec from the languages actually embedded in this
+/// binary, failing loudly when any required one is missing. tesseract-rs only
+/// embeds a language whose `.traineddata` was in its cache dir at build time and
+/// merely warns otherwise, so a mis-built binary must be reported, not tolerated.
+fn init_spec(available: &[&str]) -> anyhow::Result<String> {
+    let missing: Vec<&str> = REQUIRED_LANGS
+        .iter()
+        .copied()
+        .filter(|lang| !available.contains(lang))
+        .collect();
+    if !missing.is_empty() {
+        return Err(anyhow::anyhow!(
+            "binary has no embedded tessdata for {}: tesseract-rs silently skips \
+             languages that are missing from its build-time cache. Rebuild with \
+             sidecar-ocr/build.sh, which primes the cache before cargo runs.",
+            missing.join(", ")
+        ));
+    }
+    Ok(REQUIRED_LANGS.join("+"))
 }
 
 fn ocr_with(api: &tesseract_rs::TesseractAPI, path: &str) -> anyhow::Result<()> {
@@ -115,6 +139,29 @@ mod tests {
             langs.contains(&"tha"),
             "tha missing from embedded tessdata: {langs:?}"
         );
+    }
+
+    #[test]
+    fn init_spec_needs_every_language() {
+        assert_eq!(init_spec(&["eng", "tha"]).expect("both present"), "eng+tha");
+    }
+
+    #[test]
+    fn init_spec_fails_loud_without_tha() {
+        // The exact regression this guards: tesseract-rs embeds only what is in
+        // its cache, so an eng-only binary used to degrade silently to English.
+        let err = init_spec(&["eng"]).expect_err("tha missing must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("tha"), "error must name the language: {msg}");
+        assert!(msg.contains("build.sh"), "error must name the fix: {msg}");
+    }
+
+    #[test]
+    fn init_spec_fails_loud_when_nothing_embedded() {
+        let err = init_spec(&[]).expect_err("no tessdata must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("eng"), "error must name the language: {msg}");
+        assert!(msg.contains("tha"), "error must name the language: {msg}");
     }
 
     #[test]

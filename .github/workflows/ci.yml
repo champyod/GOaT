@@ -40,6 +40,18 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
       - name: Rust fmt check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      # tesseract-rs only warns when a language is missing from the crate's
+      # cache, so a green build can still ship an eng-only binary. This job is
+      # the gate that would have caught it: the sidecar's own tests assert both
+      # languages are embedded and that init fails loudly without tessdata.
+      # The cwd must be the crate root, because cargo discovers .cargo/config.toml
+      # from the working directory rather than from --manifest-path, and that
+      # file is the only thing setting TESSERACT_EMBED_LANGUAGES.
+      - name: Build and test OCR sidecar
+        working-directory: sidecar-ocr
+        run: |
+          bash build.sh
+          cargo test --release
 
       - uses: astral-sh/setup-uv@v4
         with:
@@ -87,5 +99,10 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - name: Regenerate icons
         run: bun run tauri icon icon.png
+      # externalBin requires binaries/tesseract-ocr-<triple>, and that directory
+      # is gitignored, so the sidecar has to be built on this runner or the
+      # bundler below cannot resolve it.
+      - name: Build OCR sidecar
+        run: bash sidecar-ocr/build.sh
       - name: Build Tauri app
         run: bun run tauri build
