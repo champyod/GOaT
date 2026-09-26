@@ -8,7 +8,11 @@ mod parse;
 #[cfg(target_os = "linux")]
 mod portal;
 #[cfg(target_os = "linux")]
+mod reply;
+#[cfg(target_os = "linux")]
 mod request;
+#[cfg(target_os = "linux")]
+mod signal;
 pub mod status;
 mod system;
 

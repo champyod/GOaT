@@ -96,16 +96,29 @@ pub fn member_of(message: &Message) -> String {
         .unwrap_or_default()
 }
 
-/// Watches every signal of `interface` for as long as the connection lives.
+/// Watches the portal's own signals for as long as the connection lives.
+///
+/// The sender is part of the rule because a signal's interface and member are
+/// chosen by whoever emits it: any peer on the session bus can put
+/// `org.freedesktop.portal.GlobalShortcuts` on a signal of its own and be read
+/// as the portal. A match rule on a well-known name follows whoever owns that
+/// name, so it admits the portal and nobody else. zbus removes the whole rule
+/// again when the stream is dropped.
 pub async fn subscribe(conn: &Connection, interface: &str) -> Result<MessageStream> {
+    MessageStream::for_match_rule(portal_rule(interface)?, conn, Some(64))
+        .await
+        .map_err(|e| anyhow!("cannot subscribe to {interface} signals: {e}"))
+}
+
+fn portal_rule(interface: &str) -> Result<MatchRule<'_>> {
     let rule = MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
+        .sender(PORTAL_BUS)
+        .map_err(|e| anyhow!("{PORTAL_BUS} is not a usable bus name: {e}"))?
         .interface(interface)
         .map_err(|e| anyhow!("{interface} is not a usable interface name: {e}"))?
         .build();
-    MessageStream::for_match_rule(rule, conn, Some(64))
-        .await
-        .map_err(|e| anyhow!("cannot subscribe to {interface} signals: {e}"))
+    Ok(rule)
 }
 
 /// `a(sa{sv})`: the portal reports each shortcut as a pair of an id and its
@@ -147,4 +160,31 @@ fn properties_of(value: &Value<'_>) -> Result<Reply> {
             Ok((name, Variant(owned)))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The rule the watcher is installed with. A peer that emits the portal's
+    /// interface on its own has to fall outside it, and the only thing that
+    /// says so is the sender.
+    #[test]
+    fn the_watch_is_limited_to_the_portal_that_owns_the_name() {
+        let rule = portal_rule(SHORTCUTS_INTERFACE).expect("the portal rule is usable");
+        assert_eq!(
+            rule.sender().map(|name| name.as_str()),
+            Some(PORTAL_BUS),
+            "only the process owning {PORTAL_BUS} is read as the portal"
+        );
+        assert_eq!(
+            rule.interface().map(|name| name.as_str()),
+            Some(SHORTCUTS_INTERFACE)
+        );
+        assert_eq!(rule.msg_type(), Some(zbus::message::Type::Signal));
+        assert!(
+            rule.path_spec().is_none() && rule.destination().is_none(),
+            "the portal publishes these on its own object, not on one of ours"
+        );
+    }
 }

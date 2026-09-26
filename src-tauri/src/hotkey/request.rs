@@ -1,19 +1,15 @@
 use anyhow::{Result, anyhow};
-use futures_util::StreamExt;
 use std::time::{SystemTime, UNIX_EPOCH};
+use zbus::Connection;
 use zbus::zvariant::{OwnedObjectPath, Type};
-use zbus::{Connection, MatchRule, MessageStream};
 
-use super::dbus::{
-    NO_PARENT_WINDOW, Options, Reply, ShortcutList, member_of, options, shortcuts_proxy,
-};
+use super::dbus::{NO_PARENT_WINDOW, Options, Reply, ShortcutList, options, shortcuts_proxy};
+use super::portal::RESPONSE_TIMEOUT;
+use super::reply;
 
-const REQUEST_INTERFACE: &str = "org.freedesktop.portal.Request";
 const REQUEST_PREFIX: &str = "/org/freedesktop/portal/desktop/request";
 const HANDLE_TOKEN: &str = "handle_token";
 const SESSION_HANDLE_TOKEN: &str = "session_handle_token";
-const RESPONSE_MEMBER: &str = "Response";
-const RESPONSE_SUCCESS: u32 = 0;
 
 /// The object path the portal will publish a Request on, together with the
 /// token it derives that path from. Predicting the path up front is what allows
@@ -34,7 +30,7 @@ where
     F: FnOnce(&str) -> B,
 {
     let target = request_target(conn)?;
-    let mut signals = watch_request(conn, &target.path).await?;
+    let mut signals = reply::watch(conn, &target.path).await?;
     let handle: OwnedObjectPath = shortcuts_proxy(conn)
         .await?
         .call(method, &body(&target.token))
@@ -46,7 +42,7 @@ where
             target.path
         ));
     }
-    read_response(&mut signals, method).await
+    reply::read(&mut signals, method, RESPONSE_TIMEOUT).await
 }
 
 pub async fn create_session(conn: &Connection) -> Result<OwnedObjectPath> {
@@ -123,40 +119,4 @@ fn next_token() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     format!("goat{}_{nanos:x}", std::process::id())
-}
-
-async fn watch_request(conn: &Connection, path: &str) -> Result<MessageStream> {
-    let rule = MatchRule::builder()
-        .msg_type(zbus::message::Type::Signal)
-        .interface(REQUEST_INTERFACE)
-        .map_err(|e| anyhow!("{REQUEST_INTERFACE} is not a usable interface name: {e}"))?
-        .path(path)
-        .map_err(|e| anyhow!("{path} is not a usable object path: {e}"))?
-        .build();
-    MessageStream::for_match_rule(rule, conn, Some(8))
-        .await
-        .map_err(|e| anyhow!("cannot watch the portal request at {path}: {e}"))
-}
-
-async fn read_response(signals: &mut MessageStream, method: &str) -> Result<Reply> {
-    let message = signals
-        .next()
-        .await
-        .ok_or_else(|| anyhow!("the portal closed the request for {method} without answering"))?
-        .map_err(|e| anyhow!("the portal request stream failed: {e}"))?;
-    if member_of(&message) != RESPONSE_MEMBER {
-        return Err(anyhow!(
-            "the {method} dialog was dismissed before it completed"
-        ));
-    }
-    let (code, results): (u32, Reply) = message
-        .body()
-        .deserialize()
-        .map_err(|e| anyhow!("cannot decode the reply to {method}: {e}"))?;
-    if code != RESPONSE_SUCCESS {
-        return Err(anyhow!(
-            "the portal ended {method} with response code {code}"
-        ));
-    }
-    Ok(results)
 }

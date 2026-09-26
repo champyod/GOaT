@@ -1,5 +1,4 @@
 use anyhow::{Result, anyhow};
-use futures_util::StreamExt;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,11 +9,25 @@ use zbus::zvariant::OwnedObjectPath;
 use super::binding;
 use super::dbus::{self, ShortcutList};
 use super::request;
+use super::signal;
 use super::{Action, dispatch, lock, warn};
 
+/// How a signal the app could not read reaches the user. The watcher outlives
+/// the bad message, so this is a warning about one message rather than the end
+/// of the hotkeys, and it says so.
+const IGNORED_SIGNAL: &str = "a desktop shortcut signal was ignored";
+
 /// A configure dialog the user walks away from would otherwise leave the remap
-/// command pending forever, so the wait for its answer is bounded.
+/// command pending forever, so the wait for its answer is bounded. It bounds
+/// that answer and nothing else: the reply to the call that opened the dialog
+/// is a different signal and is bounded by `RESPONSE_TIMEOUT`.
 const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// A portal that accepts a call and then says nothing has bound nothing, and
+/// the app cannot tell that from a portal that worked — the status line would
+/// keep reporting a live backend and no warning would be raised. Bounding the
+/// reply turns it into the error startup already reports.
+pub(super) const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// What the portal reported for one binding round, as shown to the user.
 pub struct BindingReport {
@@ -122,42 +135,59 @@ impl Portal {
 
     async fn receive_signals(&self, app: &AppHandle) -> Result<()> {
         let mut signals = dbus::subscribe(&self.conn, dbus::SHORTCUTS_INTERFACE).await?;
-        while let Some(message) = signals.next().await {
-            let message = message.map_err(|e| anyhow!("the portal signal stream failed: {e}"))?;
-            self.handle(app, &message)?;
-        }
-        Err(anyhow!(
-            "the desktop closed the global shortcuts connection"
-        ))
+        signal::watch(
+            &mut signals,
+            |message| self.handle(app, message),
+            |e| warn(app, &format!("{IGNORED_SIGNAL}: {e}")),
+        )
+        .await
     }
 
     fn handle(&self, app: &AppHandle, message: &zbus::Message) -> Result<()> {
-        match dbus::member_of(message).as_str() {
-            "Activated" => self.on_activated(app, message),
-            "ShortcutsChanged" => self.on_changed(message),
+        match signal::classify(message)? {
+            signal::Signal::Activated { session, id } if session == self.session => {
+                if let Some(action) = binding::action_for(&id) {
+                    dispatch(app, action);
+                }
+                Ok(())
+            }
+            signal::Signal::ShortcutsChanged { session, shortcuts } if session == self.session => {
+                self.deliver(shortcuts)
+            }
             _ => Ok(()),
         }
     }
 
-    fn on_activated(&self, app: &AppHandle, message: &zbus::Message) -> Result<()> {
-        let (session, id) = dbus::decode_activated(message)?;
-        if session != self.session {
-            return Ok(());
-        }
-        if let Some(action) = binding::action_for(&id) {
-            dispatch(app, action);
-        }
-        Ok(())
-    }
-
-    fn on_changed(&self, message: &zbus::Message) -> Result<()> {
-        let (session, shortcuts) = dbus::decode_shortcuts_changed(message)?;
-        if session != self.session {
-            return Ok(());
-        }
+    /// Hands a reconfigured list to the remap waiting on it. A list that arrives
+    /// with no remap waiting is the portal confirming a bind from startup, and
+    /// the reply that already reported it needs no second reading.
+    fn deliver(&self, shortcuts: ShortcutList) -> Result<()> {
         if let Some(waiting) = lock(&self.waiting).take() {
             let _ = waiting.send(shortcuts);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two deadlines guard different waits, so neither may stand in for the
+    /// other: the one on the reply has to be short enough to fail a startup that
+    /// will never succeed, while the one on the dialog has to outlast a user
+    /// walking to another window to press a key.
+    #[test]
+    fn the_reply_deadline_is_shorter_than_the_dialog_deadline() {
+        assert!(
+            RESPONSE_TIMEOUT < CONFIGURE_TIMEOUT,
+            "a portal that never replies must not hold a startup for {} seconds",
+            CONFIGURE_TIMEOUT.as_secs()
+        );
+        assert!(
+            RESPONSE_TIMEOUT >= Duration::from_secs(5),
+            "a portal that opens a dialog in its own time still has to fit inside {}",
+            RESPONSE_TIMEOUT.as_secs()
+        );
     }
 }

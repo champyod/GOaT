@@ -23,6 +23,11 @@ ct2rs = "0.10.1"
 pure-onnx-ocr-sync = "0.2"
 image = "0.25"
 tauri-plugin-notification = "2"
+
+# Only the Wayland backend talks to the portal, and the modules that do are
+# behind `cfg(target_os = "linux")`, so macOS and Windows have no use for any
+# of this.
+[target.'cfg(target_os = "linux")'.dependencies]
 # Deliberately built without the `tokio` feature. With it, zbus::block_on builds
 # its own multi-thread runtime and block_on's it, which panics with "Cannot start
 # a runtime from within a runtime" the moment a blocking caller (notify-rust,
@@ -32,3 +37,8 @@ tauri-plugin-notification = "2"
 zbus = "5.19"
 # zbus hands its signal streams out as bare Streams; this is how they are read.
 futures-util = "0.3"
+# The portal puts no deadline on its own reply, so a portal that accepts a call
+# and then stays silent has to be timed out here. Tauri already runs on tokio
+# and already compiles it with `time`; naming it here reaches that same timer
+# without building a runtime of our own inside Tauri's.
+tokio = { version = "1", features = ["time"] }
