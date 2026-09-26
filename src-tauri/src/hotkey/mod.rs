@@ -15,6 +15,8 @@ mod request;
 mod signal;
 pub mod status;
 mod system;
+#[cfg(target_os = "linux")]
+mod waiting;
 
 pub use parse::parse_shortcut;
 #[cfg(target_os = "linux")]
@@ -76,6 +78,11 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 /// Rejects an unparsable request before it can reach the window system or open
 /// a portal dialog, so a typo is reported the same way on every backend.
 pub async fn remap(app: &AppHandle, action: Action, previous: &str, next: &str) -> Result<()> {
+    // A portal session is reconfigured by the desktop's own dialog, so a typed
+    // shortcut is not what gets bound and there is nothing to check it against.
+    if !binds_typed_trigger(app) {
+        return apply(app, action, previous, next).await;
+    }
     if parse_shortcut(next).is_none() {
         return Err(anyhow!(
             "invalid shortcut \"{next}\", use e.g. {}",
@@ -93,13 +100,30 @@ pub fn report(app: &AppHandle, message: &str) {
 
 /// Records a hotkey problem on the persistent status line and pushes it to the
 /// window, which may still be hidden. The rest of the line is kept, because the
-/// problem does not change which backend is in use.
+/// problem does not change which backend is in use. Only the status line carries
+/// a warning: the error line is reserved for a command that failed, so a warning
+/// is not painted twice and the next reconfigure withdraws it when it no longer
+/// holds.
 pub fn warn(app: &AppHandle, message: &str) {
     let line = format!("Hotkey problem: {message}");
     let mut status = lock(&app.state::<AppState>().hotkey_status).clone();
-    status.warning = line.clone();
+    status.warning = line;
     publish(app, &status);
-    report(app, &line);
+}
+
+/// Whether the backend that is in use will fire a trigger the user typed. The
+/// window system registers the string it is given, so it can be stored; a portal
+/// session holds triggers the desktop asked for and ignores anything typed, so
+/// storing one would leave the saved field reporting a shortcut nothing is bound
+/// to.
+#[cfg(target_os = "linux")]
+pub fn binds_typed_trigger(app: &AppHandle) -> bool {
+    !matches!(backend(app), Backend::Portal)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn binds_typed_trigger(_app: &AppHandle) -> bool {
+    true
 }
 
 #[tauri::command]

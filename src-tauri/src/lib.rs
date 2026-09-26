@@ -358,6 +358,12 @@ async fn set_hotkey(
     hotkey::remap(&app, hotkey::Action::Capture, &previous, &hotkey)
         .await
         .map_err(|e| format!("{e:#}"))?;
+    // A backend that fires only the trigger its own dialog produced keeps the
+    // one it already holds, so the field never reports a shortcut that no
+    // trigger is bound to.
+    if !hotkey::binds_typed_trigger(&app) {
+        return Ok(previous);
+    }
     *hotkey::lock(&state.hotkey) = hotkey.clone();
     persist(&app, &state)?;
     Ok(hotkey)
@@ -382,6 +388,9 @@ async fn set_select_hotkey(
     hotkey::remap(&app, hotkey::Action::ScreenSelect, &previous, &hotkey)
         .await
         .map_err(|e| format!("{e:#}"))?;
+    if !hotkey::binds_typed_trigger(&app) {
+        return Ok(previous);
+    }
     *hotkey::lock(&state.select_hotkey) = hotkey.clone();
     persist(&app, &state)?;
     Ok(hotkey)
@@ -418,9 +427,8 @@ fn persist(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> Result
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -433,7 +441,14 @@ pub fn run() {
             last_image: Mutex::new(None),
             full_image: Mutex::new(None),
             hotkey_status: Mutex::new(hotkey::status::initial()),
-        })
+        });
+    // The notice reads the managed plugin state, so the registration cannot be
+    // decided at runtime, but only the Wayland backend shows a notice and only a
+    // Wayland session can run one. macOS and Windows carry neither the plugin nor
+    // this line.
+    #[cfg(target_os = "linux")]
+    let builder = builder.plugin(tauri_plugin_notification::init());
+    builder
         .setup(|app| {
             #[cfg(desktop)]
             {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { listen } from '@tauri-apps/api/event';
+  import { listen, type EventName, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
 
   type CapturedImage = {
@@ -66,9 +66,42 @@
   let imgSize = $state<{ width: number; height: number } | null>(null);
   let selOffset = $state({ x: 0, y: 0 });
   let hotkeyStatus = $state<HotkeyStatus | null>(null);
+  let savingHotkey = $state(false);
+  const registered: UnlistenFn[] = [];
+
+  // A portal session fires only the trigger its own dialog produced, so the saved
+  // value is not what is bound and the controls say where the trigger comes from.
+  const portalBackend = $derived(hotkeyStatus?.backend === 'portal');
+  const boundTrigger = $derived(
+    portalBackend ? 'your desktop trigger' : hotkey
+  );
 
   function applyHotkeyStatus(value: HotkeyStatus) {
     hotkeyStatus = value;
+  }
+
+  /// A registration that fails hands back no unlisten function, so a rejected
+  /// `listen` would be an unhandled rejection and the teardown could never wait
+  /// on it. Settling it once here keeps a failure on the error line and a success
+  /// available for the teardown.
+  function subscribe<T>(
+    event: EventName,
+    handler: (payload: T) => void
+  ): Promise<void> {
+    return listen<T>(event, (e) => handler(e.payload))
+      .then((unlisten) => {
+        registered.push(unlisten);
+      })
+      .catch((e: unknown) => {
+        error = String(e);
+      });
+  }
+
+  /// On the portal the button opens the desktop's own trigger dialog instead of
+  /// storing what was typed, so it has to say which of the two it is doing.
+  function triggerButtonLabel(stored: string, chosen: string): string {
+    if (savingHotkey) return 'Waiting...';
+    return portalBackend ? chosen : stored;
   }
 
   function draw(image: CapturedImage) {
@@ -131,13 +164,9 @@
   }
 
   onMount(() => {
-    const unlistenResult = listen<ResultPayload>('capture-result', (event) => {
-      applyResult(event.payload);
-    });
-    const unlistenImage = listen<CapturedImage>('capture-image', (event) => {
-      drawImage(event.payload);
-    });
-    const unlistenRegion = listen('region-select', () => {
+    void subscribe<ResultPayload>('capture-result', applyResult);
+    void subscribe<CapturedImage>('capture-image', drawImage);
+    void subscribe('region-select', () => {
       if (monitors.length === 0) {
         error = 'No monitor info available';
         return;
@@ -204,18 +233,12 @@
       .catch((e) => {
         error = String(e);
       });
-    const unlistenStatus = listen<HotkeyStatus>('hotkey-status', (event) => {
-      applyHotkeyStatus(event.payload);
-    });
-    const unlistenHotkeyError = listen<string>('hotkey-error', (event) => {
-      error = event.payload;
+    void subscribe<HotkeyStatus>('hotkey-status', applyHotkeyStatus);
+    void subscribe<string>('hotkey-error', (payload) => {
+      error = payload;
     });
     return () => {
-      unlistenResult.then((f) => f());
-      unlistenImage.then((f) => f());
-      unlistenRegion.then((f) => f());
-      unlistenStatus.then((f) => f());
-      unlistenHotkeyError.then((f) => f());
+      for (const unlisten of registered) unlisten();
     };
   });
 
@@ -234,22 +257,32 @@
   }
 
   async function saveHotkey() {
+    if (savingHotkey) return;
+    savingHotkey = true;
     hotkeyError = '';
+    error = '';
     try {
       hotkey = await invoke<string>('set_hotkey', { hotkey: newHotkey });
     } catch (e) {
       hotkeyError = String(e);
+    } finally {
+      savingHotkey = false;
     }
   }
 
   async function saveSelectHotkey() {
+    if (savingHotkey) return;
+    savingHotkey = true;
     selectHotkeyError = '';
+    error = '';
     try {
       selectHotkey = await invoke<string>('set_select_hotkey', {
         hotkey: newSelectHotkey,
       });
     } catch (e) {
       selectHotkeyError = String(e);
+    } finally {
+      savingHotkey = false;
     }
   }
 
@@ -474,7 +507,7 @@
   {:else}
   <div class="toolbar" data-tauri-drag-region>
     <h1 data-tauri-drag-region>GOaT</h1>
-    <span class="hotkey-hint" data-tauri-drag-region>{hotkey}</span>
+    <span class="hotkey-hint" data-tauri-drag-region>{boundTrigger}</span>
     <label>
       <input type="checkbox" checked={autostart} onclick={toggleAutostart} />
       Start at login
@@ -492,22 +525,22 @@
 
   <p class="status">{status}</p>
   {#if hotkeyStatus}
-    <p class="hotkeyline" data-backend={hotkeyStatus.backend}>
+    <p class="hotkeyline" data-backend={hotkeyStatus.backend} role="status">
       {hotkeyStatus.detail}
     </p>
     {#if hotkeyStatus.warning}
-      <p class="error">{hotkeyStatus.warning}</p>
+      <p class="error" role="alert">{hotkeyStatus.warning}</p>
     {/if}
   {/if}
   {#if error}
-    <p class="error">{error}</p>
+    <p class="error" role="alert">{error}</p>
   {/if}
 
   <div class="content">
     <section class="shot">
       <h2>Screenshot</h2>
       {#if !hasImage}
-        <p class="placeholder">No screenshot yet. Press {hotkey} or Capture.</p>
+        <p class="placeholder">No screenshot yet. Press {boundTrigger} or Capture.</p>
       {/if}
       {#if selecting}
         <p class="placeholder">Drag on the screenshot, release to read. Esc cancels.</p>
@@ -558,21 +591,39 @@
   </div>
 
   <div class="settings">
+    {#if portalBackend}
+      <p class="placeholder">
+        These triggers are set in your desktop's own shortcut settings, not in
+        GOaT. The buttons open that dialog.
+      </p>
+    {/if}
     <label>
       Hotkey
-      <input bind:value={newHotkey} placeholder="Ctrl+Shift+S" />
+      <input
+        bind:value={newHotkey}
+        placeholder="Ctrl+Shift+S"
+        disabled={portalBackend}
+      />
     </label>
-    <button onclick={saveHotkey}>Save hotkey</button>
+    <button onclick={saveHotkey} disabled={savingHotkey}>
+      {triggerButtonLabel('Save hotkey', 'Choose capture trigger...')}
+    </button>
     {#if hotkeyError}
-      <span class="error">{hotkeyError}</span>
+      <span class="error" role="alert">{hotkeyError}</span>
     {/if}
     <label>
       Region hotkey
-      <input bind:value={newSelectHotkey} placeholder="Ctrl+Shift+E" />
+      <input
+        bind:value={newSelectHotkey}
+        placeholder="Ctrl+Shift+E"
+        disabled={portalBackend}
+      />
     </label>
-    <button onclick={saveSelectHotkey}>Save region hotkey</button>
+    <button onclick={saveSelectHotkey} disabled={savingHotkey}>
+      {triggerButtonLabel('Save region hotkey', 'Choose region trigger...')}
+    </button>
     {#if selectHotkeyError}
-      <span class="error">{selectHotkeyError}</span>
+      <span class="error" role="alert">{selectHotkeyError}</span>
     {/if}
     <label>
       Monitor

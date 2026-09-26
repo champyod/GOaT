@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use zbus::Connection;
@@ -10,7 +10,8 @@ use super::binding;
 use super::dbus::{self, ShortcutList};
 use super::request;
 use super::signal;
-use super::{Action, dispatch, lock, warn};
+use super::waiting::{self, Armed};
+use super::{Action, dispatch, warn};
 
 /// How a signal the app could not read reaches the user. The watcher outlives
 /// the bad message, so this is a warning about one message rather than the end
@@ -21,7 +22,7 @@ const IGNORED_SIGNAL: &str = "a desktop shortcut signal was ignored";
 /// command pending forever, so the wait for its answer is bounded. It bounds
 /// that answer and nothing else: the reply to the call that opened the dialog
 /// is a different signal and is bounded by `RESPONSE_TIMEOUT`.
-const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A portal that accepts a call and then says nothing has bound nothing, and
 /// the app cannot tell that from a portal that worked — the status line would
@@ -38,7 +39,7 @@ pub struct BindingReport {
 pub struct Portal {
     conn: Connection,
     session: OwnedObjectPath,
-    waiting: Arc<Mutex<Option<Sender<ShortcutList>>>>,
+    armed: Arc<Armed>,
 }
 
 impl Clone for Portal {
@@ -46,7 +47,7 @@ impl Clone for Portal {
         Self {
             conn: self.conn.clone(),
             session: self.session.clone(),
-            waiting: Arc::clone(&self.waiting),
+            armed: Arc::clone(&self.armed),
         }
     }
 }
@@ -63,7 +64,7 @@ pub async fn start(app: &AppHandle) -> Result<(Portal, BindingReport)> {
     let portal = Portal {
         conn: conn.clone(),
         session,
-        waiting: Arc::new(Mutex::new(None)),
+        armed: Arc::new(Armed::new()),
     };
     let bound = request::bind_shortcuts(&conn, &portal.session, binding::requested()).await?;
     // A session may only bind once, so the report is computed from this reply
@@ -83,9 +84,9 @@ pub async fn remap(app: &AppHandle, action: Action) -> Result<ShortcutList> {
     let portal = app.try_state::<Portal>().ok_or_else(|| {
         anyhow!("the desktop shortcut portal is not ready yet; try again in a moment")
     })?;
-    let answer = arm(&portal);
+    let answer = portal.armed.arm();
     if let Err(e) = portal.configure().await {
-        disarm(&portal);
+        portal.armed.disarm();
         return Err(e);
     }
     let chosen = waited(answer, action).await?;
@@ -96,25 +97,10 @@ pub async fn remap(app: &AppHandle, action: Action) -> Result<ShortcutList> {
 async fn waited(answer: Receiver<ShortcutList>, action: Action) -> Result<ShortcutList> {
     let deadline =
         tauri::async_runtime::spawn_blocking(move || answer.recv_timeout(CONFIGURE_TIMEOUT));
-    deadline
+    let chosen = deadline
         .await
-        .map_err(|e| anyhow!("cannot wait for the shortcut dialog: {e}"))?
-        .map_err(|_| {
-            anyhow!(
-                "no trigger was chosen for \"{}\" within two minutes",
-                binding::id_for(action)
-            )
-        })
-}
-
-fn arm(portal: &Portal) -> Receiver<ShortcutList> {
-    let (tx, rx) = mpsc::channel();
-    *lock(&portal.waiting) = Some(tx);
-    rx
-}
-
-fn disarm(portal: &Portal) {
-    lock(&portal.waiting).take();
+        .map_err(|e| anyhow!("cannot wait for the shortcut dialog: {e}"))?;
+    chosen.map_err(|outcome| waiting::failed(outcome, action))
 }
 
 fn watch(portal: Portal, app: AppHandle) {
@@ -152,20 +138,18 @@ impl Portal {
                 Ok(())
             }
             signal::Signal::ShortcutsChanged { session, shortcuts } if session == self.session => {
-                self.deliver(shortcuts)
+                self.deliver(app, shortcuts)
             }
             _ => Ok(()),
         }
     }
 
-    /// Hands a reconfigured list to the remap waiting on it. A list that arrives
-    /// with no remap waiting is the portal confirming a bind from startup, and
-    /// the reply that already reported it needs no second reading.
-    fn deliver(&self, shortcuts: ShortcutList) -> Result<()> {
-        if let Some(waiting) = lock(&self.waiting).take() {
-            let _ = waiting.send(shortcuts);
-        }
-        Ok(())
+    /// Hands a reconfigured list to the remap waiting on it, and reads a list
+    /// nobody asked for into the status line.
+    fn deliver(&self, app: &AppHandle, shortcuts: ShortcutList) -> Result<()> {
+        self.armed.route(shortcuts, |unclaimed| {
+            super::record_triggers(app, unclaimed)
+        })
     }
 }
 

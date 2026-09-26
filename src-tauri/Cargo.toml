@@ -22,12 +22,14 @@ xcap = "0.9.8"
 ct2rs = "0.10.1"
 pure-onnx-ocr-sync = "0.2"
 image = "0.25"
-tauri-plugin-notification = "2"
 
 # Only the Wayland backend talks to the portal, and the modules that do are
 # behind `cfg(target_os = "linux")`, so macOS and Windows have no use for any
 # of this.
 [target.'cfg(target_os = "linux")'.dependencies]
+# The Wayland backend is the only one that announces itself through a desktop
+# notification, so macOS and Windows carry neither this nor its registration.
+tauri-plugin-notification = "2"
 # Deliberately built without the `tokio` feature. With it, zbus::block_on builds
 # its own multi-thread runtime and block_on's it, which panics with "Cannot start
 # a runtime from within a runtime" the moment a blocking caller (notify-rust,
