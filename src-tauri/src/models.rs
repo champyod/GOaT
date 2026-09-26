@@ -136,7 +136,9 @@ pub async fn run_ocr_fallback(
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-pub fn load_translator(app: &tauri::AppHandle) -> anyhow::Result<ct2rs::Translator<ct2rs::tokenizers::auto::Tokenizer>> {
+pub fn load_translator(
+    app: &tauri::AppHandle,
+) -> anyhow::Result<ct2rs::Translator<ct2rs::tokenizers::auto::Tokenizer>> {
     let model_dir = candidate_base_dirs(app)
         .into_iter()
         .map(|d| d.join(NLLB_MODEL_DIR))
@@ -156,8 +158,12 @@ pub fn run_translate(app: &tauri::AppHandle, text: &str) -> anyhow::Result<Strin
     let sources = vec![text.to_string()];
     let target_prefixes = vec![vec![TRANSLATE_TARGET_LANG.to_string()]];
     let options = ct2rs::TranslationOptions::<String, String>::default();
-    let results =
-        translator.translate_batch_with_target_prefix(&sources, &target_prefixes, &options, None)?;
+    let results = translator.translate_batch_with_target_prefix(
+        &sources,
+        &target_prefixes,
+        &options,
+        None,
+    )?;
     let out = results
         .into_iter()
         .map(|(s, _)| s.trim().to_string())

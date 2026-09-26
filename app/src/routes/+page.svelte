@@ -34,6 +34,12 @@
     ready: boolean;
   };
 
+  type HotkeyStatus = {
+    backend: 'system' | 'portal';
+    detail: string;
+    warning: string;
+  };
+
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let status = $state('Waiting for hotkey...');
   let ocrText = $state('');
@@ -59,6 +65,11 @@
   );
   let imgSize = $state<{ width: number; height: number } | null>(null);
   let selOffset = $state({ x: 0, y: 0 });
+  let hotkeyStatus = $state<HotkeyStatus | null>(null);
+
+  function applyHotkeyStatus(value: HotkeyStatus) {
+    hotkeyStatus = value;
+  }
 
   function draw(image: CapturedImage) {
     if (!canvasEl) return;
@@ -188,10 +199,23 @@
       .catch((e) => {
         error = String(e);
       });
+    invoke<HotkeyStatus>('hotkey_status')
+      .then(applyHotkeyStatus)
+      .catch((e) => {
+        error = String(e);
+      });
+    const unlistenStatus = listen<HotkeyStatus>('hotkey-status', (event) => {
+      applyHotkeyStatus(event.payload);
+    });
+    const unlistenHotkeyError = listen<string>('hotkey-error', (event) => {
+      error = event.payload;
+    });
     return () => {
       unlistenResult.then((f) => f());
       unlistenImage.then((f) => f());
       unlistenRegion.then((f) => f());
+      unlistenStatus.then((f) => f());
+      unlistenHotkeyError.then((f) => f());
     };
   });
 
@@ -467,6 +491,14 @@
   </div>
 
   <p class="status">{status}</p>
+  {#if hotkeyStatus}
+    <p class="hotkeyline" data-backend={hotkeyStatus.backend}>
+      {hotkeyStatus.detail}
+    </p>
+    {#if hotkeyStatus.warning}
+      <p class="error">{hotkeyStatus.warning}</p>
+    {/if}
+  {/if}
   {#if error}
     <p class="error">{error}</p>
   {/if}
@@ -614,6 +646,20 @@
     background: rgba(0, 0, 0, 0.75);
     border-radius: 0.4rem;
     font-size: 0.85rem;
+  }
+
+  .hotkeyline {
+    display: inline-block;
+    margin: 0.5rem 0 0;
+    padding: 0.25rem 0.6rem;
+    background: rgba(0, 0, 0, 0.75);
+    border-left: 3px solid #7fd1ff;
+    border-radius: 0.4rem;
+    font-size: 0.85rem;
+  }
+
+  .hotkeyline[data-backend='portal'] {
+    border-left-color: #ffc46b;
   }
 
   .placeholder {

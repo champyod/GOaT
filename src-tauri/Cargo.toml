@@ -22,3 +22,13 @@ xcap = "0.9.8"
 ct2rs = "0.10.1"
 pure-onnx-ocr-sync = "0.2"
 image = "0.25"
+tauri-plugin-notification = "2"
+# Deliberately built without the `tokio` feature. With it, zbus::block_on builds
+# its own multi-thread runtime and block_on's it, which panics with "Cannot start
+# a runtime from within a runtime" the moment a blocking caller (notify-rust,
+# through tauri-plugin-notification) runs on one of Tauri's tokio workers.
+# Without it zbus drives itself on async-io, awaits cleanly from Tauri's runtime,
+# and the configuration tauri-plugin-autostart already pulls in is left untouched.
+zbus = "5.19"
+# zbus hands its signal streams out as bare Streams; this is how they are read.
+futures-util = "0.3"
