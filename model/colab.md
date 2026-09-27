@@ -44,6 +44,20 @@ uv run python notebooks/selection/select_mt.py --mt-test-dir $MT_TEST_DIR --outp
 uv run python notebooks/selection/select_ocr.py --ocr-eval-dir $OCR_EVAL_DIR --output $RESULTS/ocr_selection.json --repeats $REPEATS_OCR --seed $SEED --debug
 ```
 
+Parallel workers (one `--output` per worker — never share, else `.partial.json` clashes):
+```bash
+# VM1 (GPU): one process per neural model
+uv run python notebooks/selection/select_ocr.py --ocr-eval-dir $OCR_EVAL_DIR --output $RESULTS/ocr.pp.json --models PP-OCRv5-mobile --seed $SEED &
+uv run python notebooks/selection/select_ocr.py --ocr-eval-dir $OCR_EVAL_DIR --output $RESULTS/ocr.tr.json --models ThaiTrOCR --seed $SEED &
+uv run python notebooks/selection/select_ocr.py --ocr-eval-dir $OCR_EVAL_DIR --output $RESULTS/ocr.hybrid.json --models PPDet-ThaiTrOCR --seed $SEED &
+# same VM, free CPU: Tesseract needs no GPU
+uv run python notebooks/selection/select_ocr.py --ocr-eval-dir $OCR_EVAL_DIR --output $RESULTS/ocr.tess.json --models Tesseract --seed $SEED &
+wait
+uv run python scripts/merge_selection.py --side ocr --inputs $RESULTS/ocr.pp.json $RESULTS/ocr.tr.json $RESULTS/ocr.hybrid.json $RESULTS/ocr.tess.json --output $RESULTS/ocr_selection.json
+# VM2: MT split the same way with --models NLLB-200-distilled-600M / --models NLLB-200-distilled-1.3B, merge with --side mt
+```
+`--datasets` (OCR) splits by eval set; `--max-images` / `--max-sentences` cap assets for smoke runs (deterministic first-N; verdicts need full). Subset workers write `selected: null` + a merge note — train only off merged files.
+
 ### Selection outputs (all next to `--output`, Drive `results/`)
 
 - `mt_selection.json` / `ocr_selection.json` — the verdict: per-model mean±std+CI, comparisons, `decision.selected`. Train reads these.

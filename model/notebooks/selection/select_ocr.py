@@ -32,6 +32,7 @@ from goat_model.utils import (
     LogProgress,
     load_dotenv,
     log_call,
+    parse_subset_arg,
     resolve_device,
     setup_seed,
     write_json,
@@ -103,8 +104,26 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=c.RESULTS / "ocr_selection.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
     parser.add_argument("--debug", action="store_true", help="verbose per-action logs")
+    parser.add_argument(
+        "--models",
+        default=",".join(c.OCR_MODELS),
+        help="comma-separated model subset for parallel workers (default: all)",
+    )
+    parser.add_argument(
+        "--datasets",
+        default=",".join(c.OCR_DATASETS),
+        help="comma-separated dataset subset for parallel workers (default: all)",
+    )
+    parser.add_argument(
+        "--max-images",
+        type=int,
+        default=None,
+        help="cap images per dataset (deterministic first-N smoke runs; verdict needs full)",
+    )
     args = parser.parse_args()
     _info("select-ocr", "args", **vars(args))
+    models = parse_subset_arg(args.models, c.OCR_MODELS, "model")
+    datasets = parse_subset_arg(args.datasets, c.OCR_DATASETS, "dataset")
     _err_out = args.output
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     samples_path = _samples_path(args.output, run_id)
@@ -134,11 +153,15 @@ def main() -> None:
         saved_runs = saved.get("runs_data", {})
         if saved:
             _info("select-ocr", "resuming", partial=str(partial_path))
-        for model in c.OCR_MODELS:
+        for model in models:
             stats = {}
-            for dataset in c.OCR_DATASETS:
+            for dataset in datasets:
                 dataset_dir = args.ocr_eval_dir / dataset
                 assets = evaluate.discover_assets(dataset_dir)
+                if args.max_images is not None:
+                    # discover_assets sorts: first-N is deterministic across workers.
+                    assets = assets[: args.max_images]
+                    _info("select-ocr", "capped images", n=len(assets), dataset=dataset)
                 backend = get_ocr(model, device=device, seed=args.seed)
                 img_size = c.OCR_IMG_SIZE[model]
                 _info(
@@ -192,7 +215,7 @@ def main() -> None:
             )
 
         mean_cer = {m: sum(v) / len(v) for m, v in cer_by_model.items()}
-        for a, b in itertools.combinations(c.OCR_MODELS, 2):
+        for a, b in itertools.combinations(models, 2):
             results["comparisons"].append(
                 {
                     "a": a,
@@ -206,13 +229,17 @@ def main() -> None:
 
         # Pure lowest CER wins: any model may be frozen (PP-OCRv5, Tesseract)
         # or trainable (ThaiTrOCR, hybrid's recognizer half); training handles
-        # each winner accordingly, so the gate plays no favorites.
-        decision = min(mean_cer, key=lambda m: mean_cer[m])
+        # each winner accordingly, so the gate plays no favorites. Subset
+        # workers cannot decide: merge their outputs, then train off the merge.
+        full = set(models) == set(c.OCR_MODELS) and set(datasets) == set(c.OCR_DATASETS)
+        decision = min(mean_cer, key=lambda m: mean_cer[m]) if full else None
         results["decision"] = {
             "rule": f"lowest mean CER over {', '.join(c.OCR_MODELS)}",
             "mean_cer": mean_cer,
             "selected": decision,
         }
+        if not full:
+            results["decision"]["note"] = "subset run — merge worker outputs first"
         write_json(args.output, results)
         snapshot = _result_snapshot(args.output, run_id)
         write_json(snapshot, results)
