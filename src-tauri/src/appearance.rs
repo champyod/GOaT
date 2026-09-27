@@ -121,21 +121,68 @@ fn clamp_size(width: f64, height: f64, monitor_width: f64, monitor_height: f64) 
     )
 }
 
-/// The screen a fitted size is measured against, converted into the units the
-/// window is set in. The primary screen is the one the app opens on and the one
-/// it returns to, and a desktop that names no primary is taken at its word for
-/// the first screen it lists rather than refusing to size the window at all.
+/// A screen's size in its own pixels, held apart from the screen itself so the
+/// choice between screens can be made and tested with no display attached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScreenSize {
+    width: u32,
+    height: u32,
+}
+
+impl From<&tauri::Monitor> for ScreenSize {
+    fn from(monitor: &tauri::Monitor) -> Self {
+        Self {
+            width: monitor.size().width,
+            height: monitor.size().height,
+        }
+    }
+}
+
+/// The screen a fitted window is measured against. A window has to stay inside
+/// the screen it is sitting on, so that is the screen used whenever the desktop
+/// will name it; the primary screen stands in for the desktops that will not,
+/// and a desktop that names no primary at all is taken at its word for the first
+/// screen it lists rather than refusing to size the window.
+fn screen_to_fit(
+    current: Option<ScreenSize>,
+    listed: &[capture::MonitorInfo],
+) -> Option<ScreenSize> {
+    current.or_else(|| {
+        listed
+            .iter()
+            .find(|monitor| monitor.is_primary)
+            .or_else(|| listed.first())
+            .map(|monitor| ScreenSize {
+                width: monitor.width,
+                height: monitor.height,
+            })
+    })
+}
+
+/// The bounds the window is fitted inside, in the logical points it is set in.
+/// A screen is measured in its own pixels and a window is not, so on a display
+/// that draws at twice the density the same number buys twice the screen; a
+/// scale factor the platform will not report leaves the two in step rather than
+/// guessing a denser one.
 fn monitor_bounds(window: &tauri::WebviewWindow) -> Result<(f64, f64), String> {
-    let monitors = capture::list_monitors()?;
-    let monitor = monitors
-        .iter()
-        .find(|monitor| monitor.is_primary)
-        .or_else(|| monitors.first())
+    let current = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| ScreenSize::from(&monitor));
+    // The listed screens are only walked when the desktop cannot say where the
+    // window is, so the common path costs no round trip to the display server.
+    let listed = if current.is_none() {
+        capture::list_monitors()?
+    } else {
+        Vec::new()
+    };
+    let screen = screen_to_fit(current, &listed)
         .ok_or_else(|| "no screen found to size the window against".to_string())?;
     let scale = window.scale_factor().unwrap_or(1.0);
     Ok((
-        f64::from(monitor.width) / scale,
-        f64::from(monitor.height) / scale,
+        f64::from(screen.width) / scale,
+        f64::from(screen.height) / scale,
     ))
 }
 
@@ -190,6 +237,24 @@ pub fn set_window_size(app: tauri::AppHandle, width: f64, height: f64) -> Result
 mod tests {
     use super::*;
     use crate::UserConfig;
+
+    fn screen(
+        index: usize,
+        name: &str,
+        is_primary: bool,
+        width: u32,
+        height: u32,
+    ) -> capture::MonitorInfo {
+        capture::MonitorInfo {
+            index,
+            name: name.to_string(),
+            is_primary,
+            width,
+            height,
+            x: 0,
+            y: 0,
+        }
+    }
 
     #[test]
     fn defaults_are_the_window_as_it_looks_before_these_settings_existed() {
@@ -258,5 +323,30 @@ mod tests {
             ..AppearanceConfig::default()
         };
         assert_eq!(config.normalized().accent, Some("#ff8800".to_string()));
+    }
+
+    #[test]
+    fn a_window_on_a_smaller_screen_is_fitted_to_that_screen_and_not_to_the_primary_one() {
+        let listed = [
+            screen(0, "Desk", true, 3840, 2160),
+            screen(1, "Side", false, 1280, 800),
+        ];
+        let secondary = ScreenSize {
+            width: 1280,
+            height: 800,
+        };
+        assert_eq!(screen_to_fit(Some(secondary), &listed), Some(secondary));
+        let (max_width, max_height) = (f64::from(secondary.width), f64::from(secondary.height));
+        assert_eq!(
+            clamp_size(5000.0, 5000.0, max_width, max_height),
+            (1152.0, 720.0)
+        );
+        assert_eq!(
+            screen_to_fit(None, &listed),
+            Some(ScreenSize {
+                width: 3840,
+                height: 2160
+            })
+        );
     }
 }
