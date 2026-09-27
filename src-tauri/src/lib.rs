@@ -18,9 +18,9 @@ pub(crate) const DEFAULT_SELECT_HOTKEY: &str = "Ctrl+Shift+E";
 /// from filling memory for the life of the process.
 const ERROR_LOG_CAP: usize = 100;
 
-/// The engine names a payload carries. The main window prints whichever one
-/// came back and reads the empty string as "no engine ran", so these three are
-/// the wire contract rather than labels that may be reworded.
+/// The engine names a payload carries. No window reads them today, but the empty
+/// string is the one value that means "no engine ran", so they travel on the
+/// payload as the wire contract rather than as labels that may be reworded.
 const OCR_ENGINE_PRIMARY: &str = "tract";
 const OCR_ENGINE_FALLBACK: &str = "tesseract";
 const OCR_ENGINE_NONE: &str = "";
@@ -34,7 +34,6 @@ pub(crate) struct AppState {
     pub(crate) hotkey: Mutex<String>,
     pub(crate) select_hotkey: Mutex<String>,
     pub(crate) monitor: Mutex<usize>,
-    pub(crate) last_image: Mutex<Option<capture::CapturedImage>>,
     pub(crate) full_image: Mutex<Option<capture::CapturedImage>>,
     pub(crate) hotkey_status: Mutex<hotkey::HotkeyStatus>,
     pub(crate) errors: Mutex<Vec<ErrorEntry>>,
@@ -99,6 +98,100 @@ struct ResultPayload {
     translated_text: String,
     ocr_engine: String,
     error: String,
+}
+
+/// The name a window subscribes to for the whole of a capture. Every step
+/// travels on it, so a window opens one feed and this is the only spelling of it.
+pub(crate) const CAPTURE_PROGRESS: &str = "capture-progress";
+
+/// The one message a capture is made of. A window reduces it rather than
+/// listening for one event per step, so a step nothing is listening for cannot
+/// be the one a run stops on, and a failure carries the reason it failed instead
+/// of leaving the window to invent a sentence of its own.
+///
+/// The fields a step does not have are left off the wire rather than sent empty,
+/// because "no image" and "an empty image" are different answers to a question
+/// only the phase can ask.
+#[derive(serde::Serialize)]
+pub(crate) struct CaptureProgress<'a> {
+    phase: CapturePhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image: Option<&'a capture::CapturedImage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ocr_text: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload: Option<&'a ResultPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<&'a str>,
+}
+
+/// The steps a capture is made of, in the order they happen. The name is the
+/// whole message — a window switches on it — so there is no pair of flags here
+/// that can disagree with itself and no spelling of a step the wire can produce
+/// and the window does not know.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum CapturePhase {
+    /// The screenshot is up and the read is under way.
+    Reading,
+    /// The text has landed and the translation is under way.
+    Translating,
+    /// The run is finished, with the result on it.
+    Done,
+    /// The run failed, with the reason it failed.
+    Error,
+}
+
+impl<'a> CaptureProgress<'a> {
+    fn bare(phase: CapturePhase) -> Self {
+        Self {
+            phase,
+            image: None,
+            ocr_text: None,
+            payload: None,
+            error: None,
+        }
+    }
+
+    fn reading(image: &'a capture::CapturedImage) -> Self {
+        Self {
+            image: Some(image),
+            ..Self::bare(CapturePhase::Reading)
+        }
+    }
+
+    fn translating(ocr_text: &'a str) -> Self {
+        Self {
+            ocr_text: Some(ocr_text),
+            ..Self::bare(CapturePhase::Translating)
+        }
+    }
+
+    fn done(payload: &'a ResultPayload) -> Self {
+        Self {
+            payload: Some(payload),
+            ..Self::bare(CapturePhase::Done)
+        }
+    }
+
+    /// A run that failed, with the reason. The reason is the point of the event:
+    /// a window told only that a capture failed can say nothing but that.
+    pub(crate) fn failure(reason: &'a str) -> Self {
+        Self {
+            error: Some(reason),
+            ..Self::bare(CapturePhase::Error)
+        }
+    }
+}
+
+/// The one place a capture step reaches a window. A window that is not listening
+/// is nothing the run can do anything about, so a refused publish is written to
+/// the terminal rather than raised into the pipeline it would abandon.
+pub(crate) fn publish_progress(app: &tauri::AppHandle, progress: &CaptureProgress<'_>) {
+    use tauri::Emitter;
+    if let Err(e) = app.emit(CAPTURE_PROGRESS, progress) {
+        eprintln!("GOaT: the capture progress could not be published ({e})");
+    }
 }
 
 /// One line of the diagnostics log. `source` names the part of the app that
@@ -444,14 +537,18 @@ async fn run_pipeline_with_image(
     state: &tauri::State<'_, AppState>,
     image: capture::CapturedImage,
 ) -> Result<ResultPayload, String> {
-    use tauri::Emitter;
-    *state.last_image.lock().map_err(|e| e.to_string())? = Some(image.clone());
     // Show the screenshot immediately; OCR/translate follow on the full image.
-    let _ = app.emit("capture-image", &image);
+    // This is the only place a capture hands a window its pixels, and the step
+    // they belong to travels with them: a window painting an image it was told
+    // nothing about has to guess whether the read is under way.
+    publish_progress(app, &CaptureProgress::reading(&image));
     let read = ocr_with_fallback(app, state, &image).await?;
     let ocr_text = read.text;
     let ocr_engine = read.engine;
     let mut error = read.error;
+    // The read is finished before the translation starts, so the text is
+    // published on that boundary and a window can stop waiting on the read.
+    publish_progress(app, &CaptureProgress::translating(&ocr_text));
     let translated_text = match translate_if_any(app, &ocr_text) {
         Ok(text) => text,
         Err(reason) => {
@@ -469,7 +566,7 @@ async fn run_pipeline_with_image(
         ocr_engine: ocr_engine.to_string(),
         error,
     };
-    let _ = app.emit("capture-result", &payload);
+    publish_progress(app, &CaptureProgress::done(&payload));
     Ok(payload)
 }
 
@@ -822,7 +919,6 @@ pub fn run() {
             hotkey: Mutex::new(DEFAULT_HOTKEY.to_string()),
             select_hotkey: Mutex::new(default_select_hotkey()),
             monitor: Mutex::new(0),
-            last_image: Mutex::new(None),
             full_image: Mutex::new(None),
             hotkey_status: Mutex::new(hotkey::status::initial()),
             errors: Mutex::new(Vec::new()),
@@ -943,6 +1039,53 @@ mod tests {
         assert!(
             refused.contains("development build"),
             "the refusal names what it is refusing for: {refused}"
+        );
+    }
+
+    /// A window reduces one message for a whole capture, so a step name it does
+    /// not know, or a reason that never reaches it, is a run that stops with the
+    /// covers still up. These are the names the window switches on, and a step
+    /// carries only the field it has — a step with an empty image is not the same
+    /// answer as a step with no image.
+    #[test]
+    fn capture_progress_carries_the_step_it_names_and_nothing_else() {
+        let image = capture::CapturedImage {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 0, 0],
+        };
+        let read = serde_json::to_value(CaptureProgress::reading(&image)).expect("reads");
+        assert_eq!(read["phase"], "reading");
+        assert_eq!(read["image"]["width"], 1);
+        for absent in ["ocr_text", "payload", "error"] {
+            assert!(
+                read.get(absent).is_none(),
+                "a step leaves the fields it does not have off the wire: {read}"
+            );
+        }
+
+        let translating =
+            serde_json::to_value(CaptureProgress::translating("hello")).expect("reads");
+        assert_eq!(translating["phase"], "translating");
+        assert_eq!(translating["ocr_text"], "hello");
+
+        let payload = ResultPayload {
+            image,
+            ocr_text: "hello".to_string(),
+            translated_text: "bonjour".to_string(),
+            ocr_engine: OCR_ENGINE_PRIMARY.to_string(),
+            error: String::new(),
+        };
+        let done = serde_json::to_value(CaptureProgress::done(&payload)).expect("reads");
+        assert_eq!(done["phase"], "done");
+        assert_eq!(done["payload"]["translated_text"], "bonjour");
+
+        let reason = "Screen capture failed: the display went away";
+        let failed = serde_json::to_value(CaptureProgress::failure(reason)).expect("reads");
+        assert_eq!(failed["phase"], "error");
+        assert_eq!(
+            failed["error"], reason,
+            "the window is shown the reason rather than a sentence of its own"
         );
     }
 
