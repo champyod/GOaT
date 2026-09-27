@@ -24,6 +24,8 @@
 		"vite": "^8.0.16"
 	},
 	"dependencies": {
+		"@jis3r/icons": "^2.9.0",
+		"@lucide/svelte": "^1.48.0",
 		"@tauri-apps/api": "^2.11.1"
 	}
 }

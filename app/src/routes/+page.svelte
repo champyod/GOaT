@@ -3,6 +3,14 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type EventName, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import Camera from '@lucide/svelte/icons/camera';
+  import ScanLine from '@lucide/svelte/icons/scan-line';
+  import Menu from '@lucide/svelte/icons/menu';
+  import CopyIcon from '@jis3r/icons/icons/copy';
+  import CheckIcon from '@jis3r/icons/icons/check';
+
+  const COPIED_FEEDBACK_MS = 1600;
+  const ICON_SIZE = 18;
 
   type CapturedImage = {
     width: number;
@@ -34,56 +42,46 @@
     ready: boolean;
   };
 
-  type HotkeyStatus = {
-    backend: 'system' | 'portal';
-    detail: string;
-    warning: string;
-  };
-
   let canvasEl: HTMLCanvasElement | undefined = $state();
-  let status = $state('Waiting for hotkey...');
+  let status = $state('Ready');
   let ocrText = $state('');
   let translatedText = $state('');
   let autostart = $state(false);
   let busy = $state(false);
-  let error = $state('');
-  let hotkey = $state('Ctrl+Shift+S');
-  let newHotkey = $state('Ctrl+Shift+S');
-  let hotkeyError = $state('');
-  let selectHotkey = $state('Ctrl+Shift+E');
-  let newSelectHotkey = $state('Ctrl+Shift+E');
-  let selectHotkeyError = $state('');
   let hasImage = $state(false);
-  let isFullscreen = $state(false);
   let monitors = $state<MonitorInfo[]>([]);
   let monitor = $state(0);
   let selecting = $state(false);
   let screenMode = $state(false);
+  let menuOpen = $state(false);
+  let copiedOcr = $state(false);
+  let copiedTranslated = $state(false);
   let selStart = $state<{ x: number; y: number } | null>(null);
   let selRect = $state<{ x: number; y: number; w: number; h: number } | null>(
     null
   );
   let imgSize = $state<{ width: number; height: number } | null>(null);
   let selOffset = $state({ x: 0, y: 0 });
-  let hotkeyStatus = $state<HotkeyStatus | null>(null);
-  let savingHotkey = $state(false);
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
   const registered: UnlistenFn[] = [];
 
-  // A portal session fires only the trigger its own dialog produced, so the saved
-  // value is not what is bound and the controls say where the trigger comes from.
-  const portalBackend = $derived(hotkeyStatus?.backend === 'portal');
-  const boundTrigger = $derived(
-    portalBackend ? 'your desktop trigger' : hotkey
-  );
-
-  function applyHotkeyStatus(value: HotkeyStatus) {
-    hotkeyStatus = value;
+  /// The diagnostics window is the one place a problem is written down, so a
+  /// failure here is handed to it instead of being painted over the screenshot.
+  /// `console` is the only channel left if the handover itself does not get
+  /// through, and a silent failure would be the one thing worse than a noisy
+  /// overlay.
+  function reportError(source: string, message: string): void {
+    void invoke('report_frontend_error', { source, message }).catch(
+      (e: unknown) => {
+        console.error(`GOaT could not record: ${message}`, e);
+      }
+    );
   }
 
   /// A registration that fails hands back no unlisten function, so a rejected
   /// `listen` would be an unhandled rejection and the teardown could never wait
-  /// on it. Settling it once here keeps a failure on the error line and a success
-  /// available for the teardown.
+  /// on it. Settling it once here keeps a failure in the diagnostics window and
+  /// a success available for the teardown.
   function subscribe<T>(
     event: EventName,
     handler: (payload: T) => void
@@ -93,15 +91,8 @@
         registered.push(unlisten);
       })
       .catch((e: unknown) => {
-        error = String(e);
+        reportError('event', `the ${event} feed could not be opened: ${String(e)}`);
       });
-  }
-
-  /// On the portal the button opens the desktop's own trigger dialog instead of
-  /// storing what was typed, so it has to say which of the two it is doing.
-  function triggerButtonLabel(stored: string, chosen: string): string {
-    if (savingHotkey) return 'Waiting...';
-    return portalBackend ? chosen : stored;
   }
 
   function draw(image: CapturedImage) {
@@ -128,28 +119,26 @@
     selOffset = origin ?? { x: 0, y: 0 };
     ocrText = result.ocr_text;
     translatedText = result.translated_text;
-    error = result.error;
     if (ocrText.trim()) {
       status = result.ocr_engine
         ? `Result ready (${result.ocr_engine})`
         : 'Result ready';
-    } else if (error) {
+    } else if (result.error) {
       status = 'Capture incomplete';
     } else {
       status = 'No text detected';
     }
   }
 
-  async function capture() {
+  async function capture(): Promise<void> {
     if (busy) return;
     busy = true;
-    error = '';
     status = 'Capturing...';
     try {
       const result = await invoke<ResultPayload>('capture_primary');
       applyResult(result);
     } catch (e) {
-      error = String(e);
+      reportError('capture', String(e));
       status = 'Capture failed';
     } finally {
       busy = false;
@@ -168,10 +157,9 @@
     void subscribe<CapturedImage>('capture-image', drawImage);
     void subscribe('region-select', () => {
       if (monitors.length === 0) {
-        error = 'No monitor info available';
+        reportError('monitor', 'no monitor info is available');
         return;
       }
-      error = '';
       selStart = null;
       selRect = null;
       selecting = true;
@@ -189,127 +177,107 @@
         if (message) status = message;
       })
       .catch((e) => {
-        error = String(e);
+        reportError('models', String(e));
       });
     invoke<boolean>('is_autostart')
       .then((value) => {
         autostart = value;
       })
       .catch((e) => {
-        error = String(e);
-      });
-    invoke<string>('get_hotkey')
-      .then((value) => {
-        hotkey = value;
-        newHotkey = value;
-      })
-      .catch((e) => {
-        error = String(e);
-      });
-    invoke<string>('get_select_hotkey')
-      .then((value) => {
-        selectHotkey = value;
-        newSelectHotkey = value;
-      })
-      .catch((e) => {
-        error = String(e);
+        reportError('autostart', String(e));
       });
     invoke<MonitorInfo[]>('list_monitors')
       .then((value) => {
         monitors = value;
       })
       .catch((e) => {
-        error = String(e);
+        reportError('monitor', String(e));
       });
     invoke<number>('get_monitor')
       .then((value) => {
         monitor = value;
       })
       .catch((e) => {
-        error = String(e);
+        reportError('monitor', String(e));
       });
-    invoke<HotkeyStatus>('hotkey_status')
-      .then(applyHotkeyStatus)
-      .catch((e) => {
-        error = String(e);
-      });
-    void subscribe<HotkeyStatus>('hotkey-status', applyHotkeyStatus);
-    void subscribe<string>('hotkey-error', (payload) => {
-      error = payload;
-    });
     return () => {
       for (const unlisten of registered) unlisten();
+      if (copiedTimer) clearTimeout(copiedTimer);
     };
   });
 
-  async function close() {
-    await invoke('hide_window');
+  function onAutostartChange(event: Event): void {
+    const box = event.currentTarget as HTMLInputElement;
+    void setAutostart(box.checked);
   }
 
-  async function minimize() {
-    await getCurrentWindow().minimize();
-  }
-
-  async function toggleAutostart() {
-    autostart = await invoke<boolean>('set_autostart', {
-      enabled: !autostart,
-    });
-  }
-
-  async function saveHotkey() {
-    if (savingHotkey) return;
-    savingHotkey = true;
-    hotkeyError = '';
-    error = '';
+  async function setAutostart(enabled: boolean): Promise<void> {
     try {
-      hotkey = await invoke<string>('set_hotkey', { hotkey: newHotkey });
+      autostart = await invoke<boolean>('set_autostart', { enabled });
     } catch (e) {
-      hotkeyError = String(e);
-    } finally {
-      savingHotkey = false;
+      reportError('autostart', String(e));
     }
   }
 
-  async function saveSelectHotkey() {
-    if (savingHotkey) return;
-    savingHotkey = true;
-    selectHotkeyError = '';
-    error = '';
-    try {
-      selectHotkey = await invoke<string>('set_select_hotkey', {
-        hotkey: newSelectHotkey,
-      });
-    } catch (e) {
-      selectHotkeyError = String(e);
-    } finally {
-      savingHotkey = false;
-    }
-  }
-
-  async function saveMonitor(event: Event) {
+  async function saveMonitor(event: Event): Promise<void> {
     const select = event.currentTarget as HTMLSelectElement;
     try {
       monitor = await invoke<number>('set_monitor', {
         monitor: Number(select.value),
       });
     } catch (e) {
-      error = String(e);
+      reportError('monitor', String(e));
     }
   }
 
-  async function toggleFullscreen() {
-    const win = getCurrentWindow();
-    const next = !(await win.isFullscreen());
-    await win.setFullscreen(next);
-    isFullscreen = next;
+  function toggleMenu(): void {
+    menuOpen = !menuOpen;
   }
 
-  async function startSelect() {
+  function closeMenu(): void {
+    menuOpen = false;
+  }
+
+  /// The shortcut steps are only written down in the setup window, so this
+  /// raises it and closes the panel that asked for it.
+  async function openSetup(): Promise<void> {
+    closeMenu();
+    try {
+      await invoke('show_setup');
+    } catch (e) {
+      reportError('window', String(e));
+    }
+  }
+
+  /// Both panels share one timer so a second copy restarts the feedback rather
+  /// than leaving the first one to clear an icon that already moved on.
+  function flashCopied(field: 'ocr' | 'translated'): void {
+    if (field === 'ocr') copiedOcr = true;
+    else copiedTranslated = true;
+    if (copiedTimer) clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => {
+      copiedOcr = false;
+      copiedTranslated = false;
+    }, COPIED_FEEDBACK_MS);
+  }
+
+  async function copyText(
+    text: string,
+    field: 'ocr' | 'translated'
+  ): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      flashCopied(field);
+    } catch (e) {
+      reportError('clipboard', String(e));
+    }
+  }
+
+  function startSelect(): void {
     if (!hasImage) {
-      error = 'Capture a screenshot first, then drag on it to select a region';
+      status = 'Capture a screenshot first, then drag on it to select a region';
       return;
     }
-    error = '';
     selStart = null;
     selRect = null;
     selecting = true;
@@ -328,7 +296,6 @@
       win.isFullscreen().then((full) => {
         if (full) {
           win.setFullscreen(false);
-          isFullscreen = false;
         }
       });
     }
@@ -387,14 +354,14 @@
     };
   }
 
-  async function finishScreenSelect() {
+  async function finishScreenSelect(): Promise<void> {
     const rect = selRect;
     const mon = monitors.find((m) => m.index === monitor) ?? monitors[0];
     const scale = await getCurrentWindow().scaleFactor();
     const tooSmall = !rect || rect.w < 4 || rect.h < 4;
     stopSelectMode();
     if (tooSmall || !rect || !mon) {
-      if (!mon) error = 'No monitor info available';
+      if (!mon) reportError('monitor', 'no monitor info is available');
       else status = 'Selection too small';
       return;
     }
@@ -403,7 +370,6 @@
     const width = Math.max(1, Math.round(rect.w * scale));
     const height = Math.max(1, Math.round(rect.h * scale));
     busy = true;
-    error = '';
     status = 'Capturing region...';
     try {
       const result = await invoke<ResultPayload>('capture_region', {
@@ -415,14 +381,14 @@
       });
       applyResult(result);
     } catch (e) {
-      error = String(e);
+      reportError('capture', String(e));
       status = 'Capture failed';
     } finally {
       busy = false;
     }
   }
 
-  async function onSelUp() {
+  async function onSelUp(): Promise<void> {
     if (!selecting || !selRect || busy) {
       return;
     }
@@ -461,7 +427,6 @@
       return;
     }
     busy = true;
-    error = '';
     status = 'Reading selection...';
     try {
       const result = await invoke<ResultPayload>('ocr_selection', {
@@ -472,15 +437,11 @@
       });
       applyResult(result, { x: fullX, y: fullY });
     } catch (e) {
-      error = String(e);
+      reportError('ocr', String(e));
       status = 'Selection failed';
     } finally {
       busy = false;
     }
-  }
-
-  function copy(text: string) {
-    navigator.clipboard.writeText(text);
   }
 </script>
 
@@ -505,137 +466,148 @@
       {/if}
     </div>
   {:else}
-  <div class="toolbar" data-tauri-drag-region>
-    <h1 data-tauri-drag-region>GOaT</h1>
-    <span class="hotkey-hint" data-tauri-drag-region>{boundTrigger}</span>
-    <label>
-      <input type="checkbox" checked={autostart} onclick={toggleAutostart} />
-      Start at login
-    </label>
-    <button onclick={capture} disabled={busy}>
-      {busy ? 'Working...' : 'Capture'}
-    </button>
-    <button onclick={startSelect} disabled={busy}>Select region</button>
-    <button onclick={toggleFullscreen}>
-      {isFullscreen ? 'Unfullscreen' : 'Fullscreen'}
-    </button>
-    <button onclick={minimize}>Minimize</button>
-    <button onclick={close}>Close (hide)</button>
-  </div>
-
-  <p class="status">{status}</p>
-  {#if hotkeyStatus}
-    <p class="hotkeyline" data-backend={hotkeyStatus.backend} role="status">
-      {hotkeyStatus.detail}
-    </p>
-    {#if hotkeyStatus.warning}
-      <p class="error" role="alert">{hotkeyStatus.warning}</p>
-    {/if}
-  {/if}
-  {#if error}
-    <p class="error" role="alert">{error}</p>
-  {/if}
-
-  <div class="content">
-    <section class="shot">
-      <h2>Screenshot</h2>
-      {#if !hasImage}
-        <p class="placeholder">No screenshot yet. Press {boundTrigger} or Capture.</p>
-      {/if}
-      {#if selecting}
-        <p class="placeholder">Drag on the screenshot, release to read. Esc cancels.</p>
-      {/if}
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
-        Drag surface over the screenshot; Esc to cancel is on window keydown. -->
-      <div
-        class="shotwrap"
-        class:armed={selecting}
-        role="application"
-        aria-label="Drag on the screenshot to select a region"
-        onmousedown={onSelDown}
-        onmousemove={onSelMove}
-        onmouseup={onSelUp}
-      >
-        <canvas bind:this={canvasEl}></canvas>
-        {#if selRect}
-          <div
-            class="selrect"
-            style="left: {selRect.x}px; top: {selRect.y}px; width: {selRect.w}px; height: {selRect.h}px;"
-          ></div>
-        {/if}
-      </div>
-    </section>
-
-    <div class="side">
-      <section>
-        <h2>OCR'ed text</h2>
-        <textarea
-          bind:value={ocrText}
-          placeholder="No text yet."
-          rows={6}
-        ></textarea>
-        <button onclick={() => copy(ocrText)} disabled={!ocrText}>Copy</button>
-      </section>
-      <section>
-        <h2>Translated text</h2>
-        <textarea
-          bind:value={translatedText}
-          placeholder="No translation yet."
-          rows={6}
-        ></textarea>
-        <button onclick={() => copy(translatedText)} disabled={!translatedText}>
-          Copy
+    <div class="bar">
+      <h1>GOaT</h1>
+      <div class="actions">
+        <button
+          class="icon"
+          onclick={capture}
+          disabled={busy}
+          aria-label="Capture"
+          title="Capture"
+        >
+          <Camera size={ICON_SIZE} />
         </button>
-      </section>
+        <button
+          class="icon"
+          onclick={startSelect}
+          disabled={busy}
+          aria-label="Select region"
+          title="Select region"
+        >
+          <ScanLine size={ICON_SIZE} />
+        </button>
+        <button
+          class="icon"
+          onclick={toggleMenu}
+          aria-label="Menu"
+          title="Menu"
+          aria-expanded={menuOpen}
+        >
+          <Menu size={ICON_SIZE} />
+        </button>
+      </div>
     </div>
-  </div>
 
-  <div class="settings">
-    {#if portalBackend}
-      <p class="placeholder">
-        These triggers are set in your desktop's own shortcut settings, not in
-        GOaT. The buttons open that dialog.
-      </p>
+    {#if menuOpen}
+      <button
+        class="scrim"
+        tabindex="-1"
+        aria-label="Close menu"
+        onclick={closeMenu}
+      ></button>
+      <div class="panel">
+        <label class="row">
+          <input
+            type="checkbox"
+            checked={autostart}
+            onchange={onAutostartChange}
+          />
+          Start at login
+        </label>
+        <label class="row">
+          Monitor
+          <select value={monitor} onchange={saveMonitor}>
+            {#each monitors as m (m.index)}
+              <option value={m.index}>
+                {m.name}{m.is_primary ? ' (primary)' : ''} {m.width}x{m.height}
+              </option>
+            {/each}
+          </select>
+        </label>
+        <button class="row action" onclick={openSetup}>
+          Keyboard shortcuts…
+        </button>
+      </div>
     {/if}
-    <label>
-      Hotkey
-      <input
-        bind:value={newHotkey}
-        placeholder="Ctrl+Shift+S"
-        disabled={portalBackend}
-      />
-    </label>
-    <button onclick={saveHotkey} disabled={savingHotkey}>
-      {triggerButtonLabel('Save hotkey', 'Choose capture trigger...')}
-    </button>
-    {#if hotkeyError}
-      <span class="error" role="alert">{hotkeyError}</span>
-    {/if}
-    <label>
-      Region hotkey
-      <input
-        bind:value={newSelectHotkey}
-        placeholder="Ctrl+Shift+E"
-        disabled={portalBackend}
-      />
-    </label>
-    <button onclick={saveSelectHotkey} disabled={savingHotkey}>
-      {triggerButtonLabel('Save region hotkey', 'Choose region trigger...')}
-    </button>
-    {#if selectHotkeyError}
-      <span class="error" role="alert">{selectHotkeyError}</span>
-    {/if}
-    <label>
-      Monitor
-      <select value={monitor} onchange={saveMonitor}>
-        {#each monitors as m}
-          <option value={m.index}>
-            {m.name}{m.is_primary ? ' (primary)' : ''} {m.width}x{m.height}
-          </option>
-        {/each}
-      </select>
-    </label>
-  </div>
+
+    <div class="body">
+      <p class="status" role="status">{status}</p>
+
+      <div class="content">
+        <section class="shot">
+          <h2>Screenshot</h2>
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
+            Drag surface over the screenshot; Esc to cancel is on window keydown. -->
+          <div
+            class="shotwrap"
+            class:armed={selecting}
+            role="application"
+            aria-label="Drag on the screenshot to select a region"
+            onmousedown={onSelDown}
+            onmousemove={onSelMove}
+            onmouseup={onSelUp}
+          >
+            <canvas bind:this={canvasEl}></canvas>
+            {#if selRect}
+              <div
+                class="selrect"
+                style="left: {selRect.x}px; top: {selRect.y}px; width: {selRect.w}px; height: {selRect.h}px;"
+              ></div>
+            {/if}
+          </div>
+          {#if selecting}
+            <p class="placeholder">Drag to select. Esc cancels.</p>
+          {/if}
+        </section>
+
+        <div class="side">
+          <section>
+            <div class="head">
+              <h2>OCR'ed text</h2>
+              <button
+                class="icon"
+                onclick={() => copyText(ocrText, 'ocr')}
+                disabled={!ocrText}
+                aria-label="Copy OCR'ed text"
+                title="Copy"
+              >
+                {#if copiedOcr}
+                  <CheckIcon size={ICON_SIZE} animate={true} />
+                {:else}
+                  <CopyIcon size={ICON_SIZE} animate={false} />
+                {/if}
+              </button>
+            </div>
+            <textarea bind:value={ocrText} placeholder="Empty" rows={6}
+            ></textarea>
+          </section>
+          <section>
+            <div class="head">
+              <h2>Translated text</h2>
+              <button
+                class="icon"
+                onclick={() => copyText(translatedText, 'translated')}
+                disabled={!translatedText}
+                aria-label="Copy translated text"
+                title="Copy"
+              >
+                {#if copiedTranslated}
+                  <CheckIcon size={ICON_SIZE} animate={true} />
+                {:else}
+                  <CopyIcon size={ICON_SIZE} animate={false} />
+                {/if}
+              </button>
+            </div>
+            <textarea
+              bind:value={translatedText}
+              placeholder="Empty"
+              rows={6}
+            ></textarea>
+          </section>
+        </div>
+      </div>
+    </div>
   {/if}
 </main>
 
@@ -671,88 +643,128 @@
   }
 
   main {
+    position: relative;
+    display: flex;
+    flex-direction: column;
     min-height: 100vh;
-    padding: 1rem;
-    box-sizing: border-box;
     color: #fff;
   }
 
-  .toolbar {
+  /* The native title bar carries the window controls, so this strip is opaque
+     and stays a fixed-height row no matter how wide the window gets. */
+  .bar {
     display: flex;
     align-items: center;
-    gap: 1rem;
-  }
-
-  .error {
-    display: inline-block;
-    margin: 0.5rem 0 0;
-    padding: 0.25rem 0.6rem;
-    background: rgba(0, 0, 0, 0.75);
-    border-radius: 0.4rem;
-    color: #ff9d9d;
-  }
-
-  .hotkey-hint {
-    padding: 0.25rem 0.6rem;
-    background: rgba(0, 0, 0, 0.75);
-    border-radius: 0.4rem;
-    font-size: 0.85rem;
-  }
-
-  .hotkeyline {
-    display: inline-block;
-    margin: 0.5rem 0 0;
-    padding: 0.25rem 0.6rem;
-    background: rgba(0, 0, 0, 0.75);
-    border-left: 3px solid #7fd1ff;
-    border-radius: 0.4rem;
-    font-size: 0.85rem;
-  }
-
-  .hotkeyline[data-backend='portal'] {
-    border-left-color: #ffc46b;
-  }
-
-  .placeholder {
-    display: inline-block;
-    margin: 0.5rem 0;
-    padding: 0.25rem 0.6rem;
-    background: rgba(0, 0, 0, 0.75);
-    border-radius: 0.4rem;
-    font-size: 0.85rem;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background: #1b1d21;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   }
 
   h1 {
     margin: 0;
-    font-size: 1.2rem;
+    font-size: 1.1rem;
   }
 
   h2 {
-    margin: 0 0 0.4rem;
+    margin: 0;
     font-size: 0.95rem;
+  }
+
+  .actions {
+    display: flex;
+    gap: 0.35rem;
+    margin-left: auto;
+  }
+
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 19;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: default;
+  }
+
+  .panel {
+    position: absolute;
+    top: 3rem;
+    right: 0.75rem;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.6rem;
+    background: #1b1d21;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 0.5rem;
+    box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.45);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+
+  .row select {
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    border-radius: 0.4rem;
+    padding: 0.3rem 0.6rem;
+  }
+
+  .row select option {
+    color: #000;
+  }
+
+  .row.action {
+    justify-content: center;
+    padding: 0.35rem 0.8rem;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 0.4rem;
+    cursor: pointer;
+  }
+
+  .row.action:hover {
+    background: rgba(255, 255, 255, 0.22);
+  }
+
+  .body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    padding: 1rem;
   }
 
   .status {
     display: inline-block;
-    margin: 0.75rem 0 0;
+    align-self: flex-start;
+    margin: 0 0 0.75rem;
     padding: 0.25rem 0.6rem;
     background: rgba(0, 0, 0, 0.75);
     border-radius: 0.4rem;
+  }
+
+  .placeholder {
+    display: inline-block;
+    margin: 0.5rem 0 0;
+    padding: 0.25rem 0.6rem;
+    background: rgba(0, 0, 0, 0.75);
+    border-radius: 0.4rem;
+    font-size: 0.85rem;
   }
 
   .content {
     display: grid;
     grid-template-columns: 3fr 2fr;
     gap: 1rem;
-    margin-top: 1rem;
-  }
-
-  .shot canvas {
-    width: 100%;
-    height: auto;
-    display: block;
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    background: rgba(0, 0, 0, 0.3);
   }
 
   .side {
@@ -761,31 +773,20 @@
     gap: 1rem;
   }
 
-  .settings {
+  .head {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    margin-top: 1rem;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.4rem;
   }
 
-  .settings input {
-    background: rgba(255, 255, 255, 0.12);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    border-radius: 0.4rem;
-    padding: 0.3rem 0.6rem;
-  }
-
-  .settings select {
-    background: rgba(255, 255, 255, 0.12);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    border-radius: 0.4rem;
-    padding: 0.3rem 0.6rem;
-  }
-
-  .settings select option {
-    color: #000;
+  .shot canvas {
+    width: 100%;
+    height: auto;
+    display: block;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    background: rgba(0, 0, 0, 0.3);
   }
 
   .shotwrap {
@@ -848,20 +849,25 @@
     resize: vertical;
   }
 
-  button {
-    background: rgba(255, 255, 255, 0.2);
+  .icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    background: rgba(255, 255, 255, 0.08);
     color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    border-radius: 0.4rem;
-    padding: 0.3rem 0.8rem;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 0.45rem;
     cursor: pointer;
   }
 
-  button:hover {
-    background: rgba(255, 255, 255, 0.3);
+  .icon:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.18);
   }
 
-  button:disabled {
+  .icon:disabled {
     opacity: 0.4;
     cursor: default;
   }
