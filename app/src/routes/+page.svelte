@@ -27,6 +27,14 @@
   const MENU_HEIGHT = 380;
   const BODY_WIDTH = 800;
   const BODY_HEIGHT = 600;
+  /// The expanded view is fitted once its layout has stopped moving, so a burst
+  /// of reflows out of one change is one window resize rather than one per frame.
+  const FIT_DEBOUNCE_MS = 100;
+  /// The window is only asked to move past this much difference. A fit that lands
+  /// within it of the size already asked for is the same layout measuring itself
+  /// — a scrollbar taking width off the content reflows it back — and answering
+  /// that would walk the window toward the clamp a little at a time.
+  const FIT_EPSILON_PX = 2;
   const NOT_BOUND = 'Not bound';
   const CAPTURE_TRIGGER_TITLE = 'Save capture trigger';
   const REGION_TRIGGER_TITLE = 'Save region trigger';
@@ -150,6 +158,13 @@
   let imgSize = $state<{ width: number; height: number } | null>(null);
   let selOffset = $state({ x: 0, y: 0 });
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  let fitTimer: ReturnType<typeof setTimeout> | undefined;
+  /// The size the window was last asked to take. The expanded view is measured
+  /// against this rather than against the window, because the window is what
+  /// the measurement moves.
+  let lastFitSize: { width: number; height: number } | null = null;
+  let bodyEl: HTMLDivElement | undefined = $state();
+  let contentEl: HTMLDivElement | undefined = $state();
   let hasGrown = false;
   let menuGrown = false;
   let barPlaced = false;
@@ -587,6 +602,80 @@
     menuOpen = false;
     void resizeForMenu(false);
   }
+
+  /// The size the window has to be for the expanded view to fit whole, or null
+  /// when there is nothing laid out to measure. The body is stretched to the
+  /// window, so its own box is the window read back and says nothing about the
+  /// room the content wants; the content grid is the one box in that column laid
+  /// out at its natural size, and everything from the top of the document down
+  /// to the padding under it is inside the window. Offsets stand in for a client
+  /// rect because they read the same whether or not the view is scrolled.
+  function expandedViewportSize(): { width: number; height: number } | null {
+    if (!bodyEl || !contentEl) return null;
+    const width = bodyEl.offsetWidth;
+    const paddingBelow = parseFloat(getComputedStyle(bodyEl).paddingBottom);
+    const height = contentEl.offsetTop + contentEl.offsetHeight + paddingBelow;
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+    // A read taken before the view has been laid out comes back as nothing, and
+    // asking for a window of nothing is how a fit ends up at the clamp rather
+    // than at the content.
+    if (width <= 0 || height <= 0) return null;
+    return { width, height };
+  }
+
+  /// The window is asked for the fit, and a refusal is written down rather than
+  /// raised: the view works at whatever size it has, so a window the desktop
+  /// will not take is a report and not a failure. The size asked for is kept
+  /// either way, so a layout that keeps reading the same does not keep asking.
+  async function fitWindowToContent(size: {
+    width: number;
+    height: number;
+  }): Promise<void> {
+    lastFitSize = size;
+    try {
+      await invoke('set_window_size', { width: size.width, height: size.height });
+    } catch (e) {
+      reportError('window', `the window could not be fitted: ${String(e)}`);
+    }
+  }
+
+  /// One fit per settled layout, not one per observation: a capture, a reflow
+  /// and a scrollbar appearing all arrive as several sizes of the same view, and
+  /// each of them would otherwise be a window the user watches move.
+  function scheduleWindowFit(): void {
+    if (fitTimer) clearTimeout(fitTimer);
+    fitTimer = setTimeout(() => {
+      fitTimer = undefined;
+      const size = expandedViewportSize();
+      if (!size) return;
+      const asked = lastFitSize;
+      if (
+        asked &&
+        Math.abs(size.width - asked.width) <= FIT_EPSILON_PX &&
+        Math.abs(size.height - asked.height) <= FIT_EPSILON_PX
+      ) {
+        return;
+      }
+      void fitWindowToContent(size);
+    }, FIT_DEBOUNCE_MS);
+  }
+
+  /// The expanded view is watched for exactly as long as it is on screen. The
+  /// menu sizes the window by itself and before the panel is in the document, so
+  /// that path is left alone rather than answered to.
+  $effect(() => {
+    const target = hasImage ? contentEl : undefined;
+    if (!target) return;
+    const observer = new ResizeObserver(() => scheduleWindowFit());
+    observer.observe(target);
+    return () => {
+      observer.disconnect();
+      if (fitTimer) {
+        clearTimeout(fitTimer);
+        fitTimer = undefined;
+      }
+    };
+  });
 
   /// The bar is the title bar, so closing it hides the window instead of ending
   /// the process: the hotkeys are registered outside the window and a quit
@@ -1069,10 +1158,10 @@
     {/if}
 
     {#if hasImage}
-    <div class="body">
+    <div class="body" bind:this={bodyEl}>
       <p class="status" role="status">{status}</p>
 
-      <div class="content">
+      <div class="content" bind:this={contentEl}>
         <section class="shot">
           <h2>Screenshot</h2>
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
