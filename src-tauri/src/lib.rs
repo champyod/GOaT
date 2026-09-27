@@ -4,12 +4,18 @@ mod hotkey;
 mod models;
 
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 use hotkey::parse_shortcut;
 
 pub(crate) const DEFAULT_HOTKEY: &str = "Ctrl+Shift+S";
 pub(crate) const DEFAULT_SELECT_HOTKEY: &str = "Ctrl+Shift+E";
+
+/// How many problems are kept. The log exists to explain a session that has
+/// already gone wrong, and a cap keeps a failure that repeats on every key press
+/// from filling memory for the life of the process.
+const ERROR_LOG_CAP: usize = 100;
 
 fn default_select_hotkey() -> String {
     DEFAULT_SELECT_HOTKEY.to_string()
@@ -23,6 +29,7 @@ pub(crate) struct AppState {
     pub(crate) last_image: Mutex<Option<capture::CapturedImage>>,
     pub(crate) full_image: Mutex<Option<capture::CapturedImage>>,
     pub(crate) hotkey_status: Mutex<hotkey::HotkeyStatus>,
+    pub(crate) errors: Mutex<Vec<ErrorEntry>>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -31,6 +38,11 @@ struct UserConfig {
     #[serde(default = "default_select_hotkey")]
     select_hotkey: String,
     monitor: usize,
+    /// Whether the user has asked not to be shown the setup window again. It is
+    /// read only when a run starts and only written by the setup window itself, so
+    /// it lives in the file rather than in managed state.
+    #[serde(default)]
+    hide_bind_notice: bool,
 }
 
 impl Default for UserConfig {
@@ -39,6 +51,7 @@ impl Default for UserConfig {
             hotkey: DEFAULT_HOTKEY.to_string(),
             select_hotkey: default_select_hotkey(),
             monitor: 0,
+            hide_bind_notice: false,
         }
     }
 }
@@ -72,6 +85,140 @@ struct ResultPayload {
     translated_text: String,
     ocr_engine: String,
     error: String,
+}
+
+/// One line of the diagnostics log. `source` names the part of the app that
+/// failed, so a reader can tell a capture problem from a trigger problem without
+/// reading the message.
+#[derive(Clone, serde::Serialize)]
+struct ErrorEntry {
+    time: String,
+    source: String,
+    message: String,
+}
+
+/// The one place a problem is written down. Every window reads its errors from
+/// here rather than painting them into itself, so a failure the user did not
+/// cause on purpose is still on screen when they go looking for it.
+fn report_error(app: &tauri::AppHandle, source: &str, message: &str) {
+    use tauri::{Emitter, Manager};
+    let entry = ErrorEntry {
+        time: timestamp_now(),
+        source: source.to_string(),
+        message: message.to_string(),
+    };
+    {
+        let state = app.state::<AppState>();
+        let mut log = hotkey::lock(&state.errors);
+        push_error(&mut log, entry.clone());
+    }
+    if let Err(e) = app.emit("app-error", &entry) {
+        eprintln!("GOaT: the error log could not be published ({e})");
+    }
+    #[cfg(desktop)]
+    show_error_window(app);
+}
+
+/// Keeps the log inside its cap and stops one failure being written twice: a
+/// command that fails is recorded by the backend and forwarded again by the
+/// window that awaited it, and the same reason arriving twice is one problem.
+fn push_error(log: &mut Vec<ErrorEntry>, entry: ErrorEntry) {
+    if log.last().is_some_and(|last| last.message == entry.message) {
+        return;
+    }
+    log.push(entry);
+    if log.len() > ERROR_LOG_CAP {
+        let overflow = log.len() - ERROR_LOG_CAP;
+        log.drain(..overflow);
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ`. No date library is a dependency, and a diagnostics
+/// line only has to be readable and ordered, so the civil date is derived from
+/// the day count with Hinnant's algorithm.
+fn timestamp_now() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or_default();
+    let (year, month, day) = civil_from_days(seconds.div_euclid(86_400));
+    let time = seconds.rem_euclid(86_400);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        time / 3_600,
+        (time % 3_600) / 60,
+        time % 60
+    )
+}
+
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = (shifted - era * 146_097) as u32;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era as i64 + era * 400 + i64::from(month <= 2);
+    (year, month, day)
+}
+
+#[tauri::command]
+fn list_errors(state: tauri::State<'_, AppState>) -> Vec<ErrorEntry> {
+    hotkey::lock(&state.errors).clone()
+}
+
+#[tauri::command]
+fn clear_errors(state: tauri::State<'_, AppState>) -> usize {
+    let mut log = hotkey::lock(&state.errors);
+    let cleared = log.len();
+    log.clear();
+    cleared
+}
+
+/// A window that catches a failed command has no way to reach the log itself, so
+/// it hands the reason over here and stays silent.
+#[tauri::command]
+fn report_frontend_error(app: tauri::AppHandle, source: String, message: String) {
+    report_error(&app, &source, &message);
+}
+
+/// The window that records a problem opens itself when one arrives, and an
+/// already open one is left exactly as it is: a capture that fails twice must
+/// not pull the window away from the screenshot the user is working on.
+#[cfg(desktop)]
+fn show_error_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Some(window) = app.get_webview_window("errors") else {
+        return;
+    };
+    if window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+/// Every hotkey problem already reaches the app as `hotkey-error`, so the log is
+/// fed from that one event instead of from a second reporting path inside the
+/// hotkey module. This is registered before the backends start, so a failure
+/// during startup is recorded like any other.
+#[cfg(desktop)]
+fn forward_hotkey_errors(app: &tauri::AppHandle) {
+    use tauri::Listener;
+    let handle = app.clone();
+    let _listener = app.listen("hotkey-error", move |event| {
+        let payload = event.payload();
+        let message =
+            serde_json::from_str::<String>(payload).unwrap_or_else(|_| payload.to_string());
+        report_error(&handle, "hotkey", &message);
+    });
 }
 
 #[tauri::command]
@@ -135,6 +282,14 @@ fn hide_window(app: tauri::AppHandle) -> Result<(), String> {
         window.hide().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// The bind instructions live in the setup window, so the action bar only asks
+/// for it to be raised and a window already on screen is left as it is.
+#[tauri::command]
+fn show_setup(app: tauri::AppHandle) {
+    #[cfg(desktop)]
+    show_bind_setup(&app);
 }
 
 #[tauri::command]
@@ -213,7 +368,10 @@ async fn run_pipeline_with_image(
                         text
                     }
                     Err(fallback_err) => {
-                        error = format!("{primary_err}; fallback OCR also failed: {fallback_err}");
+                        let line =
+                            format!("{primary_err}; fallback OCR also failed: {fallback_err}");
+                        report_error(app, "ocr", &line);
+                        error = line;
                         String::new()
                     }
                 }
@@ -227,6 +385,7 @@ async fn run_pipeline_with_image(
             Ok(text) => text,
             Err(e) => {
                 if error.is_empty() {
+                    report_error(app, "translate", &e);
                     error = e;
                 }
                 String::new()
@@ -339,6 +498,51 @@ pub(crate) fn enter_screen_select(app: &tauri::AppHandle) {
     let _ = app.emit("region-select", ());
 }
 
+/// Whether at least one trigger is left without one. The status line is the one
+/// place a backend records that, so it decides whether anything is unbound.
+#[cfg(desktop)]
+fn triggers_unbound(app: &tauri::AppHandle) -> bool {
+    use tauri::Manager;
+    !hotkey::lock(&app.state::<AppState>().hotkey_status)
+        .warning
+        .is_empty()
+}
+
+#[cfg(desktop)]
+fn show_bind_setup(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Some(window) = app.get_webview_window("setup") else {
+        return;
+    };
+    if window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+/// The main window starts hidden, so an unbound trigger leaves nothing on screen
+/// to act on and the setup window is shown in its place. The portal backend only
+/// finds out after an awaited dialog, so the status line is watched as well as
+/// read here: reading it once would open the window for a backend that fails
+/// during startup and never for one that fails later.
+#[cfg(desktop)]
+fn watch_unbound_triggers(app: &tauri::AppHandle) {
+    use tauri::Listener;
+    if load_config(app).hide_bind_notice {
+        return;
+    }
+    let handle = app.clone();
+    let _listener = app.listen("hotkey-status", move |_| {
+        if triggers_unbound(&handle) {
+            show_bind_setup(&handle);
+        }
+    });
+    if triggers_unbound(app) {
+        show_bind_setup(app);
+    }
+}
+
 #[tauri::command]
 fn get_hotkey(state: tauri::State<'_, AppState>) -> Result<String, String> {
     state
@@ -355,9 +559,7 @@ async fn set_hotkey(
     hotkey: String,
 ) -> Result<String, String> {
     let previous = hotkey::lock(&state.hotkey).clone();
-    hotkey::remap(&app, hotkey::Action::Capture, &previous, &hotkey)
-        .await
-        .map_err(|e| format!("{e:#}"))?;
+    remap_trigger(&app, hotkey::Action::Capture, &previous, &hotkey).await?;
     // A backend that fires only the trigger its own dialog produced keeps the
     // one it already holds, so the field never reports a shortcut that no
     // trigger is bound to.
@@ -367,6 +569,24 @@ async fn set_hotkey(
     *hotkey::lock(&state.hotkey) = hotkey.clone();
     persist(&app, &state)?;
     Ok(hotkey)
+}
+
+/// A trigger that cannot be reconfigured is recorded before its reason reaches
+/// the window that asked for it, so the log holds the failure even when that
+/// window has been closed since.
+async fn remap_trigger(
+    app: &tauri::AppHandle,
+    action: hotkey::Action,
+    previous: &str,
+    next: &str,
+) -> Result<(), String> {
+    hotkey::remap(app, action, previous, next)
+        .await
+        .map_err(|e| {
+            let message = format!("{e:#}");
+            report_error(app, "hotkey", &message);
+            message
+        })
 }
 
 #[tauri::command]
@@ -385,9 +605,7 @@ async fn set_select_hotkey(
     hotkey: String,
 ) -> Result<String, String> {
     let previous = hotkey::lock(&state.select_hotkey).clone();
-    hotkey::remap(&app, hotkey::Action::ScreenSelect, &previous, &hotkey)
-        .await
-        .map_err(|e| format!("{e:#}"))?;
+    remap_trigger(&app, hotkey::Action::ScreenSelect, &previous, &hotkey).await?;
     if !hotkey::binds_typed_trigger(&app) {
         return Ok(previous);
     }
@@ -412,17 +630,39 @@ fn set_monitor(
     Ok(monitor)
 }
 
+/// The whole config as it stands: the live hotkey block, plus the notice flag as
+/// the file holds it. Reading the block from managed state and the flag from disk
+/// is what keeps a write of one from putting the other's saved value back.
+fn config_from_state(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> UserConfig {
+    UserConfig {
+        hotkey: hotkey::lock(&state.hotkey).clone(),
+        select_hotkey: hotkey::lock(&state.select_hotkey).clone(),
+        monitor: *hotkey::lock(&state.monitor),
+        hide_bind_notice: load_config(app).hide_bind_notice,
+    }
+}
+
 /// Writes the whole hotkey block from live state, so every command that touches
 /// one of these values persists all of them.
 fn persist(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> Result<(), String> {
-    save_config(
-        app,
-        &UserConfig {
-            hotkey: hotkey::lock(&state.hotkey).clone(),
-            select_hotkey: hotkey::lock(&state.select_hotkey).clone(),
-            monitor: *hotkey::lock(&state.monitor),
-        },
-    )
+    save_config(app, &config_from_state(app, state))
+}
+
+#[tauri::command]
+fn get_hide_bind_notice(app: tauri::AppHandle) -> bool {
+    load_config(&app).hide_bind_notice
+}
+
+#[tauri::command]
+fn set_hide_bind_notice(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    hide: bool,
+) -> Result<bool, String> {
+    let mut cfg = config_from_state(&app, &state);
+    cfg.hide_bind_notice = hide;
+    save_config(&app, &cfg)?;
+    Ok(hide)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -441,6 +681,7 @@ pub fn run() {
             last_image: Mutex::new(None),
             full_image: Mutex::new(None),
             hotkey_status: Mutex::new(hotkey::status::initial()),
+            errors: Mutex::new(Vec::new()),
         });
     // The notice reads the managed plugin state, so the registration cannot be
     // decided at runtime, but only the Wayland backend shows a notice and only a
@@ -457,12 +698,19 @@ pub fn run() {
                     let _ = window.hide();
                 }
                 setup_tray(app.handle())?;
+                forward_hotkey_errors(app.handle());
                 hotkey::setup(app.handle())?;
+                watch_unbound_triggers(app.handle());
             }
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            // The main window is the app itself, so closing it only hides it. The
+            // setup and errors windows are dialogs and their close buttons have
+            // to end them, or they could never be dismissed.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && window.label() == "main"
+            {
                 let _ = window.hide();
                 api.prevent_close();
             }
@@ -482,13 +730,19 @@ pub fn run() {
             get_monitor,
             set_monitor,
             hide_window,
+            show_setup,
             set_autostart,
             is_autostart,
             get_hotkey,
             set_hotkey,
             get_select_hotkey,
             set_select_hotkey,
-            hotkey::hotkey_status
+            get_hide_bind_notice,
+            set_hide_bind_notice,
+            hotkey::hotkey_status,
+            list_errors,
+            clear_errors,
+            report_frontend_error
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -498,6 +752,53 @@ pub fn run() {
 mod tests {
     use super::*;
     use tauri_plugin_global_shortcut::{Code, Modifiers};
+
+    fn entry(message: &str) -> ErrorEntry {
+        ErrorEntry {
+            time: "2026-01-01T00:00:00Z".to_string(),
+            source: "test".to_string(),
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn push_error_keeps_the_newest_inside_the_cap() {
+        let mut log: Vec<ErrorEntry> = Vec::new();
+        for index in 0..(ERROR_LOG_CAP + 5) {
+            push_error(&mut log, entry(&format!("failure {index}")));
+        }
+        assert_eq!(log.len(), ERROR_LOG_CAP);
+        assert_eq!(log[0].message, "failure 5");
+        assert_eq!(log[ERROR_LOG_CAP - 1].message, "failure 104");
+    }
+
+    #[test]
+    fn push_error_keeps_one_row_for_a_failure_reported_twice() {
+        let mut log = vec![entry("first")];
+        push_error(&mut log, entry("first"));
+        push_error(&mut log, entry("second"));
+        push_error(&mut log, entry("first"));
+        assert_eq!(log.len(), 3);
+    }
+
+    #[test]
+    fn civil_from_days_matches_known_utc_days() {
+        // 0, 1451606400, 951868800 and 951782400 seconds after the epoch are
+        // 1970-01-01, 2016-01-01, 2000-03-01 and 2000-02-29.
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(16_801), (2016, 1, 1));
+        assert_eq!(civil_from_days(11_017), (2000, 3, 1));
+        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
+        assert_eq!(civil_from_days(16_860), (2016, 2, 29));
+    }
+
+    #[test]
+    fn timestamp_is_a_utc_civil_clock() {
+        let stamp = timestamp_now();
+        assert_eq!(stamp.len(), 20, "unexpected shape: {stamp}");
+        assert!(stamp.ends_with('Z'), "unexpected shape: {stamp}");
+        assert!(stamp.starts_with("20"), "unexpected shape: {stamp}");
+    }
 
     #[test]
     fn parses_default_hotkey() {

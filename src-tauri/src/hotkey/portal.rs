@@ -1,3 +1,8 @@
+// A module declared inside a non-`mod.rs` file looks under `portal/`, and this
+// one sits beside `portal.rs` with the rest of the hotkey backend.
+#[path = "guidance.rs"]
+mod guidance;
+
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -87,11 +92,18 @@ pub async fn remap(app: &AppHandle, action: Action) -> Result<ShortcutList> {
     let answer = portal.armed.arm();
     if let Err(e) = portal.configure().await {
         portal.armed.disarm();
-        return Err(e);
+        return Err(configure_failed(&e));
     }
     let chosen = waited(answer, action).await?;
     binding::require_trigger(&chosen, action)?;
     Ok(chosen)
+}
+
+/// Puts the instruction in front of the reason, because the reason alone names a
+/// transport failure the user cannot act on while the instruction is the only step
+/// left. The reason is kept whole, so the diagnostics window still holds it.
+fn configure_failed(reason: &anyhow::Error) -> anyhow::Error {
+    anyhow!("{}: {reason:#}", guidance::configure_guidance())
 }
 
 async fn waited(answer: Receiver<ShortcutList>, action: Action) -> Result<ShortcutList> {
@@ -172,6 +184,24 @@ mod tests {
             RESPONSE_TIMEOUT >= Duration::from_secs(5),
             "a portal that opens a dialog in its own time still has to fit inside {}",
             RESPONSE_TIMEOUT.as_secs()
+        );
+    }
+
+    /// A call that never opened the desktop's dialog leaves the user with no
+    /// trigger and no button to press that would help, so the line has to open
+    /// with the guidance for this session. The reason follows it, because the
+    /// diagnostics window is where that detail is read.
+    #[test]
+    fn a_configure_failure_leads_with_this_session_guidance() {
+        let reason = "the desktop portal refused ConfigureShortcuts: Signature mismatch";
+        let refused = configure_failed(&anyhow!("{reason}")).to_string();
+        assert!(
+            refused.starts_with(&guidance::configure_guidance()),
+            "the guidance for this session is the whole first part: {refused}"
+        );
+        assert!(
+            refused.ends_with(&format!(": {reason}")),
+            "the reason is kept whole after the guidance: {refused}"
         );
     }
 }

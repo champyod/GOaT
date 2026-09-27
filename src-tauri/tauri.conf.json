@@ -16,11 +16,35 @@
         "width": 800,
         "height": 600,
         "transparent": true,
-        "decorations": false,
+        "decorations": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
         "focus": true
+      },
+      {
+        "label": "setup",
+        "title": "GOaT Setup",
+        "url": "/setup",
+        "width": 480,
+        "height": 560,
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "visible": false
+      },
+      {
+        "label": "errors",
+        "title": "GOaT Errors",
+        "url": "/errors",
+        "width": 520,
+        "height": 400,
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "visible": false
       }
     ],
     "security": {

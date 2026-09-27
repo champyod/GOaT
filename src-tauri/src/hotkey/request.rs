@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zbus::Connection;
-use zbus::zvariant::{OwnedObjectPath, Type};
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Type};
 
 use super::dbus::{NO_PARENT_WINDOW, Options, Reply, ShortcutList, options, shortcuts_proxy};
 use super::portal::RESPONSE_TIMEOUT;
@@ -81,16 +81,23 @@ pub async fn bind_shortcuts(
         .shortcuts()
 }
 
+/// ConfigureShortcuts is fire-and-forget: the spec gives it no out args, and the
+/// answer arrives as `ShortcutsChanged` on the session rather than as a reply on a
+/// Request. Predicting a Request path here would read the empty reply as an object
+/// path and report a signature mismatch the portal never produced, so the call is
+/// made on its own and only the transport result is reported.
 pub async fn configure_shortcuts(conn: &Connection, session: &OwnedObjectPath) -> Result<()> {
-    call_request(conn, "ConfigureShortcuts", |t| {
-        (
-            session.clone(),
-            NO_PARENT_WINDOW,
-            options(&[(HANDLE_TOKEN, t)]),
+    // The reply stays an opaque value, so no portal that answers with something
+    // unexpected can turn a call that worked into a signature mismatch here.
+    let _reply: OwnedValue = shortcuts_proxy(conn)
+        .await?
+        .call(
+            "ConfigureShortcuts",
+            &(session.clone(), NO_PARENT_WINDOW, options(&[])),
         )
-    })
-    .await
-    .map(|_| ())
+        .await
+        .map_err(|e| anyhow!("the desktop portal refused ConfigureShortcuts: {e}"))?;
+    Ok(())
 }
 
 /// The portal builds a Request object path as `/…/request/SENDER/TOKEN`, where
