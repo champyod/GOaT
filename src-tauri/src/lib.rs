@@ -17,6 +17,13 @@ pub(crate) const DEFAULT_SELECT_HOTKEY: &str = "Ctrl+Shift+E";
 /// from filling memory for the life of the process.
 const ERROR_LOG_CAP: usize = 100;
 
+/// The engine names a payload carries. The main window prints whichever one
+/// came back and reads the empty string as "no engine ran", so these three are
+/// the wire contract rather than labels that may be reworded.
+const OCR_ENGINE_PRIMARY: &str = "tract";
+const OCR_ENGINE_FALLBACK: &str = "tesseract";
+const OCR_ENGINE_NONE: &str = "";
+
 fn default_select_hotkey() -> String {
     DEFAULT_SELECT_HOTKEY.to_string()
 }
@@ -32,6 +39,9 @@ pub(crate) struct AppState {
     pub(crate) errors: Mutex<Vec<ErrorEntry>>,
 }
 
+/// A config file written by an older build carries keys this struct no longer
+/// has, and serde ignores a field it does not know rather than refusing the
+/// whole file, so removing one is not a reason to reset a user's shortcuts.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct UserConfig {
     hotkey: String,
@@ -292,8 +302,73 @@ fn show_setup(app: tauri::AppHandle) {
     show_bind_setup(&app);
 }
 
+/// What the desktop now holds for a login, and the place it keeps it. The
+/// window is handed the entry itself as well as the state, because a control
+/// that can only show a boolean looks exactly the same whether an entry was
+/// written or the call did nothing at all.
+#[derive(Clone, serde::Serialize)]
+struct AutostartState {
+    enabled: bool,
+    path: String,
+}
+
+/// The file `auto-launch` writes on Linux: `~/.config/autostart/{name}.desktop`.
+/// Both halves come from the sources the plugin takes them from — the home
+/// folder from the path resolver, which asks the same `dirs::home_dir()` the
+/// plugin does, and the name from the package info the plugin is handed — so a
+/// product name that changes moves this check along with it.
+#[cfg(target_os = "linux")]
+fn autostart_entry(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|e| format!("the home folder could not be located: {e}"))?;
+    Ok(home
+        .join(".config")
+        .join("autostart")
+        .join(format!("{}.desktop", app.package_info().name)))
+}
+
+/// A call the plugin reports as done but did not do is the whole reason this
+/// command checks, so the entry is read back off the disk before the new state
+/// leaves here. The other platforms register the entry under its name rather
+/// than keeping it in a file this app can point at, so the plugin's own answer
+/// is the best one available there.
+#[cfg(target_os = "linux")]
+fn verified_autostart(
+    app: &tauri::AppHandle,
+    _manager: &tauri_plugin_autostart::AutoLaunchManager,
+    enabled: bool,
+) -> Result<AutostartState, String> {
+    let entry = autostart_entry(app)?;
+    let path = entry.display().to_string();
+    if entry.exists() != enabled {
+        return Err(if enabled {
+            format!("the login entry was not written to {path}")
+        } else {
+            format!("the login entry was not removed from {path}")
+        });
+    }
+    Ok(AutostartState { enabled, path })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn verified_autostart(
+    app: &tauri::AppHandle,
+    manager: &tauri_plugin_autostart::AutoLaunchManager,
+    _enabled: bool,
+) -> Result<AutostartState, String> {
+    use tauri::Manager;
+    let enabled = manager.is_enabled().map_err(|e| e.to_string())?;
+    Ok(AutostartState {
+        enabled,
+        path: app.package_info().name.clone(),
+    })
+}
+
 #[tauri::command]
-fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<AutostartState, String> {
     use tauri_plugin_autostart::ManagerExt;
     let manager = app.autolaunch();
     if enabled {
@@ -301,7 +376,7 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     } else {
         manager.disable().map_err(|e| e.to_string())?;
     }
-    manager.is_enabled().map_err(|e| e.to_string())
+    verified_autostart(&app, &manager, enabled)
 }
 
 #[tauri::command]
@@ -344,59 +419,25 @@ async fn run_pipeline_with_image(
     *state.last_image.lock().map_err(|e| e.to_string())? = Some(image.clone());
     // Show the screenshot immediately; OCR/translate follow on the full image.
     let _ = app.emit("capture-image", &image);
-    let dynamic = image.to_dynamic_image()?;
-    let mut error = String::new();
-    let mut ocr_engine = String::new();
-    let ocr_text = {
-        let primary: Result<String, String> = {
-            let mut guard = state.ocr.lock().map_err(|e| e.to_string())?;
-            ensure_engine(app, &mut guard)
-                .and_then(|engine| models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}")))
-        };
-        match primary {
-            Ok(text) => {
-                ocr_engine = "tract".to_string();
-                text
+    let read = ocr_with_fallback(app, state, &image).await?;
+    let ocr_text = read.text;
+    let ocr_engine = read.engine;
+    let mut error = read.error;
+    let translated_text = match translate_if_any(app, &ocr_text) {
+        Ok(text) => text,
+        Err(reason) => {
+            if error.is_empty() {
+                report_error(app, "translate", &reason);
+                error = reason;
             }
-            Err(primary_err) => {
-                match models::run_ocr_fallback(app, &dynamic)
-                    .await
-                    .map_err(|e| format!("{e}"))
-                {
-                    Ok(text) => {
-                        ocr_engine = "tesseract".to_string();
-                        text
-                    }
-                    Err(fallback_err) => {
-                        let line =
-                            format!("{primary_err}; fallback OCR also failed: {fallback_err}");
-                        report_error(app, "ocr", &line);
-                        error = line;
-                        String::new()
-                    }
-                }
-            }
-        }
-    };
-    let translated_text = if ocr_text.trim().is_empty() {
-        String::new()
-    } else {
-        match models::run_translate(app, &ocr_text).map_err(|e| format!("{e}")) {
-            Ok(text) => text,
-            Err(e) => {
-                if error.is_empty() {
-                    report_error(app, "translate", &e);
-                    error = e;
-                }
-                String::new()
-            }
+            String::new()
         }
     };
     let payload = ResultPayload {
         image,
         ocr_text,
         translated_text,
-        ocr_engine,
+        ocr_engine: ocr_engine.to_string(),
         error,
     };
     let _ = app.emit("capture-result", &payload);
@@ -428,6 +469,66 @@ async fn capture_primary(
     state: tauri::State<'_, AppState>,
 ) -> Result<ResultPayload, String> {
     run_pipeline(&app, &state).await
+}
+
+/// What one read of a screenshot produced. `error` is empty unless neither
+/// engine could read the image, because a payload is published either way and a
+/// read that found nothing is a result the windows still have to show.
+struct OcrRead {
+    text: String,
+    engine: &'static str,
+    error: String,
+}
+
+/// Reads the image with the bundled engine and, when that fails for any reason,
+/// with the sidecar. The model lock is taken for the bundled run only and
+/// released before the sidecar starts, so a slow fallback cannot block the
+/// commands that wait on that lock.
+async fn ocr_with_fallback(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+    image: &capture::CapturedImage,
+) -> Result<OcrRead, String> {
+    let dynamic = image.to_dynamic_image()?;
+    let primary = state
+        .ocr
+        .lock()
+        .map_err(|e| e.to_string())
+        .and_then(|mut guard| {
+            ensure_engine(app, &mut guard)
+                .and_then(|engine| models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}")))
+        });
+    match primary {
+        Ok(text) => Ok(OcrRead {
+            text,
+            engine: OCR_ENGINE_PRIMARY,
+            error: String::new(),
+        }),
+        Err(primary_err) => match models::run_ocr_fallback(app, &dynamic)
+            .await
+            .map_err(|e| format!("{e}"))
+        {
+            Ok(text) => Ok(OcrRead {
+                text,
+                engine: OCR_ENGINE_FALLBACK,
+                error: String::new(),
+            }),
+            Err(fallback_err) => Ok(OcrRead {
+                text: String::new(),
+                engine: OCR_ENGINE_NONE,
+                error: format!("{primary_err}; fallback OCR also failed: {fallback_err}"),
+            }),
+        },
+    }
+}
+
+/// A blank read is not sent to the translator: there is nothing to translate,
+/// and a translation of nothing is not a result the user could act on.
+fn translate_if_any(app: &tauri::AppHandle, ocr_text: &str) -> Result<String, String> {
+    if ocr_text.trim().is_empty() {
+        return Ok(String::new());
+    }
+    models::run_translate(app, ocr_text).map_err(|e| format!("{e}"))
 }
 
 #[cfg(desktop)]
@@ -552,28 +653,50 @@ fn get_hotkey(state: tauri::State<'_, AppState>) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Binds one trigger, records it and persists the block, so a capture and a
+/// region trigger are set by the same steps in the same order.
 #[tauri::command]
 async fn set_hotkey(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     hotkey: String,
 ) -> Result<String, String> {
-    let previous = hotkey::lock(&state.hotkey).clone();
-    remap_trigger(&app, hotkey::Action::Capture, &previous, &hotkey).await?;
-    // A backend that fires only the trigger its own dialog produced keeps the
-    // one it already holds, so the field never reports a shortcut that no
-    // trigger is bound to.
-    if !hotkey::binds_typed_trigger(&app) {
-        return Ok(previous);
-    }
-    *hotkey::lock(&state.hotkey) = hotkey.clone();
-    persist(&app, &state)?;
-    Ok(hotkey)
+    set_trigger(&app, &state, hotkey::Action::Capture, hotkey).await
 }
 
-/// A trigger that cannot be reconfigured is recorded before its reason reaches
-/// the window that asked for it, so the log holds the failure even when that
-/// window has been closed since.
+/// Binds one trigger. A backend that fires only the trigger its own dialog
+/// produced keeps the one it already holds, so the field never reports a
+/// shortcut that no trigger is bound to.
+async fn set_trigger(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+    action: hotkey::Action,
+    next: String,
+) -> Result<String, String> {
+    let cell = trigger_cell(state, action);
+    let previous = hotkey::lock(cell).clone();
+    remap_trigger(app, action, &previous, &next).await?;
+    if !hotkey::binds_typed_trigger(app) {
+        return Ok(previous);
+    }
+    *hotkey::lock(cell) = next.clone();
+    persist(app, state)?;
+    Ok(next)
+}
+
+/// The state cell holding the trigger this action fires on, so a key press and a
+/// remap read and write one source for it.
+fn trigger_cell(state: &AppState, action: hotkey::Action) -> &std::sync::Mutex<String> {
+    match action {
+        hotkey::Action::Capture => &state.hotkey,
+        hotkey::Action::ScreenSelect => &state.select_hotkey,
+    }
+}
+
+/// A trigger that cannot be reconfigured is reported to the window that asked
+/// for it, which is open on screen and shows the reason on its own status line.
+/// Only a failure the user did not cause on purpose reaches the diagnostics log,
+/// so binding a shortcut never pulls the errors window up over this one.
 async fn remap_trigger(
     app: &tauri::AppHandle,
     action: hotkey::Action,
@@ -582,11 +705,7 @@ async fn remap_trigger(
 ) -> Result<(), String> {
     hotkey::remap(app, action, previous, next)
         .await
-        .map_err(|e| {
-            let message = format!("{e:#}");
-            report_error(app, "hotkey", &message);
-            message
-        })
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -604,14 +723,7 @@ async fn set_select_hotkey(
     state: tauri::State<'_, AppState>,
     hotkey: String,
 ) -> Result<String, String> {
-    let previous = hotkey::lock(&state.select_hotkey).clone();
-    remap_trigger(&app, hotkey::Action::ScreenSelect, &previous, &hotkey).await?;
-    if !hotkey::binds_typed_trigger(&app) {
-        return Ok(previous);
-    }
-    *hotkey::lock(&state.select_hotkey) = hotkey.clone();
-    persist(&app, &state)?;
-    Ok(hotkey)
+    set_trigger(&app, &state, hotkey::Action::ScreenSelect, hotkey).await
 }
 
 #[tauri::command]
