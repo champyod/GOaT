@@ -309,11 +309,28 @@ fn show_setup(app: tauri::AppHandle) {
 /// What the desktop now holds for a login, and the place it keeps it. The
 /// window is handed the entry itself as well as the state, because a control
 /// that can only show a boolean looks exactly the same whether an entry was
-/// written or the call did nothing at all.
+/// written or the call did nothing at all. `is_dev` says whether this build is
+/// one that refuses to write an entry at all, so a switch can be off for a
+/// reason rather than for a state.
 #[derive(Clone, serde::Serialize)]
 struct AutostartState {
     enabled: bool,
     path: String,
+    is_dev: bool,
+}
+
+/// Why a build that is not a release may not touch the login entry, or `None`
+/// when it may. The entry is written into the user's own autostart folder and
+/// read at every login, so a dev binary started from a checkout would leave
+/// behind an entry that launches a path nobody will ever build again — a stale
+/// GOaT at every login, with nothing in the app that could explain or remove it.
+/// Refusing is the cheap direction to be wrong in: what it costs is the setting
+/// in a dev build, which is where the setting is not wanted anyway.
+fn autostart_refusal(is_dev: bool) -> Option<String> {
+    if !is_dev {
+        return None;
+    }
+    Some("this is a development build, so it will not add itself to your login items".to_string())
 }
 
 /// The file `auto-launch` writes on Linux: `~/.config/autostart/{name}.desktop`.
@@ -354,7 +371,11 @@ fn verified_autostart(
             format!("the login entry was not removed from {path}")
         });
     }
-    Ok(AutostartState { enabled, path })
+    Ok(AutostartState {
+        enabled,
+        path,
+        is_dev: tauri::is_dev(),
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -368,11 +389,15 @@ fn verified_autostart(
     Ok(AutostartState {
         enabled,
         path: app.package_info().name.clone(),
+        is_dev: tauri::is_dev(),
     })
 }
 
 #[tauri::command]
 fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<AutostartState, String> {
+    if let Some(refused) = autostart_refusal(tauri::is_dev()) {
+        return Err(refused);
+    }
     use tauri_plugin_autostart::ManagerExt;
     let manager = app.autolaunch();
     if enabled {
@@ -862,6 +887,10 @@ pub fn run() {
             appearance::set_appearance,
             appearance::set_window_size,
             hotkey::hotkey_status,
+            // The guidance for a desktop with no shortcut dialog belongs to the
+            // portal session that has none, and no other platform runs one.
+            #[cfg(target_os = "linux")]
+            hotkey::configure_guidance_text,
             list_errors,
             clear_errors,
             report_frontend_error
@@ -901,6 +930,32 @@ mod tests {
         push_error(&mut log, entry("second"));
         push_error(&mut log, entry("first"));
         assert_eq!(log.len(), 3);
+    }
+
+    /// A dev binary that wrote a login entry would leave a stale GOaT at every
+    /// login, pointing at a build directory nobody publishes, so the write is
+    /// refused before it reaches the plugin. This build is the one the refusal
+    /// is defined against, and the test says so rather than assuming it.
+    #[test]
+    fn a_development_build_never_writes_a_login_entry() {
+        let refused = autostart_refusal(tauri::is_dev())
+            .expect("this build is not a release, so it must not write an entry");
+        assert!(
+            refused.contains("development build"),
+            "the refusal names what it is refusing for: {refused}"
+        );
+    }
+
+    /// The other branch is the one a packaged build lives in, and it is pinned
+    /// here rather than left to the build it happens to be compiled under — a
+    /// guard that refuses everywhere would cost a real user the setting, and one
+    /// that refuses nowhere would cost them a stale login entry.
+    #[test]
+    fn only_a_development_build_is_refused() {
+        assert!(
+            autostart_refusal(false).is_none(),
+            "a packaged build is the one that owns the login entry"
+        );
     }
 
     #[test]

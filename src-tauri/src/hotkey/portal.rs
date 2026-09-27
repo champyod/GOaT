@@ -1,5 +1,9 @@
 // A module declared inside a non-`mod.rs` file looks under `portal/`, and this
-// one sits beside `portal.rs` with the rest of the hotkey backend.
+// one sits beside `portal.rs` with the rest of the hotkey backend. The version
+// probe and the gate that reads it sit in the first of these two for the same
+// reason guidance does: both are decided before a call is made, not during one.
+#[path = "configure.rs"]
+mod configure;
 #[path = "guidance.rs"]
 mod guidance;
 
@@ -45,17 +49,22 @@ pub(super) const DIALOG_OPENED: &str = "hotkey-dialog-opened";
 /// What the portal reported for one binding round, as shown to the user. The two
 /// triggers come out of the same reply as the line, because the keys the portal
 /// will fire are the ones it reported and no stored shortcut can name them.
+/// Whether a dialog can be opened is `None` only when no portal ever reported:
+/// a session that started has one, and a session that failed to start has no
+/// answer rather than a "no".
 pub struct BindingReport {
     pub detail: String,
     pub warning: String,
     pub capture_trigger: Option<String>,
     pub select_trigger: Option<String>,
+    pub configure_supported: Option<bool>,
 }
 
 pub struct Portal {
     conn: Connection,
     session: OwnedObjectPath,
     armed: Arc<Armed>,
+    supports_configure: bool,
 }
 
 impl Clone for Portal {
@@ -64,6 +73,7 @@ impl Clone for Portal {
             conn: self.conn.clone(),
             session: self.session.clone(),
             armed: Arc::clone(&self.armed),
+            supports_configure: self.supports_configure,
         }
     }
 }
@@ -77,10 +87,12 @@ pub async fn start(app: &AppHandle) -> Result<(Portal, BindingReport)> {
         .await
         .map_err(|e| anyhow!("cannot reach the session bus: {e}"))?;
     let session = request::create_session(&conn).await?;
+    let configure_supported = configure::supports(dbus::interface_version(&conn).await);
     let portal = Portal {
         conn: conn.clone(),
         session,
         armed: Arc::new(Armed::new()),
+        supports_configure: configure_supported,
     };
     let bound = request::bind_shortcuts(&conn, &portal.session, binding::requested()).await?;
     // A session may only bind once, so the report is computed from this reply
@@ -90,6 +102,7 @@ pub async fn start(app: &AppHandle) -> Result<(Portal, BindingReport)> {
         warning: binding::binding_warning(&bound),
         capture_trigger: binding::trigger_for(&bound, binding::CAPTURE_ID),
         select_trigger: binding::trigger_for(&bound, binding::SELECT_ID),
+        configure_supported: Some(configure_supported),
     };
     watch(portal.clone(), app.clone());
     app.manage(portal.clone());
@@ -102,10 +115,14 @@ pub async fn remap(app: &AppHandle, action: Action) -> Result<ShortcutList> {
     let portal = app.try_state::<Portal>().ok_or_else(|| {
         anyhow!("the desktop shortcut portal is not ready yet; try again in a moment")
     })?;
+    // A portal below the version that added the dialog has none to open, so the
+    // call is not made at all: the guidance is the whole answer, and it is where
+    // a trigger can still be bound on a desktop with no dialog.
+    configure::can_configure(portal.supports_configure())?;
     let answer = portal.armed.arm();
     if let Err(e) = portal.configure().await {
         portal.armed.disarm();
-        return Err(configure_failed(&e));
+        return Err(configure::configure_failed(&e));
     }
     let _ = app.emit(DIALOG_OPENED, binding::id_for(action));
     let chosen = waited(answer, action).await?;
@@ -113,11 +130,12 @@ pub async fn remap(app: &AppHandle, action: Action) -> Result<ShortcutList> {
     Ok(chosen)
 }
 
-/// Puts the instruction in front of the reason, because the reason alone names a
-/// transport failure the user cannot act on while the instruction is the only step
-/// left. The reason is kept whole, so the diagnostics window still holds it.
-fn configure_failed(reason: &anyhow::Error) -> anyhow::Error {
-    anyhow!("{}: {reason:#}", guidance::configure_guidance())
+/// The guidance for this desktop, for a window that has to say it up front. A
+/// Choose button on a portal with no dialog is disabled and cannot produce the
+/// message a failed bind would have produced, so the same line is asked for on
+/// its own.
+pub(super) fn guidance_text() -> String {
+    configure::no_dialog_guidance()
 }
 
 async fn waited(answer: Receiver<ShortcutList>, action: Action) -> Result<ShortcutList> {
@@ -141,6 +159,14 @@ fn watch(portal: Portal, app: AppHandle) {
 }
 
 impl Portal {
+    /// Whether this session's portal has a dialog to open. Read off the session
+    /// rather than off the status line, so a remap decides from the portal it
+    /// is about to call and never from a line that may not have been published
+    /// yet.
+    pub(super) fn supports_configure(&self) -> bool {
+        self.supports_configure
+    }
+
     async fn configure(&self) -> Result<()> {
         request::configure_shortcuts(&self.conn, &self.session).await
     }
@@ -198,24 +224,6 @@ mod tests {
             RESPONSE_TIMEOUT >= Duration::from_secs(5),
             "a portal that opens a dialog in its own time still has to fit inside {}",
             RESPONSE_TIMEOUT.as_secs()
-        );
-    }
-
-    /// A call that never opened the desktop's dialog leaves the user with no
-    /// trigger and no button to press that would help, so the line has to open
-    /// with the guidance for this session. The reason follows it, because the
-    /// diagnostics window is where that detail is read.
-    #[test]
-    fn a_configure_failure_leads_with_this_session_guidance() {
-        let reason = "the desktop portal refused ConfigureShortcuts: Signature mismatch";
-        let refused = configure_failed(&anyhow!("{reason}")).to_string();
-        assert!(
-            refused.starts_with(&guidance::configure_guidance()),
-            "the guidance for this session is the whole first part: {refused}"
-        );
-        assert!(
-            refused.ends_with(&format!(": {reason}")),
-            "the reason is kept whole after the guidance: {refused}"
         );
     }
 }

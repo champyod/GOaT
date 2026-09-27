@@ -81,6 +81,9 @@ mod tests {
     use zbus::Message;
 
     const TRIGGER: &str = "Ctrl+Shift+S";
+    /// A portal that has a dialog to open, which is the session these tests are
+    /// about: every list below arrives from a portal that can be reconfigured.
+    const DIALOG: Option<bool> = Some(true);
     const TIMED_OUT: &str = "no trigger was chosen for \"goat_capture\" within two minutes";
     const SUPERSEDED: &str =
         "the request to choose a trigger for \"goat_capture\" was replaced by a newer one";
@@ -111,7 +114,7 @@ mod tests {
         let read: Read = Arc::new(Mutex::new(Vec::new()));
         let logged = Arc::clone(&read);
         let record = move |list: &ShortcutList| {
-            let status = binding::portal_status(list);
+            let status = binding::portal_status(list, DIALOG);
             logged
                 .lock()
                 .expect("the test lock is not poisoned")

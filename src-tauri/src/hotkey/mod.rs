@@ -133,6 +133,17 @@ pub fn hotkey_status(state: tauri::State<'_, AppState>) -> HotkeyStatus {
     with_stored_triggers(&state, recorded)
 }
 
+/// The guidance for a desktop that has no shortcut dialog, for a window that has
+/// to say so before the user presses anything. A disabled Choose button cannot
+/// produce the message a refused bind would have produced, so the line a bind
+/// failure leads with is asked for on its own. It is asked for by a session that
+/// runs the portal and nowhere else, so no other platform carries the command.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn configure_guidance_text() -> String {
+    portal::guidance_text()
+}
+
 /// A window-system session registers the shortcut it is given, so the managed
 /// values are the bound ones and outrank whatever the recorded line was built
 /// with — it is written before the config has been read and would otherwise
@@ -171,10 +182,16 @@ fn publish(app: &AppHandle, status: &HotkeyStatus) {
 
 /// Records the triggers the portal now holds. The whole status line is read out
 /// of that list, because a reconfigure can bind the shortcut the user edited and
-/// still leave the other one without a trigger.
+/// still leave the other one without a trigger. Whether this session's portal has
+/// a dialog to open is read off the session itself, so the answer is the same one
+/// a remap would be given — and a line rebuilt before the session exists carries
+/// no answer at all rather than one nobody has given.
 #[cfg(target_os = "linux")]
 fn record_triggers(app: &AppHandle, bound: &dbus::ShortcutList) {
-    publish(app, &binding::portal_status(bound));
+    let configure = app
+        .try_state::<portal::Portal>()
+        .map(|portal| portal.supports_configure());
+    publish(app, &binding::portal_status(bound, configure));
 }
 
 fn seed_state(app: &AppHandle) -> (String, String) {
@@ -244,6 +261,7 @@ async fn start_portal(app: &AppHandle) {
             warning: format!("Global hotkeys are unavailable: {e:#}"),
             capture_trigger: None,
             select_trigger: None,
+            configure_supported: None,
         },
     };
     let line = HotkeyStatus {
@@ -258,6 +276,10 @@ async fn start_portal(app: &AppHandle) {
         warning: report.warning,
         capture_trigger: report.capture_trigger,
         select_trigger: report.select_trigger,
+        // A session that never started has no portal to have answered, so the
+        // window is told nothing was answered rather than told no: the warning
+        // above already names the failure, and a bind will refuse on its own.
+        configure_supported: report.configure_supported,
     };
     publish(app, &line);
     notice::startup_notice(app, PORTAL_NOTICE, &line.warning);

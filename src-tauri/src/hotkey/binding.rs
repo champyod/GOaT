@@ -60,8 +60,11 @@ pub fn describe(bound: &ShortcutList) -> String {
 /// there is no earlier verdict left to keep and a shortcut the portal still has
 /// no trigger for stays in the warning. The two triggers are read out of the list
 /// as well, because the portal fires the keys its own dialog produced and the
-/// stored shortcut names none of them.
-pub fn portal_status(bound: &ShortcutList) -> HotkeyStatus {
+/// stored shortcut names none of them. Whether a dialog can be opened at all is
+/// the session's own answer rather than the reply's, so it is handed in as it
+/// stands — `None` included, because a session that has not reported is not a
+/// session that has answered no.
+pub fn portal_status(bound: &ShortcutList, configure_supported: Option<bool>) -> HotkeyStatus {
     HotkeyStatus {
         backend: Backend::Portal,
         detail: format!(
@@ -72,6 +75,7 @@ pub fn portal_status(bound: &ShortcutList) -> HotkeyStatus {
         warning: binding_warning(bound),
         capture_trigger: trigger_for(bound, CAPTURE_ID),
         select_trigger: trigger_for(bound, SELECT_ID),
+        configure_supported,
     }
 }
 
@@ -136,6 +140,9 @@ mod tests {
     const CAPTURE_TRIGGER: &str = "Ctrl+Shift+S";
     const SELECT_TRIGGER: &str = "Ctrl+Shift+E";
     const BOTH_TRIGGERS: &str = "Desktop portal triggers: Ctrl+Shift+S, Ctrl+Shift+E.";
+    /// A portal that implements the version with the dialog in it, which is the
+    /// session every other test here describes.
+    const DIALOG: Option<bool> = Some(true);
 
     /// The portal publishes the list on a `ShortcutsChanged` signal, so the test
     /// doubles travel as that signal and come back out of the body a real one does.
@@ -218,7 +225,7 @@ mod tests {
             (SELECT_ID, with_trigger("")),
         ]);
         require_trigger(&bound, Action::Capture).expect("the trigger the user just chose is bound");
-        let status = portal_status(&bound);
+        let status = portal_status(&bound, DIALOG);
         assert_names_only(&status.warning, &[SELECT_ID]);
         assert_eq!(status.capture_trigger.as_deref(), Some(CAPTURE_TRIGGER));
         assert_eq!(
@@ -269,7 +276,7 @@ mod tests {
     /// told the trigger that is actually held, under its own shortcut's name.
     #[test]
     fn the_status_line_names_the_trigger_under_its_own_shortcut() {
-        let status = portal_status(&both_bound());
+        let status = portal_status(&both_bound(), DIALOG);
         assert_eq!(status.capture_trigger.as_deref(), Some(CAPTURE_TRIGGER));
         assert_eq!(status.select_trigger.as_deref(), Some(SELECT_TRIGGER));
     }
@@ -282,7 +289,7 @@ mod tests {
             (CAPTURE_ID, with_trigger(CAPTURE_TRIGGER)),
             (SELECT_ID, with_trigger("")),
         ]);
-        let status = portal_status(&bound);
+        let status = portal_status(&bound, DIALOG);
         assert_eq!(status.capture_trigger.as_deref(), Some(CAPTURE_TRIGGER));
         assert_eq!(status.select_trigger, None);
     }
@@ -292,8 +299,25 @@ mod tests {
     /// rather than as the shortcut the app asked for.
     #[test]
     fn the_status_line_reports_no_trigger_for_a_reply_without_one() {
-        let status = portal_status(&ShortcutList::new());
+        let status = portal_status(&ShortcutList::new(), DIALOG);
         assert_eq!(status.capture_trigger, None);
         assert_eq!(status.select_trigger, None);
+    }
+
+    /// The session's own verdict about a dialog survives every rebuild of the
+    /// line, in all three of its states. A list published by the desktop's own
+    /// settings, with no remap waiting for it, is a second chance to report a
+    /// portal with no dialog as one that has a dialog — and to report one that
+    /// never answered as one that did — and either would leave the button on a
+    /// session where pressing it can only be refused.
+    #[test]
+    fn the_status_line_keeps_the_sessions_own_dialog_verdict() {
+        for verdict in [Some(true), Some(false), None] {
+            assert_eq!(
+                portal_status(&both_bound(), verdict).configure_supported,
+                verdict,
+                "a reply that changes nothing cannot change what the session can open"
+            );
+        }
     }
 }

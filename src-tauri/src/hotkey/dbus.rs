@@ -9,6 +9,13 @@ pub const PORTAL_BUS: &str = "org.freedesktop.portal.Desktop";
 pub const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 pub const SHORTCUTS_INTERFACE: &str = "org.freedesktop.portal.GlobalShortcuts";
 
+/// The property that names the version of the interface a portal implements.
+pub const VERSION_PROPERTY: &str = "version";
+
+/// What a portal that answers nothing at all is read as. Version 0 predates
+/// every version of the interface, so it has none of what came later.
+const NO_VERSION: u32 = 0;
+
 /// The portal can only parent a dialog to a window it can name, which on X11
 /// means a window id. A Wayland surface handle needs xdg-foreign, which this
 /// app never negotiates, and the spec reads an empty string as "no parent".
@@ -71,6 +78,25 @@ pub async fn shortcuts_proxy(conn: &Connection) -> Result<Proxy<'static>> {
     Proxy::new(conn, PORTAL_BUS, PORTAL_PATH, SHORTCUTS_INTERFACE)
         .await
         .map_err(|e| anyhow!("{SHORTCUTS_INTERFACE} is not available on this bus: {e}"))
+}
+
+/// The version of the interface the portal implements, which is the only way to
+/// find out whether it can be asked for anything: `ConfigureShortcuts` and the
+/// property that names it arrived together, and a portal below that version
+/// answers a call for the dialog with a refusal.
+///
+/// A portal that publishes no version, and a bus that refuses the question, are
+/// both read as version 0 rather than as a failure. The property is how the
+/// caller finds out what this portal supports, so a portal that does not answer
+/// that question has answered it.
+pub async fn interface_version(conn: &Connection) -> u32 {
+    match shortcuts_proxy(conn).await {
+        Ok(proxy) => proxy
+            .get_property::<u32>(VERSION_PROPERTY)
+            .await
+            .unwrap_or(NO_VERSION),
+        Err(_) => NO_VERSION,
+    }
 }
 
 pub fn decode_shortcuts_changed(message: &Message) -> Result<(OwnedObjectPath, ShortcutList)> {

@@ -35,6 +35,11 @@ pub struct HotkeyStatus {
     pub warning: String,
     pub capture_trigger: Option<String>,
     pub select_trigger: Option<String>,
+    /// Whether this backend can open a desktop shortcut dialog. `None` is not a
+    /// "no": it is a portal session that has not reported yet, and a window that
+    /// read it as one would switch its button off and show guidance about a
+    /// dialog the desktop may well have.
+    pub configure_supported: Option<bool>,
 }
 
 impl HotkeyStatus {
@@ -54,6 +59,22 @@ pub fn initial() -> HotkeyStatus {
         warning: String::new(),
         capture_trigger: known_trigger(backend, Action::Capture),
         select_trigger: known_trigger(backend, Action::ScreenSelect),
+        configure_supported: configures_dialog(backend),
+    }
+}
+
+/// What a backend can be asked to open before its own session has reported back.
+/// A window system binds the shortcut it is given and has no dialog to press, so
+/// it can always be asked. A portal session is answered by the portal's own
+/// dialog, which it may not have, and nothing is claimed for it until that portal
+/// says which version of the interface it implements — the line is written before
+/// that answer exists, so it crosses as "not yet known" rather than as a "no"
+/// that would switch a window's button off on a desktop that has the dialog.
+fn configures_dialog(backend: Backend) -> Option<bool> {
+    match backend {
+        Backend::System => Some(true),
+        #[cfg(target_os = "linux")]
+        Backend::Portal => None,
     }
 }
 
@@ -104,6 +125,7 @@ mod tests {
             warning: String::new(),
             capture_trigger: None,
             select_trigger: None,
+            configure_supported: None,
         }
     }
 
@@ -149,5 +171,49 @@ mod tests {
             serde_json::to_value(without_triggers(Backend::System)).expect("the line serialises");
         assert_eq!(json["capture_trigger"], serde_json::Value::Null);
         assert_eq!(json["select_trigger"], serde_json::Value::Null);
+    }
+
+    /// A window that has to disable a button has to be able to read the verdict
+    /// out of the line, so the flag is a field of its own rather than something
+    /// the window has to infer from the backend and the detail. All three states
+    /// are pinned here because the window acts on each of them: a "no" switches
+    /// the button off, and an unknown must arrive as something it can tell from
+    /// a "no" — a false written for it would look like a desktop with no dialog.
+    #[test]
+    fn the_dialog_verdict_crosses_the_bridge_as_itself() {
+        let line = |verdict: Option<bool>| {
+            serde_json::to_value(HotkeyStatus {
+                configure_supported: verdict,
+                ..without_triggers(Backend::System)
+            })
+            .expect("the line serialises")
+        };
+        assert_eq!(line(None)["configure_supported"], serde_json::Value::Null);
+        assert_eq!(
+            line(Some(true))["configure_supported"],
+            serde_json::Value::Bool(true)
+        );
+        assert_eq!(
+            line(Some(false))["configure_supported"],
+            serde_json::Value::Bool(false)
+        );
+    }
+
+    /// A window system binds the shortcut it is given and never asks a desktop
+    /// for a dialog, so nothing about it can leave a button without a way to
+    /// choose a trigger.
+    #[test]
+    fn a_window_system_session_can_always_open_a_dialog() {
+        assert_eq!(configures_dialog(Backend::System), Some(true));
+    }
+
+    /// A portal session has no answer before that portal has named the version of
+    /// its interface, and the line the window reads is written before it does.
+    /// Claiming a "no" there would put a desktop that does have a dialog behind a
+    /// disabled button, so the answer is withheld instead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_portal_session_claims_nothing_before_the_portal_answers() {
+        assert_eq!(configures_dialog(Backend::Portal), None);
     }
 }
