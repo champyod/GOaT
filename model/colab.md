@@ -134,6 +134,16 @@ Notes:
 - `HF_HOME` on Drive — model weights (re-download on first use).
 - `~/.paddlex/` — PP-OCRv5 weights (~20 MB total: 4.7 MB det + ~8–16 MB rec).
 
+## In-VM watcher (vm_watch.sh)
+Watches a worker log from inside the VM (plain tail/curl — no Jupyter kernels spawned) and posts to Discord on errors, 30-min silence, and DONE:
+```bash
+bash GOaT/tools/vm_watch.sh --log /content/worker_a.log --tag goat-A --done /content/worker_a.DONE &
+```
+Needs `/content/.discord_wh` on the VM (one line: webhook URL — transferred directly, never committed). Mirror the worker log to Drive alongside it so it survives the VM:
+```bash
+while true; do cp /content/worker_a.log /content/drive/MyDrive/GOaT/logs/worker_a.log; sleep 300; done &
+```
+
 ## Sync-watch (Pi operator)
 One process pulls the VM log and watches it — no separate sync step:
 ```bash
