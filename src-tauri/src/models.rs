@@ -9,7 +9,7 @@ pub const MODELS_DIR: &str = "../models";
 pub const OCR_DETECTION_MODEL: &str = "ppocrv5_mobile_det.onnx";
 pub const OCR_RECOGNITION_MODEL: &str = "ppocrv5_mobile_rec.onnx";
 pub const OCR_KEYS_FILE: &str = "ppocr_keys.txt";
-pub const NLLB_MODEL_DIR: &str = "nllb-200-distilled-600M";
+pub const NLLB_MODEL_DIR: &str = "nllb-200-distilled-1.3B-ct2-int8";
 
 // Placeholder NLLB target language code (Flores-200 code).
 pub const TRANSLATE_TARGET_LANG: &str = "tha_Thai";
