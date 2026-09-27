@@ -177,7 +177,7 @@ def run_ocr_finetune(
             result_path,
             {
                 "selected": selected_model,
-                "skipped": "only ThaiTrOCR is fine-tuned (standalone or hybrid half); PP-OCRv5-mobile stays frozen",
+                "skipped": "only ThaiTrOCR is fine-tuned (standalone or hybrid half); PP-OCRv5-mobile and Tesseract stay frozen",
             },
         )
         _info("ocr-train", "no fine-tune needed - stays frozen", selected=selected_model)

@@ -53,12 +53,13 @@ SEED = 42
 # ---------------------------------------------------------------------------
 # OCR
 # ---------------------------------------------------------------------------
-OCR_MODELS = ("PP-OCRv5-mobile", "ThaiTrOCR", "PPDet-ThaiTrOCR")
+OCR_MODELS = ("PP-OCRv5-mobile", "ThaiTrOCR", "PPDet-ThaiTrOCR", "Tesseract")
 OCR_DATASETS = ("thaiocrbench", "thai-ocr-evaluation")
 
 # Per-model input resolution (bilinear resize before inference). The hybrid
 # runs detection at 512px; its crops reach ThaiTrOCR at native resolution.
-OCR_IMG_SIZE = {"PP-OCRv5-mobile": 512, "ThaiTrOCR": 384, "PPDet-ThaiTrOCR": 512}
+# Tesseract segments full pages itself, so None skips the resize entirely.
+OCR_IMG_SIZE = {"PP-OCRv5-mobile": 512, "ThaiTrOCR": 384, "PPDet-ThaiTrOCR": 512, "Tesseract": None}
 
 # Hardware budget for the selection experiments.
 OCR_HW_CORES = 4

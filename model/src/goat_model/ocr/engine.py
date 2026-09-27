@@ -231,10 +231,84 @@ class HybridLineOCR(OCRBackend):
         return OCRResult(text="\n".join(lines), latency_ms=(time.perf_counter() - start) * 1000.0)
 
 
+def _is_thai(ch: str) -> bool:
+    return "\u0e00" <= ch <= "\u0e7f"  # Thai block
+
+
+def join_thai_spaces(text: str) -> str:
+    """Drop spaces sitting between two Thai-block characters.
+
+    Port of the sidecar-ocr `join_thai_spaces`: Tesseract separates Thai
+    glyphs with spaces, but Thai runs without inter-word spaces, so those
+    are noise. Spaces touching Latin, digits or punctuation are kept.
+    """
+    chars = list(text)
+    return "".join(
+        ch
+        for i, ch in enumerate(chars)
+        if ch != " "
+        or i == 0
+        or i == len(chars) - 1
+        or not (_is_thai(chars[i - 1]) and _is_thai(chars[i + 1]))
+    )
+
+
+class TesseractOCR(OCRBackend):
+    """System `tesseract` CLI (eng+tha, PSM 11): the desktop fallback, raced as-is.
+
+    CPU-only; never trained (legacy tesstrain pipeline, not worth its cost
+    for a fallback). stdlib subprocess only: no Python wrapper dependency,
+    same binary the Rust sidecar shells out to.
+    """
+
+    name = "Tesseract"
+    lang = "eng+tha"
+    psm = "11"  # sparse text: screenshots are scattered fragments, not pages
+
+    def __init__(self, device: str = "cpu", seed: int = SEED, runner=None) -> None:
+        self.device = device
+        self.seed = seed
+        self._runner = runner
+
+    def _run_cli(self, path: str) -> str:
+        import subprocess
+
+        proc = subprocess.run(
+            ["tesseract", path, "stdout", "-l", self.lang, "--psm", self.psm],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,  # returncode handled below to include stderr
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"tesseract failed: {proc.stderr.strip()[:200]}")
+        return proc.stdout
+
+    def recognize(self, image: np.ndarray) -> OCRResult:
+        import tempfile
+        import time
+
+        import cv2
+
+        runner = self._runner or self._run_cli
+        start = time.perf_counter()
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
+                cv2.imwrite(tmp.name, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+                text = runner(tmp.name)
+        except FileNotFoundError as err:
+            raise RuntimeError(
+                "tesseract binary not found — `apt install tesseract-ocr tesseract-ocr-tha`"
+            ) from err
+        lines = [join_thai_spaces(ln).rstrip() for ln in text.strip().splitlines()]
+        return OCRResult(text="\n".join(lines), latency_ms=(time.perf_counter() - start) * 1000.0)
+
+
 BACKENDS = {
     "PP-OCRv5-mobile": PaddleOCRv5,
     "ThaiTrOCR": ThaiTrOCR,
     HybridLineOCR.name: HybridLineOCR,
+    TesseractOCR.name: TesseractOCR,
 }
 
 
