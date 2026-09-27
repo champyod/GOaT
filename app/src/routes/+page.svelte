@@ -20,7 +20,11 @@
   const BAR_WIDTH = 300;
   const BAR_HEIGHT = 48;
   const BAR_TOP_OFFSET = 28;
-  const MENU_HEIGHT = 320;
+  /// The panel is drawn inside the window this height opens to, and anything
+  /// below the bottom edge of it is off the window rather than scrollable, so
+  /// this has to cover the settings, the triggers and the appearance section
+  /// together.
+  const MENU_HEIGHT = 380;
   const BODY_WIDTH = 800;
   const BODY_HEIGHT = 600;
   const NOT_BOUND = 'Not bound';
@@ -28,6 +32,36 @@
   const REGION_TRIGGER_TITLE = 'Save region trigger';
   const CHOOSE_CAPTURE_TITLE = 'Choose capture trigger';
   const CHOOSE_REGION_TITLE = 'Choose region trigger';
+  const APPEARANCE_BLUR_MAX = 30;
+  const APPEARANCE_TINT_MAX = 100;
+  const HEX_COLOR = /^#[\da-f]{6}$/i;
+
+  /// The look the window draws before the stored appearance answers, and the one
+  /// it keeps if the answer never comes: the same three values the stylesheet's
+  /// own fallbacks hold, so neither a slow load nor a failed one is something
+  /// the user sees. `FALLBACK_ACCENT` is only the colour the picker opens on —
+  /// System is the accent actually in force while `accent` is null.
+  const FALLBACK_BLUR_PX = 24;
+  const FALLBACK_TINT_PERCENT = 35;
+  const FALLBACK_ACCENT = '#3f7fd4';
+
+  type AppearanceTheme = 'system' | 'dark' | 'light';
+
+  type Appearance = {
+    accent: string | null;
+    blur_px: number;
+    tint_opacity: number;
+    theme: AppearanceTheme;
+  };
+
+  const ACCENT_PRESETS: { name: string; value: string }[] = [
+    { name: 'Blue', value: '#3f7fd4' },
+    { name: 'Green', value: '#2f9e6e' },
+    { name: 'Amber', value: '#c9822f' },
+    { name: 'Red', value: '#c0503f' },
+    { name: 'Violet', value: '#8a5ad0' },
+  ];
+
   const STARTS_AT_LOGIN = 'Starts at login';
   const WONT_START_AT_LOGIN = "Won't start at login";
   const LOGIN_UNCHANGED = 'Login setting unchanged';
@@ -94,6 +128,10 @@
   let hasImage = $state(false);
   let monitors = $state<MonitorInfo[]>([]);
   let monitor = $state(0);
+  let accent = $state<string | null>(null);
+  let blurPx = $state(FALLBACK_BLUR_PX);
+  let tintOpacity = $state(FALLBACK_TINT_PERCENT);
+  let theme = $state<AppearanceTheme>('system');
   let selecting = $state(false);
   let screenMode = $state(false);
   let menuOpen = $state(false);
@@ -309,6 +347,12 @@
       .catch((e) => {
         reportError('hotkey', String(e));
       });
+    void subscribe<Appearance>('appearance-changed', applyAppearance);
+    invoke<Appearance>('get_appearance')
+      .then(applyAppearance)
+      .catch((e: unknown) => {
+        reportError('appearance', String(e));
+      });
     return () => {
       for (const unlisten of registered) unlisten();
       if (copiedTimer) clearTimeout(copiedTimer);
@@ -345,6 +389,119 @@
     } catch (e) {
       reportError('monitor', String(e));
     }
+  }
+
+  /// A colour the styles cannot read is a string the file happens to hold, not
+  /// one the window can draw, and the file is editable by hand — so anything
+  /// that is not a six-digit hex colour is taken as the desktop's own.
+  function asAccent(value: string | null): string | null {
+    return value !== null && HEX_COLOR.test(value) ? value : null;
+  }
+
+  /// Both sliders are whole numbers inside the range the menu offers. A file
+  /// written by anything other than this menu is the only way a number arrives
+  /// that is not one, and `blur(NaNpx)` would void the declaration it stands in
+  /// rather than draw a weaker blur.
+  function asSliderValue(value: number, max: number): number {
+    if (!Number.isFinite(value)) return 0;
+    return Math.min(Math.max(Math.round(value), 0), max);
+  }
+
+  function asTheme(value: string): AppearanceTheme {
+    return value === 'dark' || value === 'light' ? value : 'system';
+  }
+
+  /// The look reaches the window three ways — the load on mount, a press in the
+  /// menu, and a write from another window arriving as an event — and all three
+  /// come through here, so the variables and the menu are never two different
+  /// appearances and a value is checked before it reaches either.
+  function applyAppearance(loaded: Appearance): void {
+    accent = asAccent(loaded.accent);
+    blurPx = asSliderValue(loaded.blur_px, APPEARANCE_BLUR_MAX);
+    tintOpacity = asSliderValue(loaded.tint_opacity, APPEARANCE_TINT_MAX);
+    theme = asTheme(loaded.theme);
+  }
+
+  /// The accent a swatch is on, which is the one the picker cannot show as a
+  /// preset: it is the only way back to a colour that is not one of them.
+  const customAccent = $derived(
+    accent !== null && !ACCENT_PRESETS.some((preset) => preset.value === accent)
+  );
+
+  /// The look is three variables and a colour scheme on the document element,
+  /// so every rule that reads them repaints without this page re-rendering. The
+  /// accent is checked once more on the way out: a value `color-mix` cannot
+  /// read voids the whole declaration it stands in, taking the dark fallback
+  /// line with it, so the variable is taken away instead and the stylesheet's
+  /// own fallbacks keep the window the shape it has.
+  $effect(() => {
+    const root = document.documentElement;
+    const chosen = asAccent(accent);
+    if (chosen) {
+      root.style.setProperty('--goat-accent', chosen);
+    } else {
+      root.style.removeProperty('--goat-accent');
+    }
+    const blur = asSliderValue(blurPx, APPEARANCE_BLUR_MAX);
+    const tint = asSliderValue(tintOpacity, APPEARANCE_TINT_MAX);
+    root.style.setProperty('--goat-blur', `${blur}px`);
+    root.style.setProperty('--goat-tint', `${tint}%`);
+    root.style.setProperty(
+      'color-scheme',
+      theme === 'system' ? 'light dark' : theme
+    );
+  });
+
+  /// Every control ends up here. The command answers with what it kept, so the
+  /// window takes the file's own version of the look rather than the one that
+  /// was asked for, and a refusal leaves the menu where it was with the reason
+  /// in the diagnostics window.
+  async function commitAppearance(): Promise<void> {
+    try {
+      applyAppearance(
+        await invoke<Appearance>('set_appearance', {
+          appearance: {
+            accent,
+            blur_px: blurPx,
+            tint_opacity: tintOpacity,
+            theme,
+          },
+        })
+      );
+    } catch (e) {
+      reportError('appearance', String(e));
+    }
+  }
+
+  function pickAccent(value: string | null): void {
+    accent = value;
+    void commitAppearance();
+  }
+
+  /// A slider moves the window under the thumb on every step and hands the
+  /// finished value to the file when the gesture ends, so one drag repaints
+  /// continuously and rewrites the config once instead of once per step.
+  function readBlur(event: Event): void {
+    blurPx = asSliderValue(
+      Number((event.currentTarget as HTMLInputElement).value),
+      APPEARANCE_BLUR_MAX
+    );
+  }
+
+  function readTint(event: Event): void {
+    tintOpacity = asSliderValue(
+      Number((event.currentTarget as HTMLInputElement).value),
+      APPEARANCE_TINT_MAX
+    );
+  }
+
+  function readCustomAccent(event: Event): void {
+    accent = (event.currentTarget as HTMLInputElement).value;
+  }
+
+  function saveTheme(event: Event): void {
+    theme = asTheme((event.currentTarget as HTMLSelectElement).value);
+    void commitAppearance();
   }
 
   /// The window is a 48px bar until a capture fills it, so the panel has
@@ -821,6 +978,77 @@
           </div>
         </div>
 
+        <div class="appearance">
+          <div class="row">
+            <span class="keylabel">Accent</span>
+            <button
+              class="swatch system"
+              class:checked={accent === null}
+              aria-pressed={accent === null}
+              aria-label="System accent"
+              title="System accent"
+              onclick={() => pickAccent(null)}
+            ></button>
+            {#each ACCENT_PRESETS as preset (preset.value)}
+              <button
+                class="swatch"
+                class:checked={accent === preset.value}
+                style="background: {preset.value}"
+                aria-pressed={accent === preset.value}
+                aria-label={`${preset.name} accent`}
+                title={`${preset.name} accent`}
+                onclick={() => pickAccent(preset.value)}
+              ></button>
+            {/each}
+            <input
+              class="swatch custom"
+              class:checked={customAccent}
+              type="color"
+              value={accent ?? FALLBACK_ACCENT}
+              aria-label="Custom accent"
+              title="Custom accent"
+              oninput={readCustomAccent}
+              onchange={commitAppearance}
+            />
+          </div>
+          <div class="row">
+            <span class="keylabel">Blur</span>
+            <input
+              class="slider"
+              type="range"
+              min="0"
+              max={APPEARANCE_BLUR_MAX}
+              value={blurPx}
+              aria-label="Blur"
+              oninput={readBlur}
+              onchange={commitAppearance}
+            />
+            <span class="value">{blurPx}px</span>
+          </div>
+          <div class="row">
+            <span class="keylabel">Tint</span>
+            <input
+              class="slider"
+              type="range"
+              min="0"
+              max={APPEARANCE_TINT_MAX}
+              value={tintOpacity}
+              aria-label="Tint"
+              oninput={readTint}
+              onchange={commitAppearance}
+            />
+            <span class="value">{tintOpacity}%</span>
+          </div>
+          <label class="row">
+            <span class="keylabel">Theme</span>
+            <select value={theme} onchange={saveTheme}>
+              <option value="system">System</option>
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </label>
+        </div>
+
         {#if portalBackend}
           <p class="note">
             Shortcuts live in the desktop's own settings, and these buttons open
@@ -921,6 +1149,21 @@
     color-scheme: dark;
   }
 
+  /* The window's look is three variables, and these are what they fall back to:
+     the desktop's own accent, and the blur and tint strength the bar and panel
+     have been drawing with. Holding the shipped values here is what makes the
+     page look the way it looks now before the stored appearance answers, and
+     what makes it keep looking that way if the answer never comes. A chosen
+     accent is written over the first one on the document element, and a System
+     accent takes the variable away again, which is what leaves the desktop's
+     own colour in charge. The two numbers are the ones the appearance section
+     starts from; changing one means changing both. */
+  :global(:root) {
+    --goat-accent: AccentColor;
+    --goat-blur: 24px;
+    --goat-tint: 35%;
+  }
+
   :global(body) {
     margin: 0;
     padding: 0;
@@ -981,10 +1224,14 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.35rem 0.5rem;
-    background: rgba(23, 52, 102, 0.62);
-    background: color-mix(in srgb, AccentColor 62%, transparent);
-    backdrop-filter: blur(14px) saturate(1.5);
-    -webkit-backdrop-filter: blur(14px) saturate(1.5);
+    background: rgba(27, 29, 33, 0.35);
+    background: color-mix(
+      in srgb,
+      var(--goat-accent) var(--goat-tint),
+      transparent
+    );
+    backdrop-filter: blur(var(--goat-blur)) saturate(1.5);
+    -webkit-backdrop-filter: blur(var(--goat-blur)) saturate(1.5);
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   }
 
@@ -1036,10 +1283,14 @@
     padding: 0.5rem;
     /* The panel is part of the same strip, so it takes the same accent tint and
        the same navy fallback as the bar rather than a colour of its own. */
-    background: rgba(23, 52, 102, 0.62);
-    background: color-mix(in srgb, AccentColor 62%, transparent);
-    backdrop-filter: blur(14px) saturate(1.5);
-    -webkit-backdrop-filter: blur(14px) saturate(1.5);
+    background: rgba(27, 29, 33, 0.35);
+    background: color-mix(
+      in srgb,
+      var(--goat-accent) var(--goat-tint),
+      transparent
+    );
+    backdrop-filter: blur(var(--goat-blur)) saturate(1.5);
+    -webkit-backdrop-filter: blur(var(--goat-blur)) saturate(1.5);
     border: 1px solid rgba(255, 255, 255, 0.18);
     border-radius: 0.5rem;
     box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.45);
@@ -1078,6 +1329,69 @@
     gap: 0.4rem;
     padding-top: 0.5rem;
     border-top: 1px solid rgba(255, 255, 255, 0.18);
+  }
+
+  /* The appearance controls are the panel's last group, set off by the same
+     divider the triggers are, so the groups read the same way down the panel. */
+  .appearance {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.18);
+  }
+
+  /* A swatch is a small plate of the colour it stands for, so the choice is made
+     by seeing the colour rather than by reading its value. The chosen one is
+     marked by a ring instead of by growing, because a row that changes width
+     with the choice would move every swatch after it. */
+  .swatch {
+    flex: none;
+    width: 1.1rem;
+    height: 1.1rem;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 0.3rem;
+    cursor: pointer;
+  }
+
+  .swatch:hover {
+    border-color: #fff;
+  }
+
+  .swatch.checked {
+    border-color: #fff;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.75);
+  }
+
+  .swatch:focus-visible {
+    outline: 2px solid #9ec5ff;
+    outline-offset: 2px;
+  }
+
+  /* System is not a colour of its own, so it is drawn as the two halves no
+     palette is made of: what the plate stands for is the desktop's to say, and
+     this only marks that the window is following it. */
+  .swatch.system {
+    background: linear-gradient(135deg, #e8eaee 0 50%, #2a2d33 50% 100%);
+  }
+
+  /* The slider takes the accent the window is already wearing, so the control
+     that picks the colour is itself that colour and a theme that flips the
+     platform's own control palette still leaves it readable on this panel. */
+  .slider {
+    flex: 1;
+    min-width: 0;
+    height: 1.1rem;
+    margin: 0;
+    accent-color: var(--goat-accent);
+    cursor: pointer;
+  }
+
+  .value {
+    min-width: 2.4rem;
+    text-align: right;
+    color: #c9ccd2;
   }
 
   .keylabel {
@@ -1205,8 +1519,8 @@
     box-sizing: border-box;
     padding: 1rem;
     background: rgba(255, 255, 255, 0.04);
-    backdrop-filter: blur(18px);
-    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(var(--goat-blur));
+    -webkit-backdrop-filter: blur(var(--goat-blur));
   }
 
   .status {
