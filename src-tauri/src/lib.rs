@@ -1,4 +1,5 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod appearance;
 mod capture;
 mod hotkey;
 mod models;
@@ -53,6 +54,8 @@ struct UserConfig {
     /// it lives in the file rather than in managed state.
     #[serde(default)]
     hide_bind_notice: bool,
+    #[serde(default)]
+    appearance: appearance::AppearanceConfig,
 }
 
 impl Default for UserConfig {
@@ -62,6 +65,7 @@ impl Default for UserConfig {
             select_hotkey: default_select_hotkey(),
             monitor: 0,
             hide_bind_notice: false,
+            appearance: appearance::AppearanceConfig::default(),
         }
     }
 }
@@ -746,11 +750,13 @@ fn set_monitor(
 /// the file holds it. Reading the block from managed state and the flag from disk
 /// is what keeps a write of one from putting the other's saved value back.
 fn config_from_state(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> UserConfig {
+    let stored = load_config(app);
     UserConfig {
         hotkey: hotkey::lock(&state.hotkey).clone(),
         select_hotkey: hotkey::lock(&state.select_hotkey).clone(),
         monitor: *hotkey::lock(&state.monitor),
-        hide_bind_notice: load_config(app).hide_bind_notice,
+        hide_bind_notice: stored.hide_bind_notice,
+        appearance: stored.appearance,
     }
 }
 
