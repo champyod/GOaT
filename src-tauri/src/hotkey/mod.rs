@@ -106,9 +106,10 @@ pub fn report(app: &AppHandle, message: &str) {
 /// holds.
 pub fn warn(app: &AppHandle, message: &str) {
     let line = format!("Hotkey problem: {message}");
-    let mut status = lock(&app.state::<AppState>().hotkey_status).clone();
-    status.warning = line;
-    publish(app, &status);
+    let state = app.state::<AppState>();
+    let mut recorded = lock(&state.hotkey_status).clone();
+    recorded.warning = line;
+    publish(app, &with_stored_triggers(&state, recorded));
 }
 
 /// Whether the backend that is in use will fire a trigger the user typed. The
@@ -128,7 +129,25 @@ pub fn binds_typed_trigger(_app: &AppHandle) -> bool {
 
 #[tauri::command]
 pub fn hotkey_status(state: tauri::State<'_, AppState>) -> HotkeyStatus {
-    lock(&state.hotkey_status).clone()
+    let recorded = lock(&state.hotkey_status).clone();
+    with_stored_triggers(&state, recorded)
+}
+
+/// A window-system session registers the shortcut it is given, so the managed
+/// values are the bound ones and outrank whatever the recorded line was built
+/// with — it is written before the config has been read and would otherwise
+/// report the defaults as bound. A portal session keeps the triggers its dialog
+/// produced, which no stored value can stand in for, so its line is handed on as
+/// it stands.
+fn with_stored_triggers(state: &AppState, recorded: HotkeyStatus) -> HotkeyStatus {
+    if !recorded.binds_stored_trigger() {
+        return recorded;
+    }
+    HotkeyStatus {
+        capture_trigger: Some(lock(&state.hotkey).clone()),
+        select_trigger: Some(lock(&state.select_hotkey).clone()),
+        ..recorded
+    }
 }
 
 /// A poisoned hotkey mutex means a handler thread panicked while holding it.
@@ -218,22 +237,28 @@ async fn apply(app: &AppHandle, _action: Action, previous: &str, next: &str) -> 
 
 #[cfg(target_os = "linux")]
 async fn start_portal(app: &AppHandle) {
-    let (detail, warning) = match portal::start(app).await {
-        Ok((_, report)) => (report.detail, report.warning),
-        Err(e) => (
-            String::new(),
-            format!("Global hotkeys are unavailable: {e:#}"),
-        ),
-    };
-    publish(
-        app,
-        &HotkeyStatus {
-            backend: Backend::Portal,
-            detail: format!("{} {detail}", status::default_detail(Backend::Portal))
-                .trim_end()
-                .to_string(),
-            warning: warning.clone(),
+    let report = match portal::start(app).await {
+        Ok((_, report)) => report,
+        Err(e) => portal::BindingReport {
+            detail: String::new(),
+            warning: format!("Global hotkeys are unavailable: {e:#}"),
+            capture_trigger: None,
+            select_trigger: None,
         },
-    );
-    notice::startup_notice(app, PORTAL_NOTICE, &warning);
+    };
+    let line = HotkeyStatus {
+        backend: Backend::Portal,
+        detail: format!(
+            "{} {}",
+            status::default_detail(Backend::Portal),
+            report.detail
+        )
+        .trim_end()
+        .to_string(),
+        warning: report.warning,
+        capture_trigger: report.capture_trigger,
+        select_trigger: report.select_trigger,
+    };
+    publish(app, &line);
+    notice::startup_notice(app, PORTAL_NOTICE, &line.warning);
 }

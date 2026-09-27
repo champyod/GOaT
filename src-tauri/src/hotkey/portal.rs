@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use zbus::Connection;
 use zbus::zvariant::OwnedObjectPath;
 
@@ -35,10 +35,21 @@ pub(super) const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(120);
 /// reply turns it into the error startup already reports.
 pub(super) const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// What the portal reported for one binding round, as shown to the user.
+/// Once the dialog is up the wait belongs to the desktop, but the app cannot tell
+/// that from a call still in flight, so it would report the bind as pending for as
+/// long as the user takes to answer. The dialog announces itself so the wait starts
+/// where the user's attention does. A window that cannot hear it is not worth
+/// failing a remap that has already succeeded.
+pub(super) const DIALOG_OPENED: &str = "hotkey-dialog-opened";
+
+/// What the portal reported for one binding round, as shown to the user. The two
+/// triggers come out of the same reply as the line, because the keys the portal
+/// will fire are the ones it reported and no stored shortcut can name them.
 pub struct BindingReport {
     pub detail: String,
     pub warning: String,
+    pub capture_trigger: Option<String>,
+    pub select_trigger: Option<String>,
 }
 
 pub struct Portal {
@@ -77,6 +88,8 @@ pub async fn start(app: &AppHandle) -> Result<(Portal, BindingReport)> {
     let report = BindingReport {
         detail: binding::describe(&bound),
         warning: binding::binding_warning(&bound),
+        capture_trigger: binding::trigger_for(&bound, binding::CAPTURE_ID),
+        select_trigger: binding::trigger_for(&bound, binding::SELECT_ID),
     };
     watch(portal.clone(), app.clone());
     app.manage(portal.clone());
@@ -94,6 +107,7 @@ pub async fn remap(app: &AppHandle, action: Action) -> Result<ShortcutList> {
         portal.armed.disarm();
         return Err(configure_failed(&e));
     }
+    let _ = app.emit(DIALOG_OPENED, binding::id_for(action));
     let chosen = waited(answer, action).await?;
     binding::require_trigger(&chosen, action)?;
     Ok(chosen)

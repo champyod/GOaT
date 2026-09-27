@@ -4,140 +4,160 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import Keyboard from '@lucide/svelte/icons/keyboard';
+  import Check from '@lucide/svelte/icons/check';
+  import { CheckFlowbite, HourglassFlowbite, KeyboardFlowbite } from 'svelte-animated-icons';
 
   const ICON_SIZE = 16;
   const CAPTURE_TRIGGER_TITLE = 'Choose capture trigger';
   const REGION_TRIGGER_TITLE = 'Choose region trigger';
   const WAITING_TITLE = 'Waiting...';
+  const DIALOG_WAIT_HINT = 'Desktop dialog open — pick keys there.';
+  const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
+  const CAPTURE_PLACEHOLDER = 'Ctrl+Shift+S';
+  const REGION_PLACEHOLDER = 'Ctrl+Shift+E';
+  const CAPTURE_STEP_HINT = 'Press your capture shortcut to grab the screen.';
+  const UNBOUND_HINT = 'Once bound, press it to grab the screen.';
+  const NOT_BOUND = 'Not bound';
+  const UNBOUND_NOTE = 'No shortcut bound yet.';
+  const FLASH_MS = 900;
 
   type HotkeyStatus = {
     backend: 'system' | 'portal';
     detail: string;
     warning: string;
+    // The trigger each shortcut is actually bound to, or null when the backend
+    // has bound none. The rows must read these, never the saved values: on a
+    // portal the saved shortcut is not what fires.
+    capture_trigger: string | null;
+    select_trigger: string | null;
   };
 
-  /// A portal session fires the trigger its own dialog produced, so nothing typed
-  /// here is bound and a failed save has nowhere else to go.
-  const PORTAL_TRIGGER_NOTE =
-    'No typed shortcut can be saved here — the desktop owns triggers on this session. On KDE Plasma: System Settings → Keyboard → Shortcuts. On GNOME: Settings → Keyboard → View and Customize Shortcuts.';
+  type TriggerRow = 'capture' | 'region';
+  type StatusTone = 'info' | 'warning' | 'error';
+  type IconState = 'idle' | 'waiting' | 'flash';
 
-  let newHotkey = $state('Ctrl+Shift+S');
-  let newSelectHotkey = $state('Ctrl+Shift+E');
+  const TRIGGER_COMMANDS: Record<TriggerRow, { read: string; write: string; saved: string }> = {
+    capture: { read: 'get_hotkey', write: 'set_hotkey', saved: 'Capture trigger saved' },
+    region: { read: 'get_select_hotkey', write: 'set_select_hotkey', saved: 'Region trigger saved' },
+  };
+
+  // The portal names the shortcut it is reconfiguring, so the waiting state lands
+  // on the row that asked for it rather than on both. These mirror the ids the
+  // backend holds in `binding::CAPTURE_ID` and `binding::SELECT_ID`.
+  const ROWS_BY_ID: Record<string, TriggerRow> = {
+    goat_capture: 'capture',
+    goat_region_select: 'region',
+  };
+
+  let newHotkey = $state(CAPTURE_PLACEHOLDER);
+  let newSelectHotkey = $state(REGION_PLACEHOLDER);
   let hotkeyStatus = $state<HotkeyStatus | null>(null);
-  let status = $state('');
-  let saveError = $state('');
+  let statusNote = $state('');
+  let statusTone = $state<StatusTone>('info');
   let savingHotkey = $state(false);
+  // The desktop's own dialog owns the round from the moment it opens, so the
+  // button reports a wait the user can see somewhere else instead of a call that
+  // is still in flight here.
+  let waitingChoice = $state(false);
+  let waitingRow = $state<TriggerRow | null>(null);
+  let flashRow = $state<TriggerRow | null>(null);
+  let reducedMotion = $state(false);
   let dontShow = $state(false);
+  let flashTimer: ReturnType<typeof setTimeout> | null = null;
   const registered: UnlistenFn[] = [];
 
   // A portal session fires only the trigger its own dialog produced, so the saved
   // value is not what is bound and the row shows it as read-only text.
   const portalBackend = $derived(hotkeyStatus?.backend === 'portal');
-  // The backend keeps the warning empty while every trigger still carries a key,
-  // so a filled one is the only case that has to interrupt the steps.
-  const triggerUnbound = $derived(Boolean(hotkeyStatus?.warning));
+  // The rows show what the backend actually holds, so "unbound" means a trigger
+  // is genuinely missing — never just that a warning exists. A warning with both
+  // triggers present (e.g. a stale-release note after a good remap) is not
+  // "No shortcut bound yet."
+  const captureTrigger = $derived(hotkeyStatus?.capture_trigger ?? null);
+  const selectTrigger = $derived(hotkeyStatus?.select_trigger ?? null);
+  const triggerUnbound = $derived(
+    portalBackend
+      ? captureTrigger === null || selectTrigger === null
+      : Boolean(hotkeyStatus?.warning)
+  );
+  const stepHint = $derived(captureTrigger ? CAPTURE_STEP_HINT : UNBOUND_HINT);
+  // One line carries whatever the last action left behind, so a reason is read
+  // where it was produced instead of in a window the bind flow never opens.
+  const statusLine = $derived(statusNote || (triggerUnbound ? UNBOUND_NOTE : ''));
+  const statusLineTone = $derived<StatusTone>(statusNote ? statusTone : 'warning');
 
-  /// The diagnostics window is the one place a problem is written down, so a
-  /// failure here is handed to it as well as kept on this page, where the reason
-  /// can be read next to what it means. The backend already records a shortcut it
-  /// could not bind, so its reason is written down once rather than twice.
-  function reportError(source: string, message: string): void {
-    void invoke('report_frontend_error', { source, message }).catch(
-      (e: unknown) => {
-        console.error(`GOaT could not record: ${message}`, e);
-      }
-    );
+  // The draw inside the icon is the feedback, so each state is a different icon
+  // rather than a different animation on the same one.
+  function iconState(row: TriggerRow): IconState {
+    if (flashRow === row) return 'flash';
+    if (waitingChoice && waitingRow === row) return 'waiting';
+    return 'idle';
   }
 
-  /// A save that failed leaves nothing bound, so the failure is kept where the
-  /// steps are rather than only in a window that may not be open.
-  function showSaveFailure(error: unknown): void {
-    const message = String(error);
-    saveError = message;
-    reportError('hotkey', message);
+  function showFlash(row: TriggerRow): void {
+    flashRow = row;
+    if (flashTimer !== null) clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      flashRow = null;
+      flashTimer = null;
+    }, FLASH_MS);
   }
 
-  onMount(() => {
-    invoke<string>('get_hotkey')
-      .then((value) => {
-        newHotkey = value;
-      })
-      .catch((e) => {
-        reportError('hotkey', String(e));
-      });
-    invoke<string>('get_select_hotkey')
-      .then((value) => {
-        newSelectHotkey = value;
-      })
-      .catch((e) => {
-        reportError('hotkey', String(e));
-      });
-    invoke<boolean>('get_hide_bind_notice')
-      .then((value) => {
-        dontShow = value;
-      })
-      .catch((e) => {
-        reportError('settings', String(e));
-      });
-    invoke<HotkeyStatus>('hotkey_status')
-      .then((value) => {
-        hotkeyStatus = value;
-      })
-      .catch((e) => {
-        reportError('hotkey', String(e));
-      });
-    void listen<HotkeyStatus>('hotkey-status', (e) => {
-      hotkeyStatus = e.payload;
-    })
-      .then((unlisten) => {
-        registered.push(unlisten);
-      })
-      .catch((e) => {
-        reportError('event', `the hotkey-status feed could not be opened: ${String(e)}`);
-      });
-    return () => {
-      for (const unlisten of registered) unlisten();
-    };
-  });
-
-  async function saveHotkey(): Promise<void> {
-    if (savingHotkey) return;
-    savingHotkey = true;
+  async function loadTrigger(row: TriggerRow): Promise<void> {
     try {
-      // The backend hands back the shortcut it actually holds, which on a portal
-      // is not the one typed, so the field follows it instead of the keystrokes.
-      newHotkey = await invoke<string>('set_hotkey', { hotkey: newHotkey });
-      saveError = '';
-      status = 'Capture trigger saved';
-    } catch (e) {
-      showSaveFailure(e);
-    } finally {
-      savingHotkey = false;
+      const value = await invoke<string>(TRIGGER_COMMANDS[row].read);
+      if (row === 'capture') newHotkey = value;
+      else newSelectHotkey = value;
+    } catch (e: unknown) {
+      statusNote = String(e);
+      statusTone = 'error';
     }
   }
 
-  async function saveSelectHotkey(): Promise<void> {
+  async function saveTrigger(row: TriggerRow): Promise<void> {
     if (savingHotkey) return;
     savingHotkey = true;
+    statusNote = '';
     try {
-      newSelectHotkey = await invoke<string>('set_select_hotkey', {
-        hotkey: newSelectHotkey,
+      // The backend hands back the shortcut it actually holds, which on a portal
+      // is not the one typed, so the field follows it instead of the keystrokes.
+      const bound = await invoke<string>(TRIGGER_COMMANDS[row].write, {
+        hotkey: row === 'capture' ? newHotkey : newSelectHotkey,
       });
-      saveError = '';
-      status = 'Region trigger saved';
-    } catch (e) {
-      showSaveFailure(e);
+      if (row === 'capture') newHotkey = bound;
+      else newSelectHotkey = bound;
+      statusNote = TRIGGER_COMMANDS[row].saved;
+      statusTone = 'info';
+      showFlash(row);
+    } catch (e: unknown) {
+      statusNote = String(e);
+      statusTone = 'error';
     } finally {
       savingHotkey = false;
+      waitingChoice = false;
+      waitingRow = null;
     }
   }
 
   async function close(): Promise<void> {
     try {
       await getCurrentWindow().close();
-    } catch (e) {
-      reportError('window', String(e));
+    } catch (e: unknown) {
+      statusNote = String(e);
+      statusTone = 'error';
     }
+  }
+
+  async function setDontShow(hide: boolean): Promise<void> {
+    try {
+      dontShow = await invoke<boolean>('set_hide_bind_notice', { hide });
+    } catch (e: unknown) {
+      statusNote = String(e);
+      statusTone = 'error';
+      return;
+    }
+    // Checking the box only records the preference; the window stays open
+    // until Close is clicked, so an accidental tick never dismisses it.
   }
 
   function onDismissChange(event: Event): void {
@@ -145,23 +165,81 @@
     void setDontShow(box.checked);
   }
 
-  async function setDontShow(hide: boolean): Promise<void> {
-    try {
-      dontShow = await invoke<boolean>('set_hide_bind_notice', { hide });
-    } catch (e) {
-      reportError('settings', String(e));
-      return;
-    }
-    if (dontShow) await close();
-  }
+  onMount(() => {
+    void loadTrigger('capture');
+    void loadTrigger('region');
+    invoke<boolean>('get_hide_bind_notice')
+      .then((value) => {
+        dontShow = value;
+      })
+      .catch((e: unknown) => {
+        statusNote = String(e);
+        statusTone = 'error';
+      });
+    invoke<HotkeyStatus>('hotkey_status')
+      .then((value) => {
+        hotkeyStatus = value;
+      })
+      .catch((e: unknown) => {
+        statusNote = String(e);
+        statusTone = 'error';
+      });
+    void listen<HotkeyStatus>('hotkey-status', (e) => {
+      hotkeyStatus = e.payload;
+    })
+      .then((unlisten) => {
+        registered.push(unlisten);
+      })
+      .catch((e: unknown) => {
+        statusNote = String(e);
+        statusTone = 'error';
+      });
+    void listen<string>('hotkey-dialog-opened', (e) => {
+      savingHotkey = false;
+      waitingChoice = true;
+      waitingRow = ROWS_BY_ID[e.payload] ?? null;
+    })
+      .then((unlisten) => {
+        registered.push(unlisten);
+      })
+      .catch((e: unknown) => {
+        statusNote = String(e);
+        statusTone = 'error';
+      });
+    const motion = window.matchMedia(REDUCED_MOTION_QUERY);
+    reducedMotion = motion.matches;
+    const onMotionChange = (change: MediaQueryListEvent) => {
+      reducedMotion = change.matches;
+    };
+    motion.addEventListener('change', onMotionChange);
+    return () => {
+      for (const unlisten of registered) unlisten();
+      motion.removeEventListener('change', onMotionChange);
+      if (flashTimer !== null) clearTimeout(flashTimer);
+    };
+  });
 </script>
 
 <main>
-  <h1>Set a keyboard shortcut</h1>
-
-  {#if triggerUnbound}
-    <p class="banner unbound" role="alert">No shortcut bound yet.</p>
-  {/if}
+  {#snippet triggerIcon(row: TriggerRow)}
+    {#if reducedMotion}
+      {#if flashRow === row}
+        <Check size={ICON_SIZE} />
+      {:else}
+        <Keyboard size={ICON_SIZE} />
+      {/if}
+    {:else}
+      {#key iconState(row)}
+        {#if iconState(row) === 'flash'}
+          <CheckFlowbite size={ICON_SIZE} event="none" />
+        {:else if iconState(row) === 'waiting'}
+          <HourglassFlowbite size={ICON_SIZE} event="none" />
+        {:else}
+          <KeyboardFlowbite size={ICON_SIZE} event="none" />
+        {/if}
+      {/key}
+    {/if}
+  {/snippet}
 
   <ol class="steps">
     <li>
@@ -169,23 +247,22 @@
         {#if portalBackend}
           <span class="rowlabel">
             Capture
-            <span class="bound">{newHotkey}</span>
+            <span class="bound">{captureTrigger ?? NOT_BOUND}</span>
           </span>
         {:else}
           <label class="rowlabel">
             Capture
-            <input bind:value={newHotkey} placeholder="Ctrl+Shift+S" />
+            <input bind:value={newHotkey} placeholder={CAPTURE_PLACEHOLDER} />
           </label>
         {/if}
         <button
-          class="icon"
-          class:busy={savingHotkey}
+          class="icon bind"
           aria-label={CAPTURE_TRIGGER_TITLE}
-          title={savingHotkey ? WAITING_TITLE : CAPTURE_TRIGGER_TITLE}
-          onclick={saveHotkey}
-          disabled={savingHotkey}
+          title={savingHotkey || waitingChoice ? WAITING_TITLE : CAPTURE_TRIGGER_TITLE}
+          onclick={() => saveTrigger('capture')}
+          disabled={savingHotkey || waitingChoice}
         >
-          <Keyboard size={ICON_SIZE} />
+          {@render triggerIcon('capture')}
         </button>
       </div>
     </li>
@@ -194,51 +271,34 @@
         {#if portalBackend}
           <span class="rowlabel">
             Region
-            <span class="bound">{newSelectHotkey}</span>
+            <span class="bound">{selectTrigger ?? NOT_BOUND}</span>
           </span>
         {:else}
           <label class="rowlabel">
             Region
-            <input bind:value={newSelectHotkey} placeholder="Ctrl+Shift+E" />
+            <input bind:value={newSelectHotkey} placeholder={REGION_PLACEHOLDER} />
           </label>
         {/if}
         <button
-          class="icon"
-          class:busy={savingHotkey}
+          class="icon bind"
           aria-label={REGION_TRIGGER_TITLE}
-          title={savingHotkey ? WAITING_TITLE : REGION_TRIGGER_TITLE}
-          onclick={saveSelectHotkey}
-          disabled={savingHotkey}
+          title={savingHotkey || waitingChoice ? WAITING_TITLE : REGION_TRIGGER_TITLE}
+          onclick={() => saveTrigger('region')}
+          disabled={savingHotkey || waitingChoice}
         >
-          <Keyboard size={ICON_SIZE} />
+          {@render triggerIcon('region')}
         </button>
       </div>
     </li>
-    <li>
-      <p class="step">Press your capture shortcut to grab the screen.</p>
-    </li>
   </ol>
 
-  {#if status}
-    <p class="banner" role="status">{status}</p>
-  {/if}
+  <p class="hintline">
+    {waitingChoice ? DIALOG_WAIT_HINT : portalBackend ? stepHint : CAPTURE_STEP_HINT}
+  </p>
 
-  {#if saveError}
-    <p class="banner failure" role="alert">
-      {saveError}
-      {#if portalBackend}
-        <span class="hint">{PORTAL_TRIGGER_NOTE}</span>
-      {/if}
-    </p>
+  {#if statusLine}
+    <p class="statusline" data-tone={statusLineTone} role="status">{statusLine}</p>
   {/if}
-
-  <div class="dismiss">
-    <label>
-      <input type="checkbox" checked={dontShow} onchange={onDismissChange} />
-      Don't show this again
-    </label>
-    <button onclick={close}>Close</button>
-  </div>
 
   <details>
     <summary>Why am I seeing this?</summary>
@@ -250,7 +310,9 @@
       {#if portalBackend}
         <p>
           These triggers are set in your desktop's own shortcut settings, not in
-          GOaT. The buttons open that dialog.
+          GOaT. The buttons open that dialog. On KDE Plasma: System Settings →
+          Keyboard → Shortcuts. On GNOME: Settings → Keyboard → View and
+          Customize Shortcuts.
         </p>
       {/if}
       {#if hotkeyStatus}
@@ -258,17 +320,26 @@
           {hotkeyStatus.detail}
         </p>
         {#if hotkeyStatus.warning}
-          <p class="warning">{hotkeyStatus.warning}</p>
+          <p class="statusline" data-tone="warning" role="status">{hotkeyStatus.warning}</p>
         {/if}
       {/if}
     </div>
   </details>
+
+  <div class="dismiss">
+    <label>
+      <input type="checkbox" checked={dontShow} onchange={onDismissChange} />
+      Don't show this again
+    </label>
+    <button class="ghost" onclick={close}>Close</button>
+  </div>
 </main>
 
 <style>
   :global(html),
   :global(body) {
     margin: 0;
+    height: 100%;
     background: #1b1d21;
     color: #fff;
     font-family: system-ui, sans-serif;
@@ -278,27 +349,17 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
-    padding: 0.9rem 1rem;
-  }
-
-  h1 {
-    margin: 0;
-    font-size: 1.05rem;
+    gap: 0.45rem;
+    min-height: 100vh;
+    padding: 0.7rem 0.9rem 0;
   }
 
   .steps {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
-    margin: 0.2rem 0 0;
-    padding-left: 1.3rem;
-  }
-
-  .step {
+    gap: 0.5rem;
     margin: 0;
-    font-size: 0.8rem;
-    color: #c9ccd2;
+    padding-left: 1.3rem;
   }
 
   .row {
@@ -330,37 +391,27 @@
     font-size: 0.85rem;
   }
 
-  .row .icon {
-    margin-left: auto;
-  }
-
-  .banner {
-    display: inline-block;
-    align-self: flex-start;
-    margin: 0;
-    padding: 0.25rem 0.6rem;
-    background: rgba(0, 0, 0, 0.45);
-    border-radius: 0.4rem;
-    font-size: 0.85rem;
-  }
-
-  .unbound {
-    color: #ffc46b;
-  }
-
-  .failure {
-    border-left: 3px solid #ff9d9d;
-  }
-
-  .hint {
-    display: block;
-    margin-top: 0.3rem;
+  .hintline {
+    margin: 0.7rem 0 0;
+    font-size: 0.8rem;
     color: #c9ccd2;
   }
 
-  .warning {
+  .statusline {
+    align-self: flex-end;
     margin: 0;
+    max-width: 100%;
+    text-align: right;
+    font-size: 0.8rem;
+    color: #c9ccd2;
+  }
+
+  .statusline[data-tone='warning'] {
     color: #ffc46b;
+  }
+
+  .statusline[data-tone='error'] {
+    color: #ff9d9d;
   }
 
   .hotkeyline {
@@ -378,8 +429,8 @@
   }
 
   details {
-    margin-top: 0.6rem;
-    padding-top: 0.5rem;
+    margin-top: 0.35rem;
+    padding-top: 0.4rem;
     border-top: 1px solid rgba(255, 255, 255, 0.2);
     font-size: 0.8rem;
     color: #c9ccd2;
@@ -401,59 +452,58 @@
   }
 
   .dismiss {
+    position: sticky;
+    bottom: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
-    margin-top: 0.5rem;
-    font-size: 0.85rem;
+    margin-top: auto;
+    padding: 0.55rem 0.9rem 0.7rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.14);
+    background: #14161a;
+    font-size: 0.8rem;
   }
 
   button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: rgba(255, 255, 255, 0.2);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.4);
+    border: 1px solid transparent;
     border-radius: 0.4rem;
-    padding: 0.3rem 0.8rem;
+    font: inherit;
     cursor: pointer;
   }
 
-  button:hover {
-    background: rgba(255, 255, 255, 0.3);
-  }
-
   button:disabled {
-    opacity: 0.4;
+    opacity: 0.45;
     cursor: default;
   }
 
-  .icon {
-    width: 2rem;
-    height: 2rem;
+  .bind {
+    margin-left: auto;
+    min-width: 2.25rem;
+    min-height: 2.25rem;
     padding: 0;
+    background: #2f6bd8;
+    border-color: #2f6bd8;
+    color: #fff;
   }
 
-  .icon.busy {
-    animation: busy-pulse 1.1s ease-in-out infinite;
+  .bind:hover:not(:disabled) {
+    background: #3b7ae8;
   }
 
-  @keyframes busy-pulse {
-    0%,
-    100% {
-      opacity: 0.85;
-    }
-    50% {
-      opacity: 0.3;
-    }
+  .ghost {
+    min-height: 2.25rem;
+    padding: 0 0.9rem;
+    background: transparent;
+    border-color: rgba(255, 255, 255, 0.28);
+    color: #c9ccd2;
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .icon.busy {
-      animation: none;
-      opacity: 0.4;
-    }
+  .ghost:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
   }
 </style>

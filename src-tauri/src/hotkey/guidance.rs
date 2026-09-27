@@ -13,6 +13,22 @@ const GENERIC_PATH: &str = "the desktop did not open its shortcut dialog, so no 
      can be chosen from here. Open your desktop's keyboard-shortcut settings, bind the GOaT \
      entries there, then press Save again";
 
+/// Desktops that name the window they bind a trigger in, so the user is not left
+/// translating a path. Matched as substrings, because each desktop announces
+/// itself under its own name, with that name first in preference order.
+const DESKTOP_LINES: &[(&str, &str)] = &[
+    (
+        "kde",
+        "System Settings → Keyboard → Shortcuts — look for the GOaT entries \
+         (goat_capture, goat_region_select) and assign keys there.",
+    ),
+    (
+        "gnome",
+        "Settings → Keyboard → View and Customize Shortcuts — look for the GOaT \
+         entries and assign keys there.",
+    ),
+];
+
 /// Compositors that ship no shortcuts portal at all, matched as substrings
 /// because each announces itself under its own name and the build is told which
 /// compositor it is running by that name alone.
@@ -38,17 +54,8 @@ fn retry_first(manual: &str) -> String {
 /// no dialog for that retry to reopen. Pure in the desktop name, so every branch
 /// is reached without a session behind it.
 fn guidance_for(desktop: &str) -> String {
-    if desktop.contains("kde") {
-        return retry_first(
-            "System Settings → Keyboard → Shortcuts — look for the GOaT entries \
-             (goat_capture, goat_region_select) and assign keys there.",
-        );
-    }
-    if desktop.contains("gnome") {
-        return retry_first(
-            "Settings → Keyboard → View and Customize Shortcuts — look for the GOaT \
-             entries and assign keys there.",
-        );
+    if let Some(line) = own_settings(desktop) {
+        return retry_first(line);
     }
     if is_portalless(desktop) {
         return "this compositor has no shortcuts-portal dialog; bind keys in its own \
@@ -56,6 +63,15 @@ fn guidance_for(desktop: &str) -> String {
             .to_owned();
     }
     retry_first(GENERIC_PATH)
+}
+
+/// The window that desktop binds its own triggers in, or the last resort when
+/// the desktop is not one the build has a line for.
+fn own_settings(desktop: &str) -> Option<&'static str> {
+    DESKTOP_LINES
+        .iter()
+        .find(|(name, _)| desktop.contains(name))
+        .map(|(_, line)| *line)
 }
 
 /// The desktop that owns the session, as the first entry of
@@ -145,6 +161,21 @@ mod tests {
                     && line.contains("own config")
                     && line.contains("Capture/Select"),
                 "{desktop} has no dialog to wait for and is told so: {line}"
+            );
+        }
+    }
+
+    /// The build learns which desktop it is running by substring, so a desktop
+    /// that announces itself by a longer name than the one the line is filed
+    /// under still has to reach that line, and no other one.
+    #[test]
+    fn every_desktop_line_is_reached_by_the_name_a_desktop_announces() {
+        for (name, line) in DESKTOP_LINES {
+            let desktop = format!("{name}-session");
+            assert_eq!(
+                guidance_for(&desktop),
+                retry_first(line),
+                "{desktop} is sent to the {name} line and to nothing else"
             );
         }
     }

@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use super::Action;
+
 const SYSTEM_DETAIL: &str = "Global hotkeys are registered with the window system.";
 #[cfg(target_os = "linux")]
 const PORTAL_DETAIL: &str =
@@ -21,11 +23,27 @@ pub enum Backend {
     Portal,
 }
 
+/// The backend in use, the line the user reads, and what each shortcut is
+/// actually bound to. A trigger is never read out of the stored config: a portal
+/// session fires the trigger its own dialog produced and ignores anything typed,
+/// so reporting the stored value there would name a shortcut no key press can
+/// reach.
 #[derive(Clone, Serialize)]
 pub struct HotkeyStatus {
     pub backend: Backend,
     pub detail: String,
     pub warning: String,
+    pub capture_trigger: Option<String>,
+    pub select_trigger: Option<String>,
+}
+
+impl HotkeyStatus {
+    /// Whether the backend registers the shortcut it is given, which is what
+    /// makes the stored value the bound one. Only then can the saved config fill
+    /// a trigger in, and only then is it read.
+    pub fn binds_stored_trigger(&self) -> bool {
+        matches!(self.backend, Backend::System)
+    }
 }
 
 pub fn initial() -> HotkeyStatus {
@@ -34,6 +52,20 @@ pub fn initial() -> HotkeyStatus {
         backend,
         detail: default_detail(backend).to_string(),
         warning: String::new(),
+        capture_trigger: known_trigger(backend, Action::Capture),
+        select_trigger: known_trigger(backend, Action::ScreenSelect),
+    }
+}
+
+/// What can honestly be said about a trigger before the backend has been asked.
+/// A window-system session registers the string it is given, so the shortcut the
+/// managed state starts from is one it holds; a portal session binds nothing
+/// until its own dialog has run, and the list it answers with replaces this.
+fn known_trigger(backend: Backend, action: Action) -> Option<String> {
+    match backend {
+        Backend::System => Some(action.example().to_string()),
+        #[cfg(target_os = "linux")]
+        Backend::Portal => None,
     }
 }
 
@@ -59,4 +91,63 @@ fn detect() -> Backend {
         }
     }
     Backend::System
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn without_triggers(backend: Backend) -> HotkeyStatus {
+        HotkeyStatus {
+            backend,
+            detail: String::new(),
+            warning: String::new(),
+            capture_trigger: None,
+            select_trigger: None,
+        }
+    }
+
+    /// The window system registers the string it is given, so the shortcut the
+    /// app starts from is the one it holds, and it is the stored config that
+    /// fills the two triggers in.
+    #[test]
+    fn the_window_system_starts_from_a_bound_trigger() {
+        assert_eq!(
+            known_trigger(Backend::System, Action::Capture).as_deref(),
+            Some(crate::DEFAULT_HOTKEY)
+        );
+        assert_eq!(
+            known_trigger(Backend::System, Action::ScreenSelect).as_deref(),
+            Some(crate::DEFAULT_SELECT_HOTKEY)
+        );
+    }
+
+    /// A portal session binds nothing until its own dialog has run, so a trigger
+    /// reported before the first bind would name a shortcut nothing is bound to.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_portal_session_binds_nothing_before_its_dialog_runs() {
+        assert_eq!(known_trigger(Backend::Portal, Action::Capture), None);
+        assert_eq!(known_trigger(Backend::Portal, Action::ScreenSelect), None);
+    }
+
+    /// Only the window-system backend can stand in for a trigger with the stored
+    /// shortcut, and a line built before the config was read must be filled in
+    /// from the managed state rather than trusted as it stands.
+    #[test]
+    fn only_the_window_system_binds_the_stored_shortcut() {
+        assert!(without_triggers(Backend::System).binds_stored_trigger());
+        #[cfg(target_os = "linux")]
+        assert!(!without_triggers(Backend::Portal).binds_stored_trigger());
+    }
+
+    /// A shortcut the backend has bound none of crosses the bridge as an explicit
+    /// null, so the window can tell it apart from a field that never arrived.
+    #[test]
+    fn a_missing_trigger_crosses_the_bridge_as_null() {
+        let json =
+            serde_json::to_value(without_triggers(Backend::System)).expect("the line serialises");
+        assert_eq!(json["capture_trigger"], serde_json::Value::Null);
+        assert_eq!(json["select_trigger"], serde_json::Value::Null);
+    }
 }

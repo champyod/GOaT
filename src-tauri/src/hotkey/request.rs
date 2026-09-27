@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zbus::Connection;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Type};
+use zbus::zvariant::{OwnedObjectPath, Type};
 
 use super::dbus::{NO_PARENT_WINDOW, Options, Reply, ShortcutList, options, shortcuts_proxy};
 use super::portal::RESPONSE_TIMEOUT;
@@ -81,15 +81,12 @@ pub async fn bind_shortcuts(
         .shortcuts()
 }
 
-/// ConfigureShortcuts is fire-and-forget: the spec gives it no out args, and the
-/// answer arrives as `ShortcutsChanged` on the session rather than as a reply on a
-/// Request. Predicting a Request path here would read the empty reply as an object
-/// path and report a signature mismatch the portal never produced, so the call is
-/// made on its own and only the transport result is reported.
+/// ConfigureShortcuts answers with an empty reply: the outcome arrives later as
+/// `ShortcutsChanged` on the session, not as out args. Reading the reply as a
+/// value turns that empty body into a signature mismatch on a call that worked
+/// — while the dialog stands open — so it is read as unit instead.
 pub async fn configure_shortcuts(conn: &Connection, session: &OwnedObjectPath) -> Result<()> {
-    // The reply stays an opaque value, so no portal that answers with something
-    // unexpected can turn a call that worked into a signature mismatch here.
-    let _reply: OwnedValue = shortcuts_proxy(conn)
+    let _: () = shortcuts_proxy(conn)
         .await?
         .call(
             "ConfigureShortcuts",

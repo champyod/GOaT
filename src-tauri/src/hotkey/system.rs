@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
@@ -80,13 +81,21 @@ fn action_for(app: &AppHandle, pressed: Shortcut) -> Option<Action> {
     [Action::Capture, Action::ScreenSelect]
         .into_iter()
         .find(|action| {
-            let saved = match action {
-                Action::Capture => lock(&state.hotkey).clone(),
-                Action::ScreenSelect => lock(&state.select_hotkey).clone(),
-            };
+            let saved = lock(action.cell(&state));
             super::parse_shortcut(&saved)
                 .is_some_and(|bound| bound.key == pressed.key && bound.mods == pressed.mods)
         })
+}
+
+impl Action {
+    /// The state cell holding the trigger this action fires on, so the lookup
+    /// above and the remap that wrote that trigger read one source for it.
+    fn cell<'a>(&self, state: &'a AppState) -> &'a Mutex<String> {
+        match self {
+            Action::Capture => &state.hotkey,
+            Action::ScreenSelect => &state.select_hotkey,
+        }
+    }
 }
 
 fn parse(text: &str, which: &str) -> Result<Shortcut> {

@@ -58,7 +58,9 @@ pub fn describe(bound: &ShortcutList) -> String {
 /// The status line for a portal reply, with both halves read out of that same
 /// reply. A later reconfigure only ever hands over the list it received, so
 /// there is no earlier verdict left to keep and a shortcut the portal still has
-/// no trigger for stays in the warning.
+/// no trigger for stays in the warning. The two triggers are read out of the list
+/// as well, because the portal fires the keys its own dialog produced and the
+/// stored shortcut names none of them.
 pub fn portal_status(bound: &ShortcutList) -> HotkeyStatus {
     HotkeyStatus {
         backend: Backend::Portal,
@@ -68,6 +70,8 @@ pub fn portal_status(bound: &ShortcutList) -> HotkeyStatus {
             describe(bound)
         ),
         warning: binding_warning(bound),
+        capture_trigger: trigger_for(bound, CAPTURE_ID),
+        select_trigger: trigger_for(bound, SELECT_ID),
     }
 }
 
@@ -86,11 +90,20 @@ pub fn id_for(action: Action) -> &'static str {
     }
 }
 
-fn has_trigger(bound: &ShortcutList, id: &str) -> bool {
+/// The trigger the portal holds for one shortcut, or `None` when the list leaves
+/// the id out or leaves it without one — the two shapes that both mean the
+/// hotkey will never fire. Every answer about a trigger is read here, so the
+/// warning, the reconfigure check and the status line cannot disagree about what
+/// the portal holds.
+pub(super) fn trigger_for(bound: &ShortcutList, id: &str) -> Option<String> {
     bound
         .iter()
         .find(|(candidate, _)| candidate == id)
-        .is_some_and(|(_, props)| trigger_of(props).is_some())
+        .and_then(|(_, props)| trigger_of(props))
+}
+
+fn has_trigger(bound: &ShortcutList, id: &str) -> bool {
+    trigger_for(bound, id).is_some()
 }
 
 fn trigger_of(props: &Reply) -> Option<String> {
@@ -207,6 +220,11 @@ mod tests {
         require_trigger(&bound, Action::Capture).expect("the trigger the user just chose is bound");
         let status = portal_status(&bound);
         assert_names_only(&status.warning, &[SELECT_ID]);
+        assert_eq!(status.capture_trigger.as_deref(), Some(CAPTURE_TRIGGER));
+        assert_eq!(
+            status.select_trigger, None,
+            "the shortcut the portal has no trigger for is reported as unbound"
+        );
         assert_eq!(
             status.detail,
             format!(
@@ -245,5 +263,37 @@ mod tests {
     #[test]
     fn describes_the_triggers_the_reply_carries() {
         assert_eq!(describe(&both_bound()), BOTH_TRIGGERS);
+    }
+
+    /// The stored shortcut is not what the portal fires, so each row has to be
+    /// told the trigger that is actually held, under its own shortcut's name.
+    #[test]
+    fn the_status_line_names_the_trigger_under_its_own_shortcut() {
+        let status = portal_status(&both_bound());
+        assert_eq!(status.capture_trigger.as_deref(), Some(CAPTURE_TRIGGER));
+        assert_eq!(status.select_trigger.as_deref(), Some(SELECT_TRIGGER));
+    }
+
+    /// A reconfigure can bind the shortcut the user just chose and leave the
+    /// other one with nothing, so one row can be bound while the other is not.
+    #[test]
+    fn the_status_line_reports_each_shortcut_on_its_own() {
+        let bound = list(&[
+            (CAPTURE_ID, with_trigger(CAPTURE_TRIGGER)),
+            (SELECT_ID, with_trigger("")),
+        ]);
+        let status = portal_status(&bound);
+        assert_eq!(status.capture_trigger.as_deref(), Some(CAPTURE_TRIGGER));
+        assert_eq!(status.select_trigger, None);
+    }
+
+    /// A reply with no trigger at all is the state the desktop leaves the app in
+    /// when its prompt is declined, and it must reach the window as no trigger
+    /// rather than as the shortcut the app asked for.
+    #[test]
+    fn the_status_line_reports_no_trigger_for_a_reply_without_one() {
+        let status = portal_status(&ShortcutList::new());
+        assert_eq!(status.capture_trigger, None);
+        assert_eq!(status.select_trigger, None);
     }
 }
