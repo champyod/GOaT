@@ -159,11 +159,19 @@ fn screen_to_fit(
     })
 }
 
-/// The bounds the window is fitted inside, in the logical points it is set in.
-/// A screen is measured in its own pixels and a window is not, so on a display
-/// that draws at twice the density the same number buys twice the screen; a
-/// scale factor the platform will not report leaves the two in step rather than
-/// guessing a denser one.
+/// A screen's size in the points a window is set in. A screen is measured in its
+/// own pixels and a window is not, so on a display that draws at twice the
+/// density the same screen is half as many points across.
+fn logical_bounds(screen: ScreenSize, scale: f64) -> (f64, f64) {
+    (
+        f64::from(screen.width) / scale,
+        f64::from(screen.height) / scale,
+    )
+}
+
+/// The bounds the window is fitted inside. A scale factor the platform will not
+/// report leaves the screen and the window in step rather than guessing a denser
+/// one.
 fn monitor_bounds(window: &tauri::WebviewWindow) -> Result<(f64, f64), String> {
     let current = window
         .current_monitor()
@@ -179,11 +187,7 @@ fn monitor_bounds(window: &tauri::WebviewWindow) -> Result<(f64, f64), String> {
     };
     let screen = screen_to_fit(current, &listed)
         .ok_or_else(|| "no screen found to size the window against".to_string())?;
-    let scale = window.scale_factor().unwrap_or(1.0);
-    Ok((
-        f64::from(screen.width) / scale,
-        f64::from(screen.height) / scale,
-    ))
+    Ok(logical_bounds(screen, window.scale_factor().unwrap_or(1.0)))
 }
 
 /// How the window is drawn right now, as the file holds it rather than as a
@@ -346,6 +350,36 @@ mod tests {
             Some(ScreenSize {
                 width: 3840,
                 height: 2160
+            })
+        );
+    }
+
+    #[test]
+    fn a_screen_that_draws_at_twice_the_density_is_half_as_many_points_across() {
+        let dense = ScreenSize {
+            width: 3840,
+            height: 2160,
+        };
+        assert_eq!(logical_bounds(dense, 2.0), (1920.0, 1080.0));
+        assert_eq!(logical_bounds(dense, 1.0), (3840.0, 2160.0));
+    }
+
+    #[test]
+    fn a_desktop_with_no_screen_to_name_leaves_the_window_without_bounds() {
+        assert_eq!(screen_to_fit(None, &[]), None);
+    }
+
+    #[test]
+    fn a_desktop_that_names_no_primary_falls_back_to_its_first_screen() {
+        let listed = [
+            screen(0, "Desk", false, 1920, 1080),
+            screen(1, "Side", false, 1280, 800),
+        ];
+        assert_eq!(
+            screen_to_fit(None, &listed),
+            Some(ScreenSize {
+                width: 1920,
+                height: 1080
             })
         );
     }
