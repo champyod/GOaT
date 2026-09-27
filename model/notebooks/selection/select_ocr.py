@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from goat_model import constants as c
 from goat_model.data import dataset_revisions
-from goat_model.metrics import cohens_d, paired_t_test, trace_cer
+from goat_model.metrics import cer, cohens_d, order_hypothesis, paired_t_test, trace_cer
 from goat_model.ocr import evaluate
 from goat_model.ocr.engine import get_ocr
 from goat_model.log import dump as _dump
@@ -120,6 +120,11 @@ def main() -> None:
         default=None,
         help="cap images per dataset (deterministic first-N smoke runs; verdict needs full)",
     )
+    parser.add_argument(
+        "--reverse",
+        action="store_true",
+        help="answer key is bottom-to-top (render order): flip hypothesis lines before scoring",
+    )
     args = parser.parse_args()
     _info("select-ocr", "args", **vars(args))
     models = parse_subset_arg(args.models, c.OCR_MODELS, "model")
@@ -142,6 +147,7 @@ def main() -> None:
         results: dict = {
             "runs": args.repeats,
             "seed": args.seed,
+            "reverse": args.reverse,
             "dataset_revisions": dataset_revisions(),
             "models": {},
             "comparisons": [],
@@ -181,6 +187,14 @@ def main() -> None:
                 triples = [list(r) for r in stored]
                 for i in range(done, args.repeats):
                     recs = evaluate.run_ocr(backend, assets, img_size, seed=args.seed)
+                    if args.reverse:
+                        # Bottom-to-top answer key: reorder before ANY scoring,
+                        # logging, or checkpointing so all three agree.
+                        for rec in recs:
+                            hyp = order_hypothesis(rec["hypothesis"], reverse=True)
+                            rec["hypothesis"] = hyp
+                            rec["cer"] = cer(rec["reference"], hyp)
+                            rec["word_accuracy"] = 1.0 - rec["cer"]
                     runs.append(recs)
                     triples.append(
                         [[rec["cer"], rec["word_accuracy"], rec["latency_ms"]] for rec in recs]
