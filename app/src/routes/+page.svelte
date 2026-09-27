@@ -30,10 +30,10 @@
   /// The expanded view is fitted once its layout has stopped moving, so a burst
   /// of reflows out of one change is one window resize rather than one per frame.
   const FIT_DEBOUNCE_MS = 100;
-  /// The window is only asked to move past this much difference. A fit that lands
-  /// within it of the size already asked for is the same layout measuring itself
-  /// — a scrollbar taking width off the content reflows it back — and answering
-  /// that would walk the window toward the clamp a little at a time.
+  /// The window is only asked to move past this much difference on the leg that
+  /// is fitted. A fit that lands within it of the height already asked for is
+  /// the same layout measuring itself a fraction differently, and answering that
+  /// would walk the window toward the clamp a little at a time.
   const FIT_EPSILON_PX = 2;
   const NOT_BOUND = 'Not bound';
   const CAPTURE_TRIGGER_TITLE = 'Save capture trigger';
@@ -159,9 +159,11 @@
   let selOffset = $state({ x: 0, y: 0 });
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
   let fitTimer: ReturnType<typeof setTimeout> | undefined;
-  /// The size the window was last asked to take. The expanded view is measured
-  /// against this rather than against the window, because the window is what
-  /// the measurement moves.
+  /// The size the window was last asked to take. The height is the one the
+  /// expanded view is measured against, because the window is what the
+  /// measurement moves. The width is never measured: it is held at whatever the
+  /// first fit asked for and sent back unchanged, so no fit is ever answered
+  /// with its own result.
   let lastFitSize: { width: number; height: number } | null = null;
   let bodyEl: HTMLDivElement | undefined = $state();
   let contentEl: HTMLDivElement | undefined = $state();
@@ -603,37 +605,42 @@
     void resizeForMenu(false);
   }
 
-  /// The size the window has to be for the expanded view to fit whole, or null
+  /// The height the window has to be for the expanded view to fit whole, or null
   /// when there is nothing laid out to measure. The body is stretched to the
   /// window, so its own box is the window read back and says nothing about the
   /// room the content wants; the content grid is the one box in that column laid
   /// out at its natural size, and everything from the top of the document down
   /// to the padding under it is inside the window. Offsets stand in for a client
   /// rect because they read the same whether or not the view is scrolled.
-  function expandedViewportSize(): { width: number; height: number } | null {
+  function expandedContentHeight(): number | null {
     if (!bodyEl || !contentEl) return null;
-    const width = bodyEl.offsetWidth;
     const paddingBelow = parseFloat(getComputedStyle(bodyEl).paddingBottom);
     const height = contentEl.offsetTop + contentEl.offsetHeight + paddingBelow;
-    if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+    if (!Number.isFinite(height)) return null;
     // A read taken before the view has been laid out comes back as nothing, and
     // asking for a window of nothing is how a fit ends up at the clamp rather
     // than at the content.
-    if (width <= 0 || height <= 0) return null;
-    return { width, height };
+    if (height <= 0) return null;
+    return height;
   }
 
-  /// The window is asked for the fit, and a refusal is written down rather than
-  /// raised: the view works at whatever size it has, so a window the desktop
-  /// will not take is a report and not a failure. The size asked for is kept
-  /// either way, so a layout that keeps reading the same does not keep asking.
-  async function fitWindowToContent(size: {
-    width: number;
-    height: number;
-  }): Promise<void> {
-    lastFitSize = size;
+  /// The height is fitted and the width is sent back exactly as it was last
+  /// asked for. Fitting the width would measure the body, and the body is the
+  /// window: a fit that reaches the height clamp brings a scrollbar with it, the
+  /// body loses the width of that scrollbar, and the narrower window handed back
+  /// for it is that same walk one step on. The desktop clamps whatever width it
+  /// is given, so the frozen one is safe to keep sending.
+  ///
+  /// A refusal is written down rather than raised: the view works at whatever
+  /// size it has, so a window the desktop will not take is a report and not a
+  /// failure. The size asked for is kept either way, so a layout that keeps
+  /// reading the same does not keep asking.
+  async function fitWindowToContent(height: number): Promise<void> {
+    const width = lastFitSize?.width ?? bodyEl?.offsetWidth;
+    if (width === undefined || width <= 0) return;
+    lastFitSize = { width, height };
     try {
-      await invoke('set_window_size', { width: size.width, height: size.height });
+      await invoke('set_window_size', { width, height });
     } catch (e) {
       reportError('window', `the window could not be fitted: ${String(e)}`);
     }
@@ -641,22 +648,18 @@
 
   /// One fit per settled layout, not one per observation: a capture, a reflow
   /// and a scrollbar appearing all arrive as several sizes of the same view, and
-  /// each of them would otherwise be a window the user watches move.
+  /// each of them would otherwise be a window the user watches move. Only the
+  /// height is compared, because the width is sent back as it was and so cannot
+  /// have moved.
   function scheduleWindowFit(): void {
     if (fitTimer) clearTimeout(fitTimer);
     fitTimer = setTimeout(() => {
       fitTimer = undefined;
-      const size = expandedViewportSize();
-      if (!size) return;
+      const height = expandedContentHeight();
+      if (!height) return;
       const asked = lastFitSize;
-      if (
-        asked &&
-        Math.abs(size.width - asked.width) <= FIT_EPSILON_PX &&
-        Math.abs(size.height - asked.height) <= FIT_EPSILON_PX
-      ) {
-        return;
-      }
-      void fitWindowToContent(size);
+      if (asked && Math.abs(height - asked.height) <= FIT_EPSILON_PX) return;
+      void fitWindowToContent(height);
     }, FIT_DEBOUNCE_MS);
   }
 
@@ -1376,6 +1379,11 @@
     /* The bar is only 300px wide, so the panel is capped to the window instead
        of hanging off its right edge when a row wants more room than it has. */
     max-width: calc(100vw - 1rem);
+    /* The panel hangs from a 48px bar, and a window fitted to a short capture
+       can be shorter than the panel needs, so it takes only the room the bar
+       leaves and scrolls the rest instead of running off the bottom edge. */
+    max-height: calc(100vh - 3rem);
+    overflow-y: auto;
     padding: 0.5rem;
     /* The panel is part of the same strip, so it takes the same accent tint and
        the same navy fallback as the bar rather than a colour of its own. */
