@@ -37,10 +37,12 @@
   const HEX_COLOR = /^#[\da-f]{6}$/i;
 
   /// The look the window draws before the stored appearance answers, and the one
-  /// it keeps if the answer never comes: the same three values the stylesheet's
-  /// own fallbacks hold, so neither a slow load nor a failed one is something
-  /// the user sees. `FALLBACK_ACCENT` is only the colour the picker opens on —
-  /// System is the accent actually in force while `accent` is null.
+  /// it keeps if the answer never comes, so neither a slow load nor a failed one
+  /// is something the user sees. `FALLBACK_BLUR_PX` is the strip's own blur
+  /// fallback in the stylesheet, and moving one without the other leaves the
+  /// slider starting somewhere the window is not. `FALLBACK_ACCENT` is only the
+  /// colour the picker opens on — System is the accent actually in force while
+  /// `accent` is null.
   const FALLBACK_BLUR_PX = 24;
   const FALLBACK_TINT_PERCENT = 35;
   const FALLBACK_ACCENT = '#3f7fd4';
@@ -428,12 +430,18 @@
     accent !== null && !ACCENT_PRESETS.some((preset) => preset.value === accent)
   );
 
-  /// The look is three variables and a colour scheme on the document element,
-  /// so every rule that reads them repaints without this page re-rendering. The
+  /// The look is two variables and a colour scheme on the document element, so
+  /// every rule that reads them repaints without this page re-rendering. The
   /// accent is checked once more on the way out: a value `color-mix` cannot
   /// read voids the whole declaration it stands in, taking the dark fallback
   /// line with it, so the variable is taken away instead and the stylesheet's
   /// own fallbacks keep the window the shape it has.
+  ///
+  /// System writes nothing at all, because a tree with no `color-scheme` of its
+  /// own is what lets the desktop's own popup and scrollbar colours through —
+  /// but this page's `color-scheme: dark` is there to stop that popup coming up
+  /// white on a dark panel, so removing the inline value hands the decision back
+  /// to the stylesheet rather than to the desktop.
   $effect(() => {
     const root = document.documentElement;
     const chosen = asAccent(accent);
@@ -446,10 +454,11 @@
     const tint = asSliderValue(tintOpacity, APPEARANCE_TINT_MAX);
     root.style.setProperty('--goat-blur', `${blur}px`);
     root.style.setProperty('--goat-tint', `${tint}%`);
-    root.style.setProperty(
-      'color-scheme',
-      theme === 'system' ? 'light dark' : theme
-    );
+    if (theme === 'system') {
+      root.style.removeProperty('color-scheme');
+    } else {
+      root.style.setProperty('color-scheme', theme);
+    }
   });
 
   /// Every control ends up here. The command answers with what it kept, so the
@@ -1149,18 +1158,16 @@
     color-scheme: dark;
   }
 
-  /* The window's look is three variables, and these are what they fall back to:
-     the desktop's own accent, and the blur and tint strength the bar and panel
-     have been drawing with. Holding the shipped values here is what makes the
-     page look the way it looks now before the stored appearance answers, and
-     what makes it keep looking that way if the answer never comes. A chosen
-     accent is written over the first one on the document element, and a System
-     accent takes the variable away again, which is what leaves the desktop's
-     own colour in charge. The two numbers are the ones the appearance section
-     starts from; changing one means changing both. */
+  /* The window's look lives in variables on the document element, and its
+     fallbacks sit in the rules that read them rather than here, because the
+     strip and the body have always drawn at different blur strengths and one
+     shared fallback would flatten that. Those fallbacks are the page before the
+     stored appearance answers, and the page if it never comes. A chosen accent
+     is written over the one below on the document element, and a System accent
+     takes that variable away again, which is what leaves the desktop's own
+     colour in charge. */
   :global(:root) {
     --goat-accent: AccentColor;
-    --goat-blur: 24px;
     --goat-tint: 35%;
   }
 
@@ -1230,8 +1237,8 @@
       var(--goat-accent) var(--goat-tint),
       transparent
     );
-    backdrop-filter: blur(var(--goat-blur)) saturate(1.5);
-    -webkit-backdrop-filter: blur(var(--goat-blur)) saturate(1.5);
+    backdrop-filter: blur(var(--goat-blur, 24px)) saturate(1.5);
+    -webkit-backdrop-filter: blur(var(--goat-blur, 24px)) saturate(1.5);
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   }
 
@@ -1289,8 +1296,8 @@
       var(--goat-accent) var(--goat-tint),
       transparent
     );
-    backdrop-filter: blur(var(--goat-blur)) saturate(1.5);
-    -webkit-backdrop-filter: blur(var(--goat-blur)) saturate(1.5);
+    backdrop-filter: blur(var(--goat-blur, 24px)) saturate(1.5);
+    -webkit-backdrop-filter: blur(var(--goat-blur, 24px)) saturate(1.5);
     border: 1px solid rgba(255, 255, 255, 0.18);
     border-radius: 0.5rem;
     box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.45);
@@ -1519,8 +1526,8 @@
     box-sizing: border-box;
     padding: 1rem;
     background: rgba(255, 255, 255, 0.04);
-    backdrop-filter: blur(var(--goat-blur));
-    -webkit-backdrop-filter: blur(var(--goat-blur));
+    backdrop-filter: blur(var(--goat-blur, 18px));
+    -webkit-backdrop-filter: blur(var(--goat-blur, 18px));
   }
 
   .status {
