@@ -13,10 +13,11 @@
     "windows": [
       {
         "title": "GOaT",
-        "width": 800,
-        "height": 600,
+        "width": 300,
+        "height": 48,
+        "resizable": true,
         "transparent": true,
-        "decorations": true,
+        "decorations": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
@@ -27,7 +28,7 @@
         "title": "GOaT Setup",
         "url": "/setup",
         "width": 480,
-        "height": 560,
+        "height": 400,
         "transparent": false,
         "decorations": true,
         "alwaysOnTop": false,
@@ -42,7 +43,7 @@
         "height": 400,
         "transparent": false,
         "decorations": true,
-        "alwaysOnTop": false,
+        "alwaysOnTop": true,
         "skipTaskbar": false,
         "visible": false
       }
