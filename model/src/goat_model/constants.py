@@ -53,11 +53,12 @@ SEED = 42
 # ---------------------------------------------------------------------------
 # OCR
 # ---------------------------------------------------------------------------
-OCR_MODELS = ("PP-OCRv5-mobile", "ThaiTrOCR")
+OCR_MODELS = ("PP-OCRv5-mobile", "ThaiTrOCR", "PPDet-ThaiTrOCR")
 OCR_DATASETS = ("thaiocrbench", "thai-ocr-evaluation")
 
-# Per-model input resolution (bilinear resize before inference).
-OCR_IMG_SIZE = {"PP-OCRv5-mobile": 512, "ThaiTrOCR": 384}
+# Per-model input resolution (bilinear resize before inference). The hybrid
+# runs detection at 512px; its crops reach ThaiTrOCR at native resolution.
+OCR_IMG_SIZE = {"PP-OCRv5-mobile": 512, "ThaiTrOCR": 384, "PPDet-ThaiTrOCR": 512}
 
 # Hardware budget for the selection experiments.
 OCR_HW_CORES = 4
@@ -82,7 +83,9 @@ AUG_GAUSSIAN_SIGMA = 5.0
 # OCR fine-tuning (step 10). Only ThaiTrOCR (the HF-trainable candidate) is
 # fine-tuned, with full weights; the PP-OCRv5-mobile pipeline stays frozen.
 THAITROCR_MODEL_ID = "openthaigpt/thai-trocr"
-OCR_REAL_SCREEN_DIR = ""  # empty => synthetic-only; set to real screens dir when captured (500 images)
+OCR_REAL_SCREEN_DIR = (
+    ""  # empty => synthetic-only; set to real screens dir when captured (500 images)
+)
 OCR_SYNTHETIC_N = 10_000
 OCR_SYNTHETIC_REPO_ID = "KunanonKhai/Synthetic-GOaT-OCR"
 OCR_FONTS = (

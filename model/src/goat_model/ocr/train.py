@@ -38,7 +38,16 @@ from goat_model.metrics import cer
 from goat_model.log import error as _err
 from goat_model.log import info as _info
 from goat_model.log import warning as _warn
-from goat_model.utils import drive_mirror_callback, log_call, LogProgress, resolve_device, setup_seed, sync_dir, trainer_heartbeat, write_json
+from goat_model.utils import (
+    drive_mirror_callback,
+    log_call,
+    LogProgress,
+    resolve_device,
+    setup_seed,
+    sync_dir,
+    trainer_heartbeat,
+    write_json,
+)
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
@@ -72,7 +81,9 @@ def _make_collator(processor: TrOCRProcessor):
 
 
 @log_call
-def _build_dataset(split_dir: Path, processor: TrOCRProcessor, img_size: int) -> tuple[Dataset, list[str]]:
+def _build_dataset(
+    split_dir: Path, processor: TrOCRProcessor, img_size: int
+) -> tuple[Dataset, list[str]]:
     images, texts = [], []
     for img in sorted(split_dir.iterdir()):
         if img.suffix.lower() not in IMG_EXTS:
@@ -158,16 +169,24 @@ def run_ocr_finetune(
         _info("ocr-train", "skipped - already trained", result=str(result_path))
         return
 
-    if selected_model != "ThaiTrOCR":
+    # Only the ThaiTrOCR weights train: standalone, or as the recognizer half
+    # of the hybrid (whose detector stays frozen like PP-OCRv5-mobile).
+    train_target = "ThaiTrOCR" if selected_model in ("ThaiTrOCR", "PPDet-ThaiTrOCR") else None
+    if train_target is None:
         write_json(
             result_path,
             {
                 "selected": selected_model,
-                "skipped": "only ThaiTrOCR is fine-tuned; PP-OCRv5-mobile stays frozen",
+                "skipped": "only ThaiTrOCR is fine-tuned (standalone or hybrid half); PP-OCRv5-mobile stays frozen",
             },
         )
         _info("ocr-train", "no fine-tune needed - stays frozen", selected=selected_model)
         return
+    trained_note = (
+        "ThaiTrOCR recognizer half of PPDet-ThaiTrOCR; detector frozen"
+        if selected_model == "PPDet-ThaiTrOCR"
+        else "ThaiTrOCR"
+    )
 
     setup_seed(seed)
     processor = TrOCRProcessor.from_pretrained(THAITROCR_MODEL_ID)
@@ -192,7 +211,12 @@ def run_ocr_finetune(
                 if best is None or v["cer"] < best[0]:
                     best = (v["cer"], key)
             if grid_results:
-                _info("ocr-train", "resuming configs", done=len(grid_results), partial=str(partial_path))
+                _info(
+                    "ocr-train",
+                    "resuming configs",
+                    done=len(grid_results),
+                    partial=str(partial_path),
+                )
     total = len(OCR_GRID_LEARNING_RATES) * len(OCR_GRID_BATCH_SIZES)
     done = 0
     skipped: list[str] = []
@@ -222,8 +246,13 @@ def run_ocr_finetune(
                 out_dir.mkdir(parents=True, exist_ok=True)
                 t0 = time.monotonic()
                 n_copied, n_skipped = sync_dir(ckpt_mirror, out_dir)
-                _info("ocr-train", "checkpoints restored", copied=n_copied, skipped=n_skipped,
-                      elapsed_s=round(time.monotonic() - t0, 1))
+                _info(
+                    "ocr-train",
+                    "checkpoints restored",
+                    copied=n_copied,
+                    skipped=n_skipped,
+                    elapsed_s=round(time.monotonic() - t0, 1),
+                )
             args = Seq2SeqTrainingArguments(
                 output_dir=str(out_dir),
                 learning_rate=lr,
@@ -282,7 +311,10 @@ def run_ocr_finetune(
 
             key = {"lr": lr, "batch_size": batch}
             grid_results[cfg_key] = {**key, "cer": val_cer, "model": str(out_dir)}
-            write_json(partial_path, {"seed": seed, "selected": selected_model, "grid_results": grid_results})
+            write_json(
+                partial_path,
+                {"seed": seed, "selected": selected_model, "grid_results": grid_results},
+            )
             _info("ocr-train", "CER", lr=lr, batch=batch, cer=val_cer)
             if best is None or val_cer < best[0]:
                 best = (val_cer, key)
@@ -296,6 +328,7 @@ def run_ocr_finetune(
         result_path,
         {
             "selected": selected_model,
+            "trained": trained_note,
             "base_model": THAITROCR_MODEL_ID,
             "epochs": list(OCR_GRID_EPOCHS),
             "grid_results": grid_results,

@@ -9,6 +9,7 @@ pick ThaiTrOCR iff its CER <= 0.10, otherwise pick the lowest CER model.
 from __future__ import annotations
 
 import argparse
+import itertools
 import traceback
 import json
 import re
@@ -27,7 +28,14 @@ from goat_model.log import dump as _dump
 from goat_model.log import error as _err
 from goat_model.log import info as _info
 from goat_model.log import warning as _warn
-from goat_model.utils import LogProgress, load_dotenv, log_call, resolve_device, setup_seed, write_json
+from goat_model.utils import (
+    LogProgress,
+    load_dotenv,
+    log_call,
+    resolve_device,
+    setup_seed,
+    write_json,
+)
 
 
 @log_call
@@ -78,15 +86,20 @@ def _dump_samples(path: Path, rows: list[dict]) -> None:
         _warn("select-ocr", "sample log write failed", path=str(path), error=str(err))
 
 
-
 @log_call
 def main() -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(description="OCR selection experiment (CER decision rule).")
     parser.add_argument("--repeats", type=int, default=c.OCR_N_RUNS)
     parser.add_argument("--ocr-eval-dir", type=Path, default=c.OCR_EVAL)
-    parser.add_argument("--device", default="cuda", help="cuda (default, fails fast if unavailable) | cpu (explicit, slow)")
-    parser.add_argument("--force", action="store_true", help="ignore checkpoints, rerun all repeats")
+    parser.add_argument(
+        "--device",
+        default="cuda",
+        help="cuda (default, fails fast if unavailable) | cpu (explicit, slow)",
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="ignore checkpoints, rerun all repeats"
+    )
     parser.add_argument("--output", type=Path, default=c.RESULTS / "ocr_selection.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
     parser.add_argument("--debug", action="store_true", help="verbose per-action logs")
@@ -97,7 +110,11 @@ def main() -> None:
     samples_path = _samples_path(args.output, run_id)
     try:
         if not args.force and args.output.is_file():
-            _info("select-ocr", "skipped - already selected (use --force to rerun)", out=str(args.output))
+            _info(
+                "select-ocr",
+                "skipped - already selected (use --force to rerun)",
+                out=str(args.output),
+            )
             return
 
         setup_seed(args.seed)
@@ -124,18 +141,27 @@ def main() -> None:
                 assets = evaluate.discover_assets(dataset_dir)
                 backend = get_ocr(model, device=device, seed=args.seed)
                 img_size = c.OCR_IMG_SIZE[model]
-                _info("select-ocr", "loading weights (first run downloads GBs)", model=model, dataset=dataset)
+                _info(
+                    "select-ocr",
+                    "loading weights (first run downloads GBs)",
+                    model=model,
+                    dataset=dataset,
+                )
                 key = f"{model}/{dataset}"
                 stored = [list(r) for r in saved_runs.get(key, [])]
                 done = len(stored)
-                prog = LogProgress(args.repeats, f"select-ocr {model}/{dataset}", unit="repeat", interval_s=30.0)
+                prog = LogProgress(
+                    args.repeats, f"select-ocr {model}/{dataset}", unit="repeat", interval_s=30.0
+                )
                 prog.n = done
                 runs = [_recs(r) for r in stored]
                 triples = [list(r) for r in stored]
                 for i in range(done, args.repeats):
                     recs = evaluate.run_ocr(backend, assets, img_size, seed=args.seed)
                     runs.append(recs)
-                    triples.append([[rec["cer"], rec["word_accuracy"], rec["latency_ms"]] for rec in recs])
+                    triples.append(
+                        [[rec["cer"], rec["word_accuracy"], rec["latency_ms"]] for rec in recs]
+                    )
                     _dump_samples(
                         samples_path,
                         [
@@ -151,38 +177,40 @@ def main() -> None:
                         ],
                     )
                     saved_runs[key] = triples
-                    write_json(partial_path, {"seed": args.seed, "runs": args.repeats, "runs_data": saved_runs})
+                    write_json(
+                        partial_path,
+                        {"seed": args.seed, "runs": args.repeats, "runs_data": saved_runs},
+                    )
                     prog.update()
                 prog.close()
                 summary = evaluate.aggregate_records(runs)
                 stats[dataset] = summary
                 cer_by_model.setdefault(model, []).extend(rec["cer"] for run in runs for rec in run)
             results["models"][model] = stats
-            write_json(_model_file(args.output, model), {"model": model, "seed": args.seed, **stats})
+            write_json(
+                _model_file(args.output, model), {"model": model, "seed": args.seed, **stats}
+            )
 
-        thai_mean = sum(cer_by_model["ThaiTrOCR"]) / len(cer_by_model["ThaiTrOCR"])
-        pp_mean = sum(cer_by_model["PP-OCRv5-mobile"]) / len(cer_by_model["PP-OCRv5-mobile"])
-        test = paired_t_test(
-            cer_by_model["ThaiTrOCR"], cer_by_model["PP-OCRv5-mobile"], alpha=c.OCR_ALPHA
-        )
-        results["comparisons"].append(
-            {
-                "a": "ThaiTrOCR",
-                "b": "PP-OCRv5-mobile",
-                "paired_t_test": test,
-                "cohens_d": cohens_d(cer_by_model["ThaiTrOCR"], cer_by_model["PP-OCRv5-mobile"]),
-            }
-        )
+        mean_cer = {m: sum(v) / len(v) for m, v in cer_by_model.items()}
+        for a, b in itertools.combinations(c.OCR_MODELS, 2):
+            results["comparisons"].append(
+                {
+                    "a": a,
+                    "b": b,
+                    "paired_t_test": paired_t_test(
+                        cer_by_model[a], cer_by_model[b], alpha=c.OCR_ALPHA
+                    ),
+                    "cohens_d": cohens_d(cer_by_model[a], cer_by_model[b]),
+                }
+            )
 
-        decision = (
-            "ThaiTrOCR"
-            if thai_mean <= c.OCR_CER_THRESHOLD
-            else ("ThaiTrOCR" if thai_mean < pp_mean else "PP-OCRv5-mobile")
-        )
+        # Pure lowest CER wins: any model may be frozen (PP-OCRv5, Tesseract)
+        # or trainable (ThaiTrOCR, hybrid's recognizer half); training handles
+        # each winner accordingly, so the gate plays no favorites.
+        decision = min(mean_cer, key=lambda m: mean_cer[m])
         results["decision"] = {
-            "rule": f"ThaiTrOCR iff mean CER <= {c.OCR_CER_THRESHOLD}, else lowest CER",
-            "mean_cer_thaitrocr": thai_mean,
-            "mean_cer_ppocrv5": pp_mean,
+            "rule": f"lowest mean CER over {', '.join(c.OCR_MODELS)}",
+            "mean_cer": mean_cer,
             "selected": decision,
         }
         write_json(args.output, results)
@@ -192,11 +220,10 @@ def main() -> None:
         partial_path.unlink(missing_ok=True)
         Path(str(args.output) + ".error.json").unlink(missing_ok=True)
 
-        _info("select-ocr", "mean CER", thaitrocr=round(thai_mean, 4), pp_ocrv5=round(pp_mean, 4))
-        _info("select-ocr", "paired t-test", p=round(test['p_value'], 4), significant=test['significant'])
+        _info("select-ocr", "mean CER", **{m: round(v, 4) for m, v in mean_cer.items()})
+        _info("select-ocr", "comparisons", n=len(results["comparisons"]))
         _info("select-ocr", "SELECTED", model=decision)
         _info("select-ocr", "wrote", out=str(args.output))
-
 
     except Exception as err:
         tb = traceback.format_exc()
@@ -207,7 +234,18 @@ def main() -> None:
             try:
                 _err_path = str(_err_out) + ".error.json"
                 from pathlib import Path as _P
-                _P(_err_path).write_text(json.dumps({"error": str(err), "kind": "select_ocr", "input": str(inp), "output": str(_err_out)}, indent=2))
+
+                _P(_err_path).write_text(
+                    json.dumps(
+                        {
+                            "error": str(err),
+                            "kind": "select_ocr",
+                            "input": str(inp),
+                            "output": str(_err_out),
+                        },
+                        indent=2,
+                    )
+                )
                 _info("select_ocr", "wrote error file", path=_err_path)
             except Exception:
                 pass
