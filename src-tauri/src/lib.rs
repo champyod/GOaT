@@ -746,9 +746,10 @@ fn set_monitor(
     Ok(monitor)
 }
 
-/// The whole config as it stands: the live hotkey block, plus the notice flag as
-/// the file holds it. Reading the block from managed state and the flag from disk
-/// is what keeps a write of one from putting the other's saved value back.
+/// The whole config as it stands: the live hotkey block, plus the notice flag and
+/// the appearance as the file holds them. Reading the block from managed state and
+/// the rest from disk is what keeps a write of one from putting the other's saved
+/// value back.
 fn config_from_state(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>) -> UserConfig {
     let stored = load_config(app);
     UserConfig {
