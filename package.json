@@ -4,8 +4,9 @@
   "description": "Global Ocr And Translator",
   "private": true,
   "scripts": {
-    "dev": "tauri dev",
-    "build": "tauri build",
+    "preflight": "bash tools/preflight.sh",
+    "dev": "bash tools/preflight.sh --for app && tauri dev",
+    "build": "bash tools/preflight.sh --for app && tauri build",
     "icon": "tauri icon icon.png",
     "tauri": "tauri"
   },

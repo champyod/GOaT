@@ -403,6 +403,12 @@ parse_args() {
 
 main() {
     parse_args "$@"
+    # Before the tessdata priming and before cargo: a missing cmake or C++
+    # toolchain only shows up later, inside a build script, as a cc or cmake
+    # complaint that names the wrong culprit. Invoked through bash on the
+    # absolute path so it does not depend on the cwd or on the executable bit.
+    bash "${REPO_ROOT}/tools/preflight.sh" --for sidecar ||
+        die "preflight failed: the native build tools are missing (see the install hints above)"
     read -r -a LANG_LIST <<<"$LANGS"
     local cache_dir triple suffix built binaries_dir installed_path size
     cache_dir="$(resolve_cache_dir)"
