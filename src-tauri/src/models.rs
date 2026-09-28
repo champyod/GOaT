@@ -172,3 +172,74 @@ pub fn run_translate(app: &tauri::AppHandle, text: &str) -> anyhow::Result<Strin
         .join("\n");
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// The one candidate directory that is not derived from the running app, and
+    /// the only path named in the error a missing model produces. A build that
+    /// ships a bundle has no such directory, so this is also the path that tells
+    /// a developer which checkout the app is looking in.
+    #[test]
+    fn the_last_resort_model_path_is_the_checkout_layout() {
+        assert_eq!(MODELS_DIR, "../models");
+        assert_eq!(models_dir(), PathBuf::from("../models"));
+    }
+
+    /// Every candidate directory is searched by joining one of these onto it. A
+    /// name carrying a separator or a root would leave the directory it is
+    /// supposed to come from, which is a different search from the one the three
+    /// candidate directories are meant to describe.
+    #[test]
+    fn every_model_is_asked_for_by_a_name_of_its_own() {
+        for name in [
+            OCR_DETECTION_MODEL,
+            OCR_RECOGNITION_MODEL,
+            OCR_KEYS_FILE,
+            NLLB_MODEL_DIR,
+        ] {
+            let path = Path::new(name);
+            assert!(!path.is_absolute(), "{name} must be looked up by name");
+            assert_eq!(
+                path.components().count(),
+                1,
+                "{name} must be a bare name, not a path into a directory"
+            );
+        }
+        assert_eq!(OCR_DETECTION_MODEL, "ppocrv5_mobile_det.onnx");
+        assert_eq!(OCR_RECOGNITION_MODEL, "ppocrv5_mobile_rec.onnx");
+        assert_eq!(OCR_KEYS_FILE, "ppocr_keys.txt");
+        assert_eq!(NLLB_MODEL_DIR, "nllb-200-distilled-1.3B-ct2-int8");
+    }
+
+    /// The window reads this struct and switches on one field of it, and nothing
+    /// at build time checks that the two still agree: a TypeScript type cannot
+    /// see a Rust struct. A field renamed or retyped here leaves the panel
+    /// waiting on a readiness that never arrives, so the shape travels as the
+    /// contract it is.
+    #[test]
+    fn a_status_carries_the_fields_the_window_reads() {
+        let status = ModelsStatus {
+            detection: true,
+            recognition: false,
+            keys: true,
+            nllb: false,
+            ready: false,
+        };
+
+        let encoded = serde_json::to_value(&status).expect("a status serialises");
+        let fields = encoded.as_object().expect("a status is an object");
+        let mut names: Vec<&str> = fields.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            ["detection", "keys", "nllb", "ready", "recognition"],
+            "the window reads `ready` off this struct and a rename would not be caught at build time"
+        );
+        for (name, field) in fields {
+            assert!(field.is_boolean(), "{name} is read as a boolean");
+        }
+    }
+}
