@@ -1,0 +1,89 @@
+name: Versioning
+
+# Assigns versions by itself: on every push to main, classify what changed
+# since the last v* tag. App changes (Tauri/Rust/frontend/sidecar/packaging)
+# bump the version and push a tag, which is what the Release workflow runs on.
+# Model training/selecting, data, docs and anything else: no version, no tag,
+# no build. A push that carries only version files (i.e. this job's own bump
+# commit) is a no-op so the job can never loop on itself.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify changes and bump
+        run: |
+          set -euo pipefail
+          last_tag="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo '')"
+          if [ -z "$last_tag" ]; then
+            # No tag yet: tag the current version as the baseline and stop.
+            # Tagging fires the Release workflow for this version exactly once.
+            current="$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "v$current"
+            git push origin "v$current"
+            exit 0
+          fi
+          range="${last_tag}..HEAD"
+          changed="$(git diff --name-only "$range")"
+          echo "Changed since ${last_tag:-root}:"
+          echo "$changed"
+
+          # App paths: anything that ships in the Tauri binary or bundles.
+          app_changed="$(echo "$changed" | grep -E '^(src-tauri/|app/|sidecar-ocr/|tools/bundle-resources\.sh|tools/preflight\.sh|\.github/workflows/release\.yml|package\.json$)' || true)"
+          if [ -z "$app_changed" ]; then
+            echo "No app changes - no version, no tag, no build."
+            exit 0
+          fi
+
+          # A bump commit only touches version files; never re-bump one.
+          non_version="$(echo "$changed" | grep -vE '^(src-tauri/tauri\.conf\.json|src-tauri/Cargo\.toml|src-tauri/Cargo\.lock|package\.json|app/package\.json)$' || true)"
+          if [ -z "$non_version" ]; then
+            echo "Only version files changed - bump commit, nothing to do."
+            exit 0
+          fi
+
+          # Conventional commits since the tag: feat -> minor, else patch.
+          # BREAKING CHANGE also takes minor while 0.x has no major line.
+          if git log "$range" --pretty=%B | grep -qE '^(feat|BREAKING CHANGE)([(:]|:)'; then
+            part="minor"
+          else
+            part="patch"
+          fi
+
+          current="$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
+          # shellcheck disable=SC2206
+          ver=(${current//./ })
+          if [ "$part" = "minor" ]; then
+            next="${ver[0]}.$((ver[1] + 1)).0"
+          else
+            next="${ver[0]}.${ver[1]}.$((ver[2] + 1))"
+          fi
+          echo "Bumping $current -> $next ($part)"
+
+          # Version lines are edited with sed so no formatter ever reflows the
+          # files; each file carries exactly one such line. heredocs cannot
+          # be used here because their closing delimiter may not be indented
+          # under a YAML literal block.
+          sed -i "0,/\"version\": \".*\"/s//\"version\": \"$next\"/" \
+            src-tauri/tauri.conf.json package.json app/package.json
+          sed -i "0,/^version = \".*\"$/s//version = \"$next\"/" \
+            src-tauri/Cargo.toml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/tauri.conf.json src-tauri/Cargo.toml package.json app/package.json
+          git commit -m "Set version to $next"
+          git tag "v$next"
+          git push origin HEAD:main "v$next"
