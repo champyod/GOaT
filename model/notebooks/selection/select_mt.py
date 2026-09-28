@@ -26,7 +26,15 @@ from goat_model.log import dump as _dump
 from goat_model.log import error as _err
 from goat_model.log import info as _info
 from goat_model.log import warning as _warn
-from goat_model.utils import LogProgress, load_dotenv, log_call, resolve_device, setup_seed, write_json
+from goat_model.utils import (
+    LogProgress,
+    load_dotenv,
+    log_call,
+    parse_subset_arg,
+    resolve_device,
+    setup_seed,
+    write_json,
+)
 
 
 @log_call
@@ -55,7 +63,16 @@ def _load_partial(path: Path, seed: int, repeats: int) -> dict:
 
 @log_call
 def _flush_partial(path: Path, seed: int, repeats: int, bleu, lat, hyp) -> None:
-    write_json(path, {"seed": seed, "runs": repeats, "bleu_series": bleu, "latency_series": lat, "last_hyp": hyp})
+    write_json(
+        path,
+        {
+            "seed": seed,
+            "runs": repeats,
+            "bleu_series": bleu,
+            "latency_series": lat,
+            "last_hyp": hyp,
+        },
+    )
 
 
 @log_call
@@ -88,7 +105,6 @@ def _dump_samples(path: Path, rows: list[dict]) -> None:
         _warn("select-mt", "sample log write failed", path=str(path), error=str(err))
 
 
-
 @log_call
 def main() -> None:
     load_dotenv()
@@ -98,21 +114,48 @@ def main() -> None:
     parser.add_argument("--src", choices=("th", "en"), default="en")
     parser.add_argument("--tgt", choices=("th", "en"), default="th")
     parser.add_argument("--repeats", type=int, default=c.MT_N_RUNS)
-    parser.add_argument("--batch", type=int, default=c.MT_BATCH_SIZE, help="eval batch size (steps = ceil(len(test)/batch))")
+    parser.add_argument(
+        "--batch",
+        type=int,
+        default=c.MT_BATCH_SIZE,
+        help="eval batch size (steps = ceil(len(test)/batch))",
+    )
     parser.add_argument("--mt-test-dir", type=Path, default=c.MT_TEST)
-    parser.add_argument("--device", default="cuda", help="cuda (default, fails fast if unavailable) | cpu (explicit, slow)")
-    parser.add_argument("--force", action="store_true", help="ignore checkpoints, rerun all repeats")
+    parser.add_argument(
+        "--device",
+        default="cuda",
+        help="cuda (default, fails fast if unavailable) | cpu (explicit, slow)",
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="ignore checkpoints, rerun all repeats"
+    )
     parser.add_argument("--output", type=Path, default=c.RESULTS / "mt_selection.json")
     parser.add_argument("--seed", type=int, default=c.SEED)
     parser.add_argument("--debug", action="store_true", help="verbose per-action logs")
+    parser.add_argument(
+        "--models",
+        default=",".join(c.MT_MODELS),
+        help="comma-separated model subset for parallel workers (default: all)",
+    )
+    parser.add_argument(
+        "--max-sentences",
+        type=int,
+        default=None,
+        help="cap sentences (deterministic first-N smoke runs; verdict needs full)",
+    )
     args = parser.parse_args()
     _info("select-mt", "args", **vars(args))
+    models = parse_subset_arg(args.models, c.MT_MODELS, "model")
     _err_out = args.output
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     samples_path = _samples_path(args.output, run_id)
     try:
         if not args.force and args.output.is_file():
-            _info("select-mt", "skipped - already selected (use --force to rerun)", out=str(args.output))
+            _info(
+                "select-mt",
+                "skipped - already selected (use --force to rerun)",
+                out=str(args.output),
+            )
             return
 
         setup_seed(args.seed)
@@ -122,6 +165,14 @@ def main() -> None:
         ref_file = args.mt_test_dir / f"flores200.{args.tgt}"
         domain_file = args.mt_test_dir / "flores200.domains"
         sources, refs, tags = evaluate.load_pairs(src_file, ref_file, domain_file)
+        if args.max_sentences is not None:
+            # file order is deterministic, so first-N is stable across workers.
+            sources, refs, tags = (
+                sources[: args.max_sentences],
+                refs[: args.max_sentences],
+                tags[: args.max_sentences],
+            )
+            _info("select-mt", "capped sentences", n=len(sources))
 
         results: dict = {
             "runs": args.repeats,
@@ -141,7 +192,7 @@ def main() -> None:
         if saved:
             _info("select-mt", "resuming", partial=str(partial_path))
 
-        for model in c.MT_MODELS:
+        for model in models:
             backend = get_mt(
                 model_name=model,
                 src_lang=c.LANG_CODES[args.src],
@@ -160,9 +211,7 @@ def main() -> None:
             prog = LogProgress(args.repeats, f"select-mt {model}", unit="repeat", interval_s=30.0)
             prog.n = done
             for rep in range(done, args.repeats):
-                run = evaluate.run_mt(
-                    backend, sources, refs, batch_size=args.batch, seed=args.seed
-                )
+                run = evaluate.run_mt(backend, sources, refs, batch_size=args.batch, seed=args.seed)
                 bleu_series[model].append(run["bleu"])
                 latency_series[model].append(run["average_ms_per_sentence"] / 1000.0)
                 last_by_model[model] = run
@@ -197,7 +246,18 @@ def main() -> None:
                         }
                     ],
                 )
-                _flush_partial(partial_path, args.seed, args.repeats, bleu_series, latency_series, {m: last_by_model[m]["hypotheses"] for m in last_by_model if last_by_model[m].get("hypotheses")})
+                _flush_partial(
+                    partial_path,
+                    args.seed,
+                    args.repeats,
+                    bleu_series,
+                    latency_series,
+                    {
+                        m: last_by_model[m]["hypotheses"]
+                        for m in last_by_model
+                        if last_by_model[m].get("hypotheses")
+                    },
+                )
                 prog.update()
             prog.close()
             bleu_mean, bleu_std = summarize(bleu_series[model])
@@ -209,25 +269,36 @@ def main() -> None:
                     refs, last_by_model[model]["hypotheses"], tags, seed=args.seed
                 ),
             }
-            write_json(_model_file(args.output, model), {"model": model, "seed": args.seed, **results["models"][model]})
+            write_json(
+                _model_file(args.output, model),
+                {"model": model, "seed": args.seed, **results["models"][model]},
+            )
 
-        a, b = c.MT_MODELS
-        test = paired_t_test(bleu_series[a], bleu_series[b], alpha=c.MT_ALPHA)
-        results["comparisons"].append(
-            {
-                "a": a,
-                "b": b,
-                "paired_t_test_bleu": test,
-                "cohens_d_bleu": cohens_d(bleu_series[a], bleu_series[b]),
-            }
+        if len(models) == 2:
+            a, b = models
+            test = paired_t_test(bleu_series[a], bleu_series[b], alpha=c.MT_ALPHA)
+            results["comparisons"].append(
+                {
+                    "a": a,
+                    "b": b,
+                    "paired_t_test_bleu": test,
+                    "cohens_d_bleu": cohens_d(bleu_series[a], bleu_series[b]),
+                }
+            )
+        else:
+            test = None
+
+        full = set(models) == set(c.MT_MODELS)
+        m0 = results["models"]["NLLB-200-distilled-600M"]["bleu"]["mean"] if full else None
+        lat0 = (
+            results["models"]["NLLB-200-distilled-600M"]["avg_s_per_sentence"]["mean"]
+            if full
+            else None
         )
-
-        m0 = results["models"]["NLLB-200-distilled-600M"]["bleu"]["mean"]
-        lat0 = results["models"]["NLLB-200-distilled-600M"]["avg_s_per_sentence"]["mean"]
         selected = (
             "NLLB-200-distilled-600M"
-            if m0 > c.MT_BLEU_THRESHOLD and lat0 <= c.MT_LATENCY_THRESHOLD_S
-            else "NLLB-200-distilled-1.3B"
+            if full and m0 > c.MT_BLEU_THRESHOLD and lat0 <= c.MT_LATENCY_THRESHOLD_S
+            else ("NLLB-200-distilled-1.3B" if full else None)
         )
         results["decision"] = {
             "rule": f"NLLB-600M iff BLEU > {c.MT_BLEU_THRESHOLD} and latency <= {c.MT_LATENCY_THRESHOLD_S}s",
@@ -235,6 +306,8 @@ def main() -> None:
             "600m_avg_s": lat0,
             "selected": selected,
         }
+        if not full:
+            results["decision"]["note"] = "subset run — merge worker outputs first"
         write_json(args.output, results)
         snapshot = _result_snapshot(args.output, run_id)
         write_json(snapshot, results)
@@ -242,16 +315,26 @@ def main() -> None:
         partial_path.unlink(missing_ok=True)
         Path(str(args.output) + ".error.json").unlink(missing_ok=True)
 
-        for model in c.MT_MODELS:
+        for model in models:
             m = results["models"][model]
-            _info("select-mt", "model result", model=model, bleu=round(m['bleu']['mean'], 2),
-                  bleu_std=round(m['bleu']['std'], 2),
-                  ms_per_sentence=round(m['avg_s_per_sentence']['mean'] * 1000),
-                  ms_std=round(m['avg_s_per_sentence']['std'] * 1000))
-        _info("select-mt", "paired t-test", p=round(test['p_value'], 4), significant=test['significant'])
+            _info(
+                "select-mt",
+                "model result",
+                model=model,
+                bleu=round(m["bleu"]["mean"], 2),
+                bleu_std=round(m["bleu"]["std"], 2),
+                ms_per_sentence=round(m["avg_s_per_sentence"]["mean"] * 1000),
+                ms_std=round(m["avg_s_per_sentence"]["std"] * 1000),
+            )
+        if test is not None:
+            _info(
+                "select-mt",
+                "paired t-test",
+                p=round(test["p_value"], 4),
+                significant=test["significant"],
+            )
         _info("select-mt", "SELECTED", model=selected)
         _info("select-mt", "wrote", out=str(args.output))
-
 
     except Exception as err:
         tb = traceback.format_exc()
@@ -262,7 +345,18 @@ def main() -> None:
             try:
                 _err_path = str(_err_out) + ".error.json"
                 from pathlib import Path as _P
-                _P(_err_path).write_text(json.dumps({"error": str(err), "kind": "select_mt", "input": str(inp), "output": str(_err_out)}, indent=2))
+
+                _P(_err_path).write_text(
+                    json.dumps(
+                        {
+                            "error": str(err),
+                            "kind": "select_mt",
+                            "input": str(inp),
+                            "output": str(_err_out),
+                        },
+                        indent=2,
+                    )
+                )
                 _info("select_mt", "wrote error file", path=_err_path)
             except Exception:
                 pass

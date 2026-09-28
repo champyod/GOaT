@@ -62,7 +62,7 @@ def _read_rgb(path: Path) -> np.ndarray:
 def run_ocr(
     backend: OCRBackend,
     assets: list[OCRAsset],
-    img_size: int,
+    img_size: int | None,
     seed: int = SEED,
 ) -> list[dict]:
     from goat_model.metrics import cer, word_accuracy
@@ -70,10 +70,20 @@ def run_ocr(
 
     setup_seed(seed)
     records: list[dict] = []
-    prog = LogProgress(len(assets), "ocr-eval", unit="img", interval_s=10.0, in_path=str(assets[0].image.parent) if assets else "?", out_path=f"{len(assets)} imgs")
+    prog = LogProgress(
+        len(assets),
+        "ocr-eval",
+        unit="img",
+        interval_s=10.0,
+        in_path=str(assets[0].image.parent) if assets else "?",
+        out_path=f"{len(assets)} imgs",
+    )
     for asset in assets:
         image = _read_rgb(asset.image)
-        image = preprocess(image, img_size)
+        if img_size is not None:
+            # None skips the resize: Tesseract segments full pages itself and
+            # downscaling would cost it small text.
+            image = preprocess(image, img_size)
         gt_text = read_gt(asset.gt)
 
         result = backend.recognize(image)

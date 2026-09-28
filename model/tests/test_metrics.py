@@ -10,7 +10,14 @@ from __future__ import annotations
 
 import pytest
 
-from goat_model.metrics import cer, corpus_bleu, trace_cer, word_accuracy
+from goat_model.metrics import (
+    bleu_equation,
+    cer,
+    corpus_bleu,
+    order_hypothesis,
+    trace_cer,
+    word_accuracy,
+)
 
 
 def test_cer_bounded_when_hypothesis_longer_than_reference() -> None:
@@ -65,6 +72,31 @@ def test_trace_cer_ops_add_up_on_junk() -> None:
     t = trace_cer("สวัสดี", "x" * 20)
     assert t["substitutions"] + t["deletions"] + t["insertions"] == t["distance"]
     assert t["distance"] == 20 and t["cer"] == 1.0
+
+
+def test_trace_cer_equation_spells_arithmetic() -> None:
+    assert trace_cer("abc", "abc")["equation"] == "0+0+0=0; 0/3=0.0000"
+    t = trace_cer("abc", "axcdef")
+    assert (
+        t["equation"]
+        == f"{t['substitutions']}+{t['deletions']}+{t['insertions']}={t['distance']}; "
+        f"{t['distance']}/{t['normalizer']}={t['cer']:.4f}"
+    )
+    assert trace_cer("", "")["equation"] == "0/0=0.0000 (both empty)"
+
+
+def test_bleu_equation_spells_arithmetic() -> None:
+    assert (
+        bleu_equation([10, 8, 6, 4], [20, 19, 18, 17], 0.9, 33.0)
+        == "10/20 * 8/19 * 6/18 * 4/17 (precisions) x bp 0.9000 = 33.00"
+    )
+
+
+def test_order_hypothesis_default_keeps_reverse_flips() -> None:
+    hyp = "L1 text\nL2 text"
+    assert order_hypothesis(hyp) == hyp
+    assert order_hypothesis(hyp, reverse=True) == "L2 text L1 text"
+    assert order_hypothesis("single", reverse=True) == "single"
 
 
 # BLEU needs >= 4 word-tokens per corpus for the 4-gram precision to be

@@ -14,6 +14,7 @@ import numpy as np
 def log_call(fn):
     import functools, logging, traceback
     from goat_model.log import configure, debug as _dbg, dump as _dump, error as _err, info as _info
+
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         is_debug = configure().isEnabledFor(logging.DEBUG)
@@ -33,6 +34,7 @@ def log_call(fn):
             if is_debug:
                 _dump(fn.__name__, traceback.format_exc(), level="debug")
             raise
+
     return wrapper
 
 
@@ -105,7 +107,15 @@ class LogProgress:
     heartbeat (every ``interval_s``) in log files where ``\\r`` bars
     would stack into one unreadable line."""
 
-    def __init__(self, total: int, desc: str, unit: str = "it", interval_s: float = 10.0, in_path: str | None = None, out_path: str | None = None) -> None:
+    def __init__(
+        self,
+        total: int,
+        desc: str,
+        unit: str = "it",
+        interval_s: float = 10.0,
+        in_path: str | None = None,
+        out_path: str | None = None,
+    ) -> None:
         self.total = total
         self.desc = desc
         self.unit = unit
@@ -133,6 +143,7 @@ class LogProgress:
             rate = self.n / el if el > 0 else 0.0
             eta = (self.total - self.n) / rate if rate > 0 else -1.0
             from goat_model.log import info as _info
+
             kv: dict = {
                 "elapsed": round(el),
                 "eta": round(eta),
@@ -174,6 +185,7 @@ def trainer_heartbeat(desc="train", interval_s=60.0):
                 loss = state.log_history[-1].get("loss", state.log_history[-1].get("eval_loss"))
             total = state.max_steps or "?"
             from goat_model.log import info as _info
+
             _info(
                 desc,
                 f"step {state.global_step}/{total}",
@@ -211,6 +223,7 @@ def resolve_device(requested: str = "cuda") -> str:
     """
     if requested == "cpu":
         from goat_model.log import warning as _warn
+
         _warn("resolve_device", "explicit CPU - expect hours-long runs")
         return "cpu"
     if not have("torch"):
@@ -223,6 +236,20 @@ def resolve_device(requested: str = "cuda") -> str:
         f"device {requested!r} requested but CUDA unavailable - fix torch/CUDA "
         "(never fall back to CPU silently)"
     )
+
+
+def parse_subset_arg(raw: str, valid: tuple[str, ...], name: str) -> list[str]:
+    """Comma-separated CLI subset (e.g. `--models a,b`) validated against `valid`.
+
+    Empty string falls back to the full list; unknown names fail loudly — a
+    typo'd model must never silently become a full (expensive) run.
+    Duplicates are dropped, order kept.
+    """
+    items = list(dict.fromkeys(s.strip() for s in raw.split(",") if s.strip())) or list(valid)
+    unknown = [s for s in items if s not in valid]
+    if unknown:
+        raise ValueError(f"unknown {name}(s): {unknown}; expected subset of {list(valid)}")
+    return items
 
 
 def sync_dir(src: Path, dst: Path) -> tuple[int, int]:
