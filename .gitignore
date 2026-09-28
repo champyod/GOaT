@@ -146,3 +146,6 @@ Thumbs.db
 .opencode/
 opencode.jsonc
 AGENTS.md
+
+# Bundle-time staging (populated by tools/bundle-resources.sh)
+/src-tauri/models/

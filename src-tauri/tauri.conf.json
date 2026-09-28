@@ -6,6 +6,7 @@
   "build": {
     "beforeDevCommand": "bun run --cwd app dev",
     "beforeBuildCommand": "bun run --cwd app build",
+    "beforeBundleCommand": "bash tools/bundle-resources.sh",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../app/build"
   },
@@ -70,6 +71,7 @@
     "active": true,
     "targets": "all",
     "externalBin": ["binaries/tesseract-ocr"],
+    "resources": ["models/nllb-200-distilled-1.3B-ct2-int8"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
