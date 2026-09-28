@@ -43,6 +43,14 @@ fn may_auto_show(captured: &AtomicBool) -> bool {
     captured.load(Ordering::SeqCst)
 }
 
+/// The same answer as `may_auto_show`, read from the one latch the app sets and
+/// named for the path that asks it about resizing. The window a launch puts on
+/// the screen is the bar, and a fitted size belongs to the expanded view a
+/// capture is what fills, so the app does not move its own window before then.
+pub(crate) fn may_auto_fit() -> bool {
+    may_auto_show(&CAPTURED)
+}
+
 /// The latch is one way. A capture that has happened is a fact about the session
 /// and nothing in the app can take it back, so there is no second answer to give
 /// once it has been set.
@@ -1160,6 +1168,12 @@ mod tests {
         );
     }
 
+    /// The one answer a window the app shapes by itself is read from, and the
+    /// two things it decides: whether the app may raise a window, and whether it
+    /// may resize one. A launch is the bar, so neither happens before a capture
+    /// has made the body worth having. What the user asks for is not in here —
+    /// the tray, a trigger and a command open a window whatever has been
+    /// captured.
     #[test]
     fn a_launch_raises_no_window_of_its_own_before_the_first_capture() {
         let captured = AtomicBool::new(false);

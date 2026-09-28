@@ -17,13 +17,14 @@
 
   const COPIED_FEEDBACK_MS = 1600;
   const ICON_SIZE = 16;
+  const BAR_WIDTH = 300;
   const BAR_HEIGHT = 48;
   const BAR_TOP_OFFSET = 28;
   /// The menu is a window of its own, and these two are where it is put: its
-  /// width is the bar's, so hanging it under the bar's right edge needs no
-  /// reading of the bar, and the gap is what keeps it off the bar's own edge.
+  /// width is the bar's, and it hangs under the hamburger button's own edges
+  /// (measured at press time), with the gap keeping it off the bar's edge.
   const MENU_LABEL = 'menu';
-  const MENU_WIDTH = 300;
+  const MENU_WIDTH = BAR_WIDTH;
   const MENU_GAP = 8;
   const BODY_WIDTH = 800;
   const BODY_HEIGHT = 600;
@@ -37,19 +38,6 @@
   const FIT_EPSILON_PX = 2;
   const APPEARANCE_TINT_MAX = 100;
   const HEX_COLOR = /^#[\da-f]{6}$/i;
-  /// The sentences the status bar can hold. They are named because a sentence
-  /// typed at each of the places that showed one is a sentence the next reader
-  /// spells differently, and a status bar carrying two of them at once is a bar
-  /// nobody is reading.
-  const READY = 'Ready';
-  const CAPTURING = 'Capturing...';
-  const CAPTURING_REGION = 'Capturing region...';
-  const READING_REGION = 'Reading region...';
-  const NO_TEXT = 'No text detected';
-  const CAPTURE_INCOMPLETE = 'Capture incomplete';
-  const SELECTION_TOO_SMALL = 'Selection too small';
-  const NEEDS_SCREENSHOT =
-    'Capture a screenshot first, then drag on it to select a region';
   /// The look the window draws before the stored appearance answers, and the one
   /// it keeps if the answer never comes, so neither a slow load nor a failed one
   /// is something the user sees. The menu is the window the accent is picked in,
@@ -120,19 +108,12 @@
     error?: string;
   };
 
-  /// How a line on the status bar is to be read: a step of a run, something the
-  /// user has to act on, or something that went wrong. It is written with the
-  /// sentence instead of derived from it, so the two cannot disagree.
-  type StatusTone = 'info' | 'warning' | 'error';
-
   type ModelsStatus = {
     ready: boolean;
   };
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let phase = $state<Phase>('idle');
-  let statusNote = $state(READY);
-  let statusTone = $state<StatusTone>('info');
   let ocrText = $state('');
   let translatedText = $state('');
   let hasImage = $state(false);
@@ -250,26 +231,42 @@
     hasImage = true;
   }
 
-  /// The window starts as a bar and the first capture is what fills it, so the
-  /// one moment it can take the body size is the moment the body first appears.
-  /// A later capture leaves the window alone, or it would undo a size the user
-  /// chose for themselves.
-  ///
-  /// That same moment gives the desktop's own title bar back, because a window
-  /// that is now a whole app rather than a strip is one the title bar belongs
-  /// on. A bar-only launch never reaches here, so it stays frameless.
-  $effect(() => {
-    if (!hasImage || hasGrown) return;
-    hasGrown = true;
+  /// The window is one window at two sizes rather than one window at whatever
+  /// size it was last left, and the frame travels with the size: a bar is its
+  /// own title bar and is frameless, while a window that has become a whole app
+  /// is one the desktop's own title bar belongs on.
+  async function setWindowRole(isBody: boolean): Promise<void> {
     const win = getCurrentWindow();
-    void win.setDecorations(true).catch((e: unknown) => {
-      reportError('window', `the title bar could not be restored: ${String(e)}`);
-    });
-    void win
-      .setSize(new LogicalSize(BODY_WIDTH, BODY_HEIGHT))
-      .catch((e: unknown) => {
-        reportError('window', `the window could not be resized: ${String(e)}`);
-      });
+    await win.setDecorations(isBody);
+    await win.setSize(
+      isBody
+        ? new LogicalSize(BODY_WIDTH, BODY_HEIGHT)
+        : new LogicalSize(BAR_WIDTH, BAR_HEIGHT)
+    );
+  }
+
+  /// The bar is the size the window starts at and the size the tray gives back,
+  /// and the body is the one moment it can take past it: the moment the body
+  /// first appears. A later capture leaves the window alone, or it would undo a
+  /// size the user chose for themselves.
+  ///
+  /// The flag goes up before the calls rather than after them, so a body that
+  /// appears and a window that is raised at the same moment grow the window
+  /// once rather than twice, and a request the desktop refuses leaves the body on
+  /// screen at the size the desktop is willing to give it.
+  async function growToBody(): Promise<void> {
+    if (hasGrown) return;
+    hasGrown = true;
+    try {
+      await setWindowRole(true);
+    } catch (e) {
+      reportError('window', `the window could not be resized: ${String(e)}`);
+    }
+  }
+
+  $effect(() => {
+    if (!hasImage) return;
+    void growToBody();
   });
 
   /// The body and its canvas are behind `hasImage`, so a result that arrives
@@ -299,26 +296,11 @@
       selOffset = origin ?? { x: 0, y: 0 };
       ocrText = result.ocr_text;
       translatedText = result.translated_text;
-      if (!ocrText.trim()) {
-        note(
-          result.error ? CAPTURE_INCOMPLETE : NO_TEXT,
-          result.error ? 'warning' : 'info'
-        );
-      } else {
-        note('', 'info');
-      }
     } catch (e) {
       fail('capture', String(e));
       return;
     }
     settle('done');
-  }
-
-  /// One line on the status bar, written with its tone, so a sentence and the
-  /// way it is to be read are never set apart.
-  function note(text: string, tone: StatusTone): void {
-    statusNote = text;
-    statusTone = tone;
   }
 
   /// The one exit every capture run takes. A result applied, an `invoke` that
@@ -336,26 +318,23 @@
   /// one person who can act on it.
   function fail(source: string, reason: string): void {
     reportError(source, reason);
-    note(reason, 'error');
     settle('error');
   }
 
   /// The one place a capture is started. The two callers that used to carry their
   /// own copy of the block below differ only in the command they ask for, the
-  /// arguments it takes, the line the status bar holds while it runs and, for a
-  /// selection read, where in the full screenshot it is reading from — so that
-  /// is all they pass. The result is awaited before the run is settled, which
-  /// is what keeps the covers up over the fields the result is about to fill.
+  /// arguments it takes and, for a selection read, where in the full screenshot
+  /// it is reading from — so that is all they pass. The result is awaited
+  /// before the run is settled, which is what keeps the covers up over the
+  /// fields the result is about to fill.
   async function runCapture(
     command: string,
     args: Record<string, unknown> | undefined,
     source: string,
-    pendingNote: string,
     origin: { x: number; y: number } | null = null
   ): Promise<void> {
     if (isBusy) return;
     phase = 'capturing';
-    note(pendingNote, 'info');
     try {
       const result = await invoke<ResultPayload>(command, args);
       await applyResult(result, origin);
@@ -365,7 +344,7 @@
   }
 
   async function capture(): Promise<void> {
-    await runCapture('capture_primary', undefined, 'capture', CAPTURING);
+    await runCapture('capture_primary', undefined, 'capture');
   }
 
   /// The screenshot of a hotkey capture arrives with no result behind it, and it
@@ -428,9 +407,7 @@
         }
         return null;
       })
-      .then((message) => {
-        if (message) note(message, 'info');
-      })
+      .then(() => {})
       .catch((e) => {
         reportError('models', String(e));
       });
@@ -454,6 +431,19 @@
       .then(applyAppearance)
       .catch((e: unknown) => {
         reportError('appearance', String(e));
+      });
+    /// The tray and the hotkeys both open the window without anything on this
+    /// page being asked, so the body has to be put back from the focus that
+    /// opens it bring rather than from a call made here.
+    void getCurrentWindow()
+      .onFocusChanged((e) => {
+        if (e.payload) void regrowOnFocus();
+      })
+      .then((unlisten) => {
+        registered.push(unlisten);
+      })
+      .catch((e: unknown) => {
+        reportError('window', `the focus feed could not be opened: ${String(e)}`);
       });
     return () => {
       for (const unlisten of registered) unlisten();
@@ -556,17 +546,24 @@
   }
 
   /// The menu is a window of its own, so the button only decides where it goes:
-  /// under the bar's right edge, the side the button is on, a gap below the bar
-  /// so the two surfaces are not flush. The bar's outer position and size arrive
-  /// in physical pixels while `setPosition` takes logical ones, so every
-  /// distance goes through the window's own scale factor the same way
-  /// `placeBarAtTop` divides its monitor geometry.
+  /// its own right edge and its own bottom, a gap below it so the two surfaces
+  /// are not flush. The button's rect is the view's own and is already in the
+  /// logical pixels `setPosition` takes; the window's outer position arrives in
+  /// physical ones, so that is what goes through the window's own scale factor,
+  /// the same way `placeBarAtTop` divides its monitor geometry.
+  ///
+  /// The rect is read before anything is awaited, because `currentTarget` is the
+  /// pressed button only while the event is being dispatched, and a read past
+  /// that has no button left to ask.
   ///
   /// A second press hides the window rather than opening it again, so the button
   /// is its own answer: the window shows and takes focus, and the press that
   /// loses the focus is the one that closes it, whichever window the user
   /// pressed on.
-  async function toggleMenu(): Promise<void> {
+  async function toggleMenu(event: MouseEvent): Promise<void> {
+    const target = event.currentTarget;
+    const anchor =
+      target instanceof HTMLElement ? target.getBoundingClientRect() : null;
     const win = getCurrentWindow();
     try {
       const menu = await WebviewWindow.getByLabel(MENU_LABEL);
@@ -578,14 +575,17 @@
         await menu.hide();
         return;
       }
-      const [position, size, scale] = await Promise.all([
+      if (!anchor) {
+        reportError('window', 'the menu button could not be measured');
+        return;
+      }
+      const [position, scale] = await Promise.all([
         win.outerPosition(),
-        win.outerSize(),
         win.scaleFactor(),
       ]);
       const origin = position.toLogical(scale);
-      const x = origin.x + size.toLogical(scale).width - MENU_WIDTH;
-      const y = origin.y + BAR_HEIGHT + MENU_GAP;
+      const x = origin.x + anchor.right - MENU_WIDTH;
+      const y = origin.y + anchor.bottom + MENU_GAP;
       await menu.setPosition(new LogicalPosition(Math.round(x), Math.round(y)));
       await menu.show();
       await menu.setFocus();
@@ -640,7 +640,12 @@
   /// each of them would otherwise be a window the user watches move. Only the
   /// height is compared, because the width is sent back as it was and so cannot
   /// have moved.
+  ///
+  /// A bar is not fitted: the body is measured against the window, so on a bar
+  /// there is nothing to measure and a fit asked for from one would grow the
+  /// window straight back out of the size it was just given.
   function scheduleWindowFit(): void {
+    if (!hasGrown) return;
     if (fitTimer) clearTimeout(fitTimer);
     fitTimer = setTimeout(() => {
       fitTimer = undefined;
@@ -672,12 +677,64 @@
   /// The bar is the title bar, so closing it hides the window instead of ending
   /// the process: the hotkeys are registered outside the window and a quit
   /// would take them with it.
+  ///
+  /// Hiding is also what hands the size back, and only the size: the screenshot,
+  /// the text and the selection all stay, so the tray gives back a bar over the
+  /// capture the user already has rather than a blank strip they have to take
+  /// all over again.
   async function closeToTray(): Promise<void> {
     try {
+      await hideMenu();
+      await shrinkToBar();
       await invoke('hide_window');
     } catch (e) {
       reportError('window', `the window could not be hidden: ${String(e)}`);
     }
+  }
+
+  /// The menu hangs under the hamburger button, so it is taken down before the
+  /// bar moves out from under it and leaves a menu pointing at an edge that is
+  /// no longer there. The hide is the menu window's own, reached from here by
+  /// label because a window of its own is what it is.
+  async function hideMenu(): Promise<void> {
+    try {
+      const menu = await WebviewWindow.getByLabel(MENU_LABEL);
+      if (menu && (await menu.isVisible())) await menu.hide();
+    } catch (e) {
+      reportError('window', `the menu could not be closed: ${String(e)}`);
+    }
+  }
+
+  /// The size goes back while the window is still on screen: one the desktop has
+  /// already hidden is one whose size it may take no notice of, and the bar the
+  /// tray raises would come up at the body's size instead.
+  ///
+  /// The growth flag comes down with it, which is what leaves the body free to be
+  /// grown again, and the fit is stood down for the same reason.
+  async function shrinkToBar(): Promise<void> {
+    hasGrown = false;
+    if (fitTimer) {
+      clearTimeout(fitTimer);
+      fitTimer = undefined;
+    }
+    try {
+      await setWindowRole(false);
+    } catch (e) {
+      reportError('window', `the window could not be shrunk: ${String(e)}`);
+    }
+  }
+
+  /// The tray raises the bar, and the capture it is sitting over is why the user
+  /// went looking for it, so the body goes back up with it. This is the growth
+  /// the first capture caused, asked for by the focus that raising a window
+  /// brings with it rather than by a capture.
+  ///
+  /// A selection is left where it is: the region being dragged is a rectangle in
+  /// a canvas that a resize would rescale underneath it, so a window grown
+  /// mid-drag is one the selection is measured against after the fact.
+  async function regrowOnFocus(): Promise<void> {
+    if (!hasImage || selecting) return;
+    await growToBody();
   }
 
   /// Both panels share one timer so a second copy restarts the feedback rather
@@ -706,7 +763,6 @@
 
   function startSelect(): void {
     if (!hasImage) {
-      note(NEEDS_SCREENSHOT, 'warning');
       return;
     }
     selStart = null;
@@ -799,7 +855,6 @@
     await stopSelectMode();
     if (tooSmall || !rect || !mon) {
       if (!mon) reportError('monitor', 'no monitor info is available');
-      else note(SELECTION_TOO_SMALL, 'warning');
       return;
     }
     const x = Math.max(0, Math.round(rect.x * scale + mon.x));
@@ -809,8 +864,7 @@
     await runCapture(
       'capture_region',
       { monitor, x, y, width, height },
-      'capture',
-      CAPTURING_REGION
+      'capture'
     );
   }
 
@@ -849,14 +903,12 @@
     const tooSmall = selRect.w < 4 || selRect.h < 4;
     await stopSelectMode();
     if (tooSmall) {
-      note(SELECTION_TOO_SMALL, 'warning');
       return;
     }
     await runCapture(
       'ocr_selection',
       { x: fullX, y: fullY, width, height },
       'ocr',
-      READING_REGION,
       { x: fullX, y: fullY }
     );
   }
@@ -908,9 +960,9 @@
         <button
           class="icon"
           onclick={startSelect}
-          disabled={isBusy || !hasImage}
+          disabled={isBusy}
           aria-label="Select region"
-          title={hasImage ? 'Select region' : 'Capture a screenshot first'}
+          title="Select region"
         >
           <ScanLine size={ICON_SIZE} />
         </button>
@@ -938,10 +990,6 @@
 
     {#if hasImage}
     <div class="body" bind:this={bodyEl}>
-      {#if statusNote}
-        <p class="status" data-tone={statusTone} role="status">{statusNote}</p>
-      {/if}
-
       <div class="content" bind:this={contentEl}>
         <section class="shot">
           <h2>Screenshot</h2>
@@ -1231,27 +1279,6 @@
     clip-path: inset(50%);
     white-space: nowrap;
     border: 0;
-  }
-
-  .status {
-    display: inline-block;
-    align-self: flex-start;
-    margin: 0 0 0.75rem;
-    padding: 0.25rem 0.6rem;
-    background: rgba(0, 0, 0, 0.75);
-    border-radius: 0.4rem;
-  }
-
-  /* The tone travels with the sentence rather than being read back out of it, so
-     the two tones that ask the user for something are the two the setup window
-     uses as well: a line in amber is a line to act on and a line in red is a line
-     that says what went wrong. A line with neither is a step of a run. */
-  .status[data-tone='warning'] {
-    color: #ffc46b;
-  }
-
-  .status[data-tone='error'] {
-    color: #ff9d9d;
   }
 
   .placeholder {

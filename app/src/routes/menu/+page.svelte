@@ -7,6 +7,11 @@
 
   const ICON_SIZE = 16;
   const NOT_BOUND = 'Not bound';
+  const KEY_ESCAPE = 'Escape';
+  const KEY_ENTER = 'Enter';
+  const KEY_ARROW_UP = 'ArrowUp';
+  const KEY_ARROW_DOWN = 'ArrowDown';
+  const DROPDOWN_MARK = 'data-dropdown';
   const CAPTURE_TRIGGER_TITLE = 'Save capture trigger';
   const REGION_TRIGGER_TITLE = 'Save region trigger';
   const CHOOSE_CAPTURE_TITLE = 'Choose capture trigger';
@@ -69,6 +74,26 @@
     y: number;
   };
 
+  type DropdownId = 'theme' | 'monitor';
+
+  /// An option is its value as a string because that is what both rows commit
+  /// through: the monitor row hands the index to the command as a number, and
+  /// the theme row runs the value past the check that decides what the window
+  /// will treat as a look.
+  type DropdownOption = {
+    value: string;
+    label: string;
+  };
+
+  /// The looks the appearance row offers, in the order it offers them. The label
+  /// is the name the button and the list both use, so a theme is picked by the
+  /// name the button already shows.
+  const THEME_OPTIONS: DropdownOption[] = [
+    { value: 'system', label: 'System' },
+    { value: 'dark', label: 'Dark' },
+    { value: 'light', label: 'Light' },
+  ];
+
   /// The state the login entry is now in, and the entry itself. A write answers
   /// only after reading the entry back off the disk, and a read answers from the
   /// disk as well, so what arrives here is the state the desktop actually holds
@@ -108,6 +133,11 @@
   let storedBlurPx = 0;
   let tintOpacity = $state(FALLBACK_TINT_PERCENT);
   let theme = $state<AppearanceTheme>('system');
+  /// Which listbox is open, and the option the keyboard cursor is on. One at a
+  /// time only: two lists in a panel this narrow would each cover the row the
+  /// other one belongs to.
+  let openDropdown = $state<DropdownId | null>(null);
+  let activeIndex = $state(0);
   /// The desktop is asked once and the switch waits on that answer rather than
   /// guessing, so a build that starts on a desktop with no material never shows
   /// a control it would have to take back.
@@ -241,15 +271,124 @@
     }
   }
 
-  async function saveMonitor(event: Event): Promise<void> {
-    const select = event.currentTarget as HTMLSelectElement;
+  async function saveMonitor(index: number): Promise<void> {
     try {
-      monitor = await invoke<number>('set_monitor', {
-        monitor: Number(select.value),
-      });
+      monitor = await invoke<number>('set_monitor', { monitor: index });
     } catch (e) {
       reportError('monitor', String(e));
     }
+  }
+
+  /// The monitors as the list names them, which is the text the native option
+  /// list carried: the name the desktop reports, the primary mark, and the size.
+  const monitorOptions = $derived<DropdownOption[]>(
+    monitors.map((m) => ({
+      value: String(m.index),
+      label: `${m.name}${m.is_primary ? ' (primary)' : ''} ${m.width}x${m.height}`,
+    }))
+  );
+
+  function optionsOf(which: DropdownId): DropdownOption[] {
+    return which === 'theme' ? THEME_OPTIONS : monitorOptions;
+  }
+
+  /// The value the window holds for a row, spelled the way the list spells it.
+  function chosenValue(which: DropdownId): string {
+    return which === 'theme' ? theme : String(monitor);
+  }
+
+  function chosenIndex(which: DropdownId, options: DropdownOption[]): number {
+    const found = options.findIndex((option) => option.value === chosenValue(which));
+    return found < 0 ? 0 : found;
+  }
+
+  function chosenLabel(which: DropdownId, options: DropdownOption[]): string {
+    return options.at(chosenIndex(which, options))?.label ?? '';
+  }
+
+  function isOpen(which: DropdownId): boolean {
+    return openDropdown === which;
+  }
+
+  function closeDropdown(): void {
+    openDropdown = null;
+  }
+
+  /// Opening puts the cursor on the choice already in force rather than at the
+  /// top of the list, so a keypress moves away from what is held rather than
+  /// back to it.
+  function toggleDropdown(which: DropdownId, options: DropdownOption[]): void {
+    if (isOpen(which)) {
+      closeDropdown();
+      return;
+    }
+    openDropdown = which;
+    activeIndex = chosenIndex(which, options);
+  }
+
+  /// The cursor wraps, because a list of three looks or a handful of monitors has
+  /// no end worth stopping at, and Down on the last one means the first.
+  function moveActive(options: DropdownOption[], step: number): void {
+    if (options.length === 0) return;
+    activeIndex = (activeIndex + step + options.length) % options.length;
+  }
+
+  /// The list is opened, moved through and committed from the keyboard without
+  /// focus ever leaving this window, which is the whole reason it is drawn here.
+  /// Enter is taken off the button as well, or the press that commits an option
+  /// would also press the button behind it and open the list again.
+  function onDropdownKey(
+    event: KeyboardEvent,
+    which: DropdownId,
+    options: DropdownOption[]
+  ): void {
+    if (event.key === KEY_ESCAPE) {
+      closeDropdown();
+      return;
+    }
+    if (event.key === KEY_ARROW_DOWN || event.key === KEY_ARROW_UP) {
+      event.preventDefault();
+      if (!isOpen(which)) {
+        toggleDropdown(which, options);
+        return;
+      }
+      moveActive(options, event.key === KEY_ARROW_DOWN ? 1 : -1);
+      return;
+    }
+    if (event.key === KEY_ENTER && isOpen(which)) {
+      event.preventDefault();
+      commitDropdown(which, activeIndex);
+    }
+  }
+
+  /// A pick goes out through the same command the native select's own change
+  /// did, so the answer still carries what the file kept and the row still takes
+  /// that rather than the value that was asked for.
+  function commitDropdown(which: DropdownId, index: number): void {
+    const option = optionsOf(which).at(index) ?? null;
+    closeDropdown();
+    if (option === null) return;
+    if (which === 'theme') saveTheme(option.value);
+    else void saveMonitor(Number(option.value));
+  }
+
+  /// A press anywhere else in the window puts the list away, the way the native
+  /// popup used to put the focus away. A press already on a list or on the button
+  /// that owns it is left to those, which decide between opening and committing.
+  function onWindowPointerDown(event: PointerEvent): void {
+    if (openDropdown === null) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest(`[${DROPDOWN_MARK}]`) !== null) {
+      return;
+    }
+    closeDropdown();
+  }
+
+  /// A press on an option must not take the focus with it. The cursor belongs to
+  /// the button that owns the list, and a list that closed around a focus it had
+  /// stolen would leave the arrows with nothing to answer to.
+  function keepFocusOnTrigger(event: MouseEvent): void {
+    event.preventDefault();
   }
 
   /// Both rows save through the same command: a window-system session registers
@@ -444,11 +583,64 @@
     accent = (event.currentTarget as HTMLInputElement).value;
   }
 
-  function saveTheme(event: Event): void {
-    theme = asTheme((event.currentTarget as HTMLSelectElement).value);
+  function saveTheme(value: string): void {
+    theme = asTheme(value);
     void commitAppearance();
   }
 </script>
+
+<!-- Losing the window is the end of the menu, so a list left open when the
+     desktop takes the pointer away from the window is put away with it. -->
+<svelte:window onpointerdown={onWindowPointerDown} onblur={closeDropdown} />
+
+{#snippet dropdown(which: DropdownId, label: string, options: DropdownOption[], openUp: boolean)}
+  <div class="dropdownwrap" data-dropdown={which}>
+    <button
+      class="dropdown"
+      role="combobox"
+      aria-haspopup="listbox"
+      aria-expanded={isOpen(which)}
+      aria-controls={isOpen(which) ? `${which}-listbox` : undefined}
+      aria-activedescendant={isOpen(which) ? `${which}-option-${activeIndex}` : undefined}
+      aria-label={label}
+      title={chosenLabel(which, options)}
+      disabled={options.length === 0}
+      onclick={() => toggleDropdown(which, options)}
+      onkeydown={(event) => onDropdownKey(event, which, options)}
+    >
+      <span class="choice">{chosenLabel(which, options)}</span>
+      <span class="caret" class:up={isOpen(which)} aria-hidden="true"></span>
+    </button>
+    {#if isOpen(which)}
+      <div
+        class="options"
+        class:up={openUp}
+        id={`${which}-listbox`}
+        role="listbox"
+        aria-label={label}
+      >
+        {#each options as option, index (option.value)}
+          <button
+            type="button"
+            class="option"
+            class:active={index === activeIndex}
+            id={`${which}-option-${index}`}
+            role="option"
+            tabindex="-1"
+            aria-selected={option.value === chosenValue(which)}
+            onmousedown={keepFocusOnTrigger}
+            onmousemove={() => {
+              activeIndex = index;
+            }}
+            onclick={() => commitDropdown(which, index)}
+          >
+            {option.label}
+          </button>
+        {/each}
+      </div>
+    {/if}
+  </div>
+{/snippet}
 
 <main class="panel">
   <div class="row">
@@ -474,16 +666,10 @@
   {#if autostartPath}
     <p class="entrypath" title={autostartPath}>{autostartPath}</p>
   {/if}
-  <label class="row">
+  <div class="row">
     Monitor
-    <select value={monitor} onchange={saveMonitor}>
-      {#each monitors as m (m.index)}
-        <option value={m.index}>
-          {m.name}{m.is_primary ? ' (primary)' : ''} {m.width}x{m.height}
-        </option>
-      {/each}
-    </select>
-  </label>
+    {@render dropdown('monitor', 'Monitor', monitorOptions, false)}
+  </div>
 
   <div class="keys">
     <div class="row">
@@ -616,23 +802,20 @@
         </button>
       </span>
     </div>
-    <label class="row">
+    <div class="row">
       <span class="keylabel">Theme</span>
-      <select value={theme} onchange={saveTheme}>
-        <option value="system">System</option>
-        <option value="dark">Dark</option>
-        <option value="light">Light</option>
-      </select>
-    </label>
+      {@render dropdown('theme', 'Theme', THEME_OPTIONS, true)}
+    </div>
   </div>
 
   <button class="close" onclick={closeMenu}>Close</button>
 </main>
 
 <style>
-  /* A native dropdown popup is drawn by the desktop rather than by this page, so
-     the page tells the whole tree it is dark and the option lists below carry
-     their own colours, or the popup can come up white on a dark panel. */
+  /* The controls the desktop draws for itself — the colour picker, the range
+     track, the scrollbars — read the page rather than the panel behind them, so
+     the page tells the whole tree it is dark, or one of them can come up white
+     on a dark panel. */
   :global(html) {
     color-scheme: dark;
   }
@@ -713,23 +896,121 @@
     white-space: nowrap;
   }
 
-  .row select {
+  /* The list is a surface of this panel rather than one of the desktop's, so
+     the trigger wears the plate the native select wore and the list below it
+     carries the colour the native popup had to be handed by hand. */
+  .dropdownwrap {
+    position: relative;
+    display: inline-flex;
     min-width: 0;
     max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  }
+
+  .dropdown {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+    max-width: 100%;
     background: rgba(255, 255, 255, 0.12);
     color: #fff;
     border: 1px solid rgba(255, 255, 255, 0.4);
     border-radius: 0.4rem;
     padding: 0.25rem 0.5rem;
+    font-family: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
   }
 
-  /* The popup is drawn by the desktop, which ignores the page behind it, so the
-     options carry a background of their own. */
-  .row select option {
+  .dropdown:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.22);
+  }
+
+  .dropdown:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .dropdown:focus-visible {
+    outline: 2px solid #9ec5ff;
+    outline-offset: 2px;
+  }
+
+  .choice {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The mark is drawn rather than imported, so the trigger is a single plate,
+     and it turns over with the list the way the switch's knob turns. */
+  .caret {
+    flex: none;
+    border-left: 0.3rem solid transparent;
+    border-right: 0.3rem solid transparent;
+    border-top: 0.35rem solid rgba(255, 255, 255, 0.75);
+    transition: transform 0.12s ease-out;
+  }
+
+  .caret.up {
+    transform: rotate(180deg);
+  }
+
+  /* The list is capped in height and scrolls inside itself, so a desk with a
+     monitor on every output does not run the list off the bottom of a window
+     that cannot be made taller. */
+  .options {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 1;
+    min-width: 100%;
+    max-width: 16rem;
+    max-height: 11rem;
+    overflow: hidden auto;
     background: #2a2d33;
     color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    border-radius: 0.4rem;
+    padding: 0.15rem 0;
+  }
+
+  /* The last row on the panel opens upwards, or its list would be drawn over
+     the bottom edge of a window that does not grow for it. */
+  .options.up {
+    top: auto;
+    bottom: 100%;
+  }
+
+  /* An option is a button so a press on it needs no key event of its own, but
+     it is kept out of the tab order: the cursor is the list's, and it is moved
+     with the arrows from the button above. */
+  .option {
+    display: block;
+    width: 100%;
+    padding: 0.25rem 0.5rem;
+    background: transparent;
+    color: inherit;
+    border: 0;
+    font: inherit;
+    font-size: 0.85rem;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+
+  /* Two marks, because two things are true of an option: the one in force stays
+     bold, and the one the keyboard is on is filled — until a move lands they are
+     the same option, which is the point of opening the list on the choice. */
+  .option[aria-selected='true'] {
+    font-weight: 600;
+  }
+
+  .option.active {
+    background: rgba(255, 255, 255, 0.18);
   }
 
   .keys {

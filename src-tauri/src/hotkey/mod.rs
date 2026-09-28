@@ -24,6 +24,7 @@ pub use status::Backend;
 pub use status::HotkeyStatus;
 
 use anyhow::{Result, anyhow};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -51,6 +52,24 @@ impl Action {
     }
 }
 
+/// Set while a triggered capture is in flight. A trigger held down is a key
+/// press per repeat, and a second run started on top of the first would grab the
+/// screen again mid-read and leave the window holding whichever result arrived
+/// last. The button path has its own guard in the window, which is why this is
+/// only about the trigger: nothing else starts a capture behind a window's back.
+static CAPTURE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Claims the run, or reports that one is already under way. The press is
+/// reported rather than dropped, because a trigger that does nothing while the
+/// window is busy reading is indistinguishable from one that is not bound.
+fn claim_capture_run(app: &AppHandle) -> bool {
+    if CAPTURE_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+        report(app, "A capture is already running.");
+        return false;
+    }
+    true
+}
+
 /// The one place a hotkey turns into work. The window-system backend resolves a
 /// key press to an `Action` and the portal backend resolves a shortcut id, then
 /// both come here.
@@ -58,16 +77,51 @@ pub fn dispatch(app: &AppHandle, action: Action) {
     match action {
         Action::ScreenSelect => crate::enter_screen_select(app),
         Action::Capture => {
-            crate::show_main_window(app);
+            if !claim_capture_run(app) {
+                return;
+            }
             let handle = app.clone();
-            tauri::async_runtime::spawn(async move {
-                let state = handle.state::<AppState>();
-                if let Err(e) = crate::run_pipeline(&handle, &state).await {
-                    report(&handle, &format!("Screen capture failed: {e}"));
-                }
-            });
+            tauri::async_runtime::spawn(async move { capture_off_screen(&handle).await });
         }
     }
+}
+
+/// A capture in the order the window has to see it in: the window goes off the
+/// screen for the grab and comes back the moment the pixels are in hand, so the
+/// screenshot that follows lands in a window that is already there and the read
+/// cannot leave the desktop without the window the key was pressed for.
+///
+/// The claim is released on the way out of every branch, so a run that failed
+/// does not leave the trigger refusing to work for the rest of the session.
+async fn capture_off_screen(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let image = match crate::grab_monitor(app, &state).await {
+        Ok(image) => image,
+        Err(e) => {
+            let message = format!("Screen capture failed: {e}");
+            report(app, &message);
+            crate::show_main_window(app);
+            // The window is back and has nothing to show but the reason, so the
+            // failure is published rather than left in the log: a first run that
+            // never captured would otherwise sit on "Ready" with a grab that
+            // cannot be retried until the session ends.
+            crate::record_capture_attempted();
+            crate::publish_progress(app, &crate::CaptureProgress::failure(&message));
+            CAPTURE_IN_PROGRESS.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+    // The grab put the window back as soon as it had the pixels, before the
+    // pipeline published the screenshot, so the window is already on its bar by
+    // the time this returns the image to the caller.
+    if let Err(e) = crate::run_pipeline_with_image(app, &state, image).await {
+        let message = format!("Reading the screenshot failed: {e}");
+        report(app, &message);
+        // The screenshot is already on screen by this point, so the read is the
+        // one step a failure can leave without a terminal message to end it.
+        crate::publish_progress(app, &crate::CaptureProgress::failure(&message));
+    }
+    CAPTURE_IN_PROGRESS.store(false, Ordering::SeqCst);
 }
 
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {

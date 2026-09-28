@@ -224,9 +224,18 @@ pub fn set_appearance(
 /// reports a size every time it reflows, so the screen's own limits are applied
 /// here: a window the screen cannot show has to be caught before it is asked
 /// for, because the desktop will not always refuse it.
+///
+/// Nothing is resized before the first capture. The window a launch puts on the
+/// screen is the bar, and the size being offered here belongs to the expanded
+/// view that only a capture fills, so a size that arrives before that is a
+/// measurement of a body that is not there and is left unanswered rather than
+/// obeyed.
 #[tauri::command]
 pub fn set_window_size(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
     use tauri::{LogicalSize, Manager};
+    if !crate::may_auto_fit() {
+        return Ok(());
+    }
     let Some(window) = app.get_webview_window("main") else {
         return Ok(());
     };
