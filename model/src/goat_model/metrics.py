@@ -86,6 +86,11 @@ def trace_cer(reference: str, hypothesis: str) -> dict:
     dist, subs, dels, ins = _levenshtein(ref, hyp)
     denom = max(len(ref), len(hyp))
     value = 0.0 if denom == 0 else dist / denom
+    equation = (
+        f"{subs}+{dels}+{ins}={dist}; {dist}/{denom}={value:.4f}"
+        if denom
+        else "0/0=0.0000 (both empty)"
+    )
     return {
         "ref_len": len(ref),
         "hyp_len": len(hyp),
@@ -96,6 +101,7 @@ def trace_cer(reference: str, hypothesis: str) -> dict:
         "insertions": ins,
         "cer": value,
         "word_accuracy": 1.0 - value,
+        "equation": equation,  # full judge arithmetic in one line
     }
 
 
@@ -146,15 +152,36 @@ def trace_corpus_bleu(references: list[str], hypotheses: list[str]) -> dict:
     refs = [" ".join(_words(r)) for r in references]
     hyps = [" ".join(_words(h)) for h in hypotheses]
     res = sacrebleu.corpus_bleu(hyps, [refs], tokenize="none")
+    counts, totals = list(res.counts), list(res.totals)
     return {
         "score": float(res.score),
-        "counts": list(res.counts),
-        "totals": list(res.totals),
+        "counts": counts,
+        "totals": totals,
         "precisions": list(res.precisions),
         "brevity_penalty": float(res.bp),
         "n_ref_tokens": sum(len(r.split()) for r in refs),
         "n_hyp_tokens": sum(len(h.split()) for h in hyps),
+        "equation": bleu_equation(counts, totals, float(res.bp), float(res.score)),
     }
+
+
+def bleu_equation(counts: list[int], totals: list[int], bp: float, score: float) -> str:
+    """One-line audit string for a corpus BLEU calculation."""
+    parts = " * ".join(f"{cn}/{t}" for cn, t in zip(counts, totals))
+    return f"{parts} (precisions) x bp {bp:.4f} = {score:.2f}"
+
+
+def order_hypothesis(hypothesis: str, reverse: bool = False) -> str:
+    """Put hypothesis lines in scoring order.
+
+    The gt answer key is one space-glued string with no line breaks, so the
+    hypothesis must be glued the same way. Default keeps the model's own
+    (top-to-bottom) bytes; reverse flips to bottom-to-top for answer keys
+    written in render order (e.g. synthmini gt.txt).
+    """
+    if not reverse:
+        return hypothesis
+    return " ".join(reversed(hypothesis.splitlines()))
 
 
 @log_call
