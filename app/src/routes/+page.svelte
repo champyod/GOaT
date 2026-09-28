@@ -7,24 +7,24 @@
     LogicalPosition,
     LogicalSize,
   } from '@tauri-apps/api/window';
+  import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import Camera from '@lucide/svelte/icons/camera';
   import ScanLine from '@lucide/svelte/icons/scan-line';
   import Menu from '@lucide/svelte/icons/menu';
   import X from '@lucide/svelte/icons/x';
-  import Save from '@lucide/svelte/icons/save';
   import CopyIcon from '@jis3r/icons/icons/copy';
   import CheckIcon from '@jis3r/icons/icons/check';
 
   const COPIED_FEEDBACK_MS = 1600;
   const ICON_SIZE = 16;
-  const BAR_WIDTH = 300;
   const BAR_HEIGHT = 48;
   const BAR_TOP_OFFSET = 28;
-  /// The panel is drawn inside the window this height opens to, and anything
-  /// below the bottom edge of it is off the window rather than scrollable, so
-  /// this has to cover the settings, the triggers and the appearance section
-  /// together.
-  const MENU_HEIGHT = 380;
+  /// The menu is a window of its own, and these two are where it is put: its
+  /// width is the bar's, so hanging it under the bar's right edge needs no
+  /// reading of the bar, and the gap is what keeps it off the bar's own edge.
+  const MENU_LABEL = 'menu';
+  const MENU_WIDTH = 300;
+  const MENU_GAP = 8;
   const BODY_WIDTH = 800;
   const BODY_HEIGHT = 600;
   /// The expanded view is fitted once its layout has stopped moving, so a burst
@@ -35,25 +35,27 @@
   /// the same layout measuring itself a fraction differently, and answering that
   /// would walk the window toward the clamp a little at a time.
   const FIT_EPSILON_PX = 2;
-  const NOT_BOUND = 'Not bound';
-  const CAPTURE_TRIGGER_TITLE = 'Save capture trigger';
-  const REGION_TRIGGER_TITLE = 'Save region trigger';
-  const CHOOSE_CAPTURE_TITLE = 'Choose capture trigger';
-  const CHOOSE_REGION_TITLE = 'Choose region trigger';
-  const APPEARANCE_BLUR_MAX = 30;
   const APPEARANCE_TINT_MAX = 100;
   const HEX_COLOR = /^#[\da-f]{6}$/i;
-
+  /// The sentences the status bar can hold. They are named because a sentence
+  /// typed at each of the places that showed one is a sentence the next reader
+  /// spells differently, and a status bar carrying two of them at once is a bar
+  /// nobody is reading.
+  const READY = 'Ready';
+  const CAPTURING = 'Capturing...';
+  const CAPTURING_REGION = 'Capturing region...';
+  const READING_REGION = 'Reading region...';
+  const NO_TEXT = 'No text detected';
+  const CAPTURE_INCOMPLETE = 'Capture incomplete';
+  const SELECTION_TOO_SMALL = 'Selection too small';
+  const NEEDS_SCREENSHOT =
+    'Capture a screenshot first, then drag on it to select a region';
   /// The look the window draws before the stored appearance answers, and the one
   /// it keeps if the answer never comes, so neither a slow load nor a failed one
-  /// is something the user sees. `FALLBACK_BLUR_PX` is the strip's own blur
-  /// fallback in the stylesheet, and moving one without the other leaves the
-  /// slider starting somewhere the window is not. `FALLBACK_ACCENT` is only the
-  /// colour the picker opens on — System is the accent actually in force while
-  /// `accent` is null.
-  const FALLBACK_BLUR_PX = 24;
-  const FALLBACK_TINT_PERCENT = 35;
-  const FALLBACK_ACCENT = '#3f7fd4';
+  /// is something the user sees. The menu is the window the accent is picked in,
+  /// and a System accent takes the variable away again, which is what leaves the
+  /// desktop's own colour in charge here too.
+  const FALLBACK_TINT_PERCENT = 72;
 
   type AppearanceTheme = 'system' | 'dark' | 'light';
 
@@ -63,20 +65,6 @@
     tint_opacity: number;
     theme: AppearanceTheme;
   };
-
-  const ACCENT_PRESETS: { name: string; value: string }[] = [
-    { name: 'Blue', value: '#3f7fd4' },
-    { name: 'Green', value: '#2f9e6e' },
-    { name: 'Amber', value: '#c9822f' },
-    { name: 'Red', value: '#c0503f' },
-    { name: 'Violet', value: '#8a5ad0' },
-  ];
-
-  const STARTS_AT_LOGIN = 'Starts at login';
-  const WONT_START_AT_LOGIN = "Won't start at login";
-  const LOGIN_UNCHANGED = 'Login setting unchanged';
-
-  type Trigger = 'capture' | 'region';
 
   type CapturedImage = {
     width: number;
@@ -98,59 +86,65 @@
     image: CapturedImage;
     ocr_text: string;
     translated_text: string;
+    /// Named by the backend and part of what it sends, so the type still mirrors
+    /// the payload even though nothing on this page reads it.
     ocr_engine: string;
     error: string;
   };
 
+  /// Where a capture is. One value rather than a set of flags, so a step the
+  /// backend has not reached cannot be held at the same time as one it has: the
+  /// covers over the two fields and the answerability of the bar are all read
+  /// off this, and they were three booleans free to disagree with each other.
+  type Phase =
+    | 'idle'
+    | 'capturing'
+    | 'reading'
+    | 'translating'
+    | 'done'
+    | 'error';
+
+  /// The phases the backend publishes. `idle` and `capturing` belong to this
+  /// page: nothing is in flight before a run starts, and a window that starts
+  /// one knows it is capturing before the backend has said anything at all.
+  type BackendPhase = 'reading' | 'translating' | 'done' | 'error';
+
+  /// The one message a capture arrives as. A field the step does not have is
+  /// absent rather than empty, so a step that read nothing is not read as a
+  /// step whose text is blank.
+  type CaptureProgress = {
+    phase: BackendPhase;
+    image?: CapturedImage;
+    ocr_text?: string;
+    payload?: ResultPayload;
+    error?: string;
+  };
+
+  /// How a line on the status bar is to be read: a step of a run, something the
+  /// user has to act on, or something that went wrong. It is written with the
+  /// sentence instead of derived from it, so the two cannot disagree.
+  type StatusTone = 'info' | 'warning' | 'error';
+
   type ModelsStatus = {
-    ocr: boolean;
-    nllb: boolean;
     ready: boolean;
   };
 
-  /// The state the login entry is now in, and the entry itself. The backend
-  /// reads the entry back off the disk before it answers, so what arrives here
-  /// is the state the desktop actually holds rather than what was asked for.
-  type AutostartState = {
-    enabled: boolean;
-    path: string;
-  };
-
-  /// The backend in use, what it says about the session, and the trigger each
-  /// shortcut is actually bound to. A trigger is never read out of the stored
-  /// config alone, because a portal session ignores anything typed.
-  type HotkeyStatus = {
-    backend: 'system' | 'portal';
-    detail: string;
-    warning: string;
-    capture_trigger: string | null;
-    select_trigger: string | null;
-  };
-
   let canvasEl: HTMLCanvasElement | undefined = $state();
-  let status = $state('Ready');
+  let phase = $state<Phase>('idle');
+  let statusNote = $state(READY);
+  let statusTone = $state<StatusTone>('info');
   let ocrText = $state('');
   let translatedText = $state('');
-  let autostart = $state(false);
-  let autostartStatus = $state('');
-  let autostartBusy = $state(false);
-  let busy = $state(false);
   let hasImage = $state(false);
   let monitors = $state<MonitorInfo[]>([]);
   let monitor = $state(0);
   let accent = $state<string | null>(null);
-  let blurPx = $state(FALLBACK_BLUR_PX);
   let tintOpacity = $state(FALLBACK_TINT_PERCENT);
   let theme = $state<AppearanceTheme>('system');
   let selecting = $state(false);
   let screenMode = $state(false);
-  let menuOpen = $state(false);
   let copiedOcr = $state(false);
   let copiedTranslated = $state(false);
-  let hotkeyStatus = $state<HotkeyStatus | null>(null);
-  let captureShortcut = $state('');
-  let selectShortcut = $state('');
-  let savingTrigger = $state<Trigger | null>(null);
   let selStart = $state<{ x: number; y: number } | null>(null);
   let selRect = $state<{ x: number; y: number; w: number; h: number } | null>(
     null
@@ -168,9 +162,39 @@
   let bodyEl: HTMLDivElement | undefined = $state();
   let contentEl: HTMLDivElement | undefined = $state();
   let hasGrown = false;
-  let menuGrown = false;
   let barPlaced = false;
   const registered: UnlistenFn[] = [];
+
+  /// The three things the phase is asked for rather than kept. The screenshot is
+  /// handed over before the backend has read it, so a read can be under way with
+  /// no call of this page's own to mark it: a cover is up exactly while its own
+  /// phase is running, and comes off the moment that phase ends.
+  const isBusy = $derived(
+    phase === 'capturing' || phase === 'reading' || phase === 'translating'
+  );
+  const awaitingResult = $derived(phase === 'capturing' || phase === 'reading');
+  const awaitingTranslate = $derived(phase === 'translating');
+
+  /// The sentences the phase is announced with, keyed by the phase they name, so
+  /// a phase this page can be in and a sentence it says for it cannot drift
+  /// apart: adding a phase without a line here is a type error. `idle` has none
+  /// because there is nothing to say about a window that is not working on
+  /// anything, and an empty line in a live region is read out as silence.
+  const PHASE_SENTENCES: Record<Phase, string> = {
+    idle: '',
+    capturing: 'Capturing the screen.',
+    reading: 'Reading text from the screenshot.',
+    translating: 'Translating the text that was read.',
+    done: 'Capture complete.',
+    error: 'The capture failed.',
+  };
+  /// One region reads this out for the whole run. The covers over the fields
+  /// used to carry a `role="status"` each, which announced the same run twice —
+  /// once per field — and only for as long as a cover was up: a phase with
+  /// nothing to cover it, and the failure that ends a run with the covers already
+  /// off, were both silent. The covers are now hidden from a screen reader and
+  /// the phase says all of it, in one place, for as long as it is true.
+  const phaseSentence = $derived(PHASE_SENTENCES[phase]);
 
   /// The diagnostics window is the one place a problem is written down, so a
   /// failure here is handed to it instead of being painted over the screenshot.
@@ -202,29 +226,21 @@
       });
   }
 
-  /// The status line is the only account of what the backend actually holds, and
-  /// a window-system session reports the stored shortcut itself, so both fields
-  /// follow it instead of keeping a second copy that can drift from the trigger
-  /// a key press reaches.
-  function applyStatus(line: HotkeyStatus): void {
-    hotkeyStatus = line;
-    if (line.backend !== 'system') return;
-    captureShortcut = line.capture_trigger ?? captureShortcut;
-    selectShortcut = line.select_trigger ?? selectShortcut;
-  }
-
-  // A portal session fires only the trigger its own dialog produced, so nothing
-  // typed in this panel is bound there and the row shows what the backend holds.
-  const portalBackend = $derived(hotkeyStatus?.backend === 'portal');
-  const captureTrigger = $derived(hotkeyStatus?.capture_trigger ?? null);
-  const selectTrigger = $derived(hotkeyStatus?.select_trigger ?? null);
-
-  function draw(image: CapturedImage) {
-    if (!canvasEl) return;
+  /// Paints the frame. A canvas that is not in the document, or a context the
+  /// page will not be given, is a run that cannot be shown rather than one that
+  /// can be shown as an empty box: the throw is what turns it into a failure with
+  /// a reason on the status bar, instead of a settled run over a blank canvas
+  /// and a status line claiming the text is there.
+  function draw(image: CapturedImage): void {
+    if (!canvasEl) {
+      throw new Error('the canvas the screenshot is drawn on is not on the page');
+    }
     canvasEl.width = image.width;
     canvasEl.height = image.height;
     const ctx = canvasEl.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      throw new Error('the screenshot canvas would not give a drawing context');
+    }
     const imageData = new ImageData(
       new Uint8ClampedArray(image.rgba),
       image.width,
@@ -260,58 +276,140 @@
   /// before the first one would find no canvas to paint. The flag goes up
   /// first and the flush that follows is what puts the canvas in the document,
   /// so every entry point into `draw` paints the frame it was handed.
+  ///
+  /// The overlay over the fields comes down here rather than with the caller, so
+  /// it lifts together with the text it was covering. A throw below it — an
+  /// image the canvas will not take, say — is a run that failed and not a
+  /// rejection the window has no handler for, because the result can arrive from
+  /// a trigger rather than from a call this page made and is waiting on.
   async function applyResult(
     result: ResultPayload,
     origin: { x: number; y: number } | null = null
   ): Promise<void> {
-    hasImage = true;
-    await tick();
-    draw(result.image);
-    imgSize = { width: result.image.width, height: result.image.height };
-    selOffset = origin ?? { x: 0, y: 0 };
-    ocrText = result.ocr_text;
-    translatedText = result.translated_text;
-    if (ocrText.trim()) {
-      status = result.ocr_engine
-        ? `Result ready (${result.ocr_engine})`
-        : 'Result ready';
-    } else if (result.error) {
-      status = 'Capture incomplete';
-    } else {
-      status = 'No text detected';
+    try {
+      hasImage = true;
+      await tick();
+      draw(result.image);
+      imgSize = { width: result.image.width, height: result.image.height };
+      // A trigger publishes the same result as a button does and knows no offset
+      // for it, so this is a whole screen unless the caller that started the run
+      // says otherwise. That caller applies the result again when its own call
+      // answers, and does so with the offset it was given, which is what leaves
+      // a selection read pointing back into the screenshot it was cut from.
+      selOffset = origin ?? { x: 0, y: 0 };
+      ocrText = result.ocr_text;
+      translatedText = result.translated_text;
+      if (!ocrText.trim()) {
+        note(
+          result.error ? CAPTURE_INCOMPLETE : NO_TEXT,
+          result.error ? 'warning' : 'info'
+        );
+      } else {
+        note('', 'info');
+      }
+    } catch (e) {
+      fail('capture', String(e));
+      return;
+    }
+    settle('done');
+  }
+
+  /// One line on the status bar, written with its tone, so a sentence and the
+  /// way it is to be read are never set apart.
+  function note(text: string, tone: StatusTone): void {
+    statusNote = text;
+    statusTone = tone;
+  }
+
+  /// The one exit every capture run takes. A result applied, an `invoke` that
+  /// rejected and a failure the backend published all end here, so the fields
+  /// are never left covered over and the bar is never left holding a run that is
+  /// over.
+  function settle(outcome: 'done' | 'error'): void {
+    phase = outcome;
+  }
+
+  /// A run that failed, whatever told this page so: a rejected call of its own
+  /// or the terminal step of the backend's account. The reason is shown rather
+  /// than restated, because the backend knows what went wrong and a line saying
+  /// only that the capture failed has thrown that answer away on the way to the
+  /// one person who can act on it.
+  function fail(source: string, reason: string): void {
+    reportError(source, reason);
+    note(reason, 'error');
+    settle('error');
+  }
+
+  /// The one place a capture is started. The two callers that used to carry their
+  /// own copy of the block below differ only in the command they ask for, the
+  /// arguments it takes, the line the status bar holds while it runs and, for a
+  /// selection read, where in the full screenshot it is reading from — so that
+  /// is all they pass. The result is awaited before the run is settled, which
+  /// is what keeps the covers up over the fields the result is about to fill.
+  async function runCapture(
+    command: string,
+    args: Record<string, unknown> | undefined,
+    source: string,
+    pendingNote: string,
+    origin: { x: number; y: number } | null = null
+  ): Promise<void> {
+    if (isBusy) return;
+    phase = 'capturing';
+    note(pendingNote, 'info');
+    try {
+      const result = await invoke<ResultPayload>(command, args);
+      await applyResult(result, origin);
+    } catch (e) {
+      fail(source, String(e));
     }
   }
 
   async function capture(): Promise<void> {
-    if (busy) return;
-    busy = true;
-    status = 'Capturing...';
-    try {
-      const result = await invoke<ResultPayload>('capture_primary');
-      applyResult(result);
-    } catch (e) {
-      reportError('capture', String(e));
-      status = 'Capture failed';
-    } finally {
-      busy = false;
-    }
+    await runCapture('capture_primary', undefined, 'capture', CAPTURING);
   }
 
-  /// The raw image of a hotkey capture arrives with no result behind it, and it
+  /// The screenshot of a hotkey capture arrives with no result behind it, and it
   /// is the first thing that can fill an empty window, so it waits for the same
-  /// canvas the result path waits for.
+  /// canvas the result path waits for. It arrives on the step that says the read
+  /// is under way, so the fields are covered from here on whether the run was
+  /// started by this page or by a trigger.
   async function drawImage(image: CapturedImage): Promise<void> {
     hasImage = true;
     await tick();
-    draw(image);
+    try {
+      draw(image);
+    } catch (e) {
+      fail('capture', String(e));
+      return;
+    }
     imgSize = { width: image.width, height: image.height };
     selOffset = { x: 0, y: 0 };
-    status = 'Reading text...';
+  }
+
+  /// The whole of a capture, as the one message the backend sends it on. The
+  /// phase is set before the picture or the text that goes under the covers
+  /// arrives, so a cover is never up after what it was covering has landed.
+  function onCaptureProgress(progress: CaptureProgress): void {
+    switch (progress.phase) {
+      case 'reading':
+        phase = 'reading';
+        if (progress.image) void drawImage(progress.image);
+        return;
+      case 'translating':
+        phase = 'translating';
+        if (typeof progress.ocr_text === 'string') ocrText = progress.ocr_text;
+        return;
+      case 'done':
+        if (progress.payload) void applyResult(progress.payload);
+        return;
+      case 'error':
+        fail('capture', progress.error ?? 'Capture failed');
+        return;
+    }
   }
 
   onMount(() => {
-    void subscribe<ResultPayload>('capture-result', applyResult);
-    void subscribe<CapturedImage>('capture-image', drawImage);
+    void subscribe<CaptureProgress>('capture-progress', onCaptureProgress);
     void subscribe('region-select', () => {
       if (monitors.length === 0) {
         reportError('monitor', 'no monitor info is available');
@@ -331,17 +429,10 @@
         return null;
       })
       .then((message) => {
-        if (message) status = message;
+        if (message) note(message, 'info');
       })
       .catch((e) => {
         reportError('models', String(e));
-      });
-    invoke<boolean>('is_autostart')
-      .then((value) => {
-        autostart = value;
-      })
-      .catch((e) => {
-        reportError('autostart', String(e));
       });
     invoke<MonitorInfo[]>('list_monitors')
       .then((value) => {
@@ -358,14 +449,6 @@
       .catch((e) => {
         reportError('monitor', String(e));
       });
-    void subscribe<HotkeyStatus>('hotkey-status', applyStatus);
-    invoke<HotkeyStatus>('hotkey_status')
-      .then((value) => {
-        applyStatus(value);
-      })
-      .catch((e) => {
-        reportError('hotkey', String(e));
-      });
     void subscribe<Appearance>('appearance-changed', applyAppearance);
     invoke<Appearance>('get_appearance')
       .then(applyAppearance)
@@ -377,38 +460,6 @@
       if (copiedTimer) clearTimeout(copiedTimer);
     };
   });
-
-  /// The switch takes the state the desktop actually ended up in, not the one
-  /// that was asked for, and the line under it reports that state, so a toggle
-  /// that quietly did nothing cannot look like a toggle that worked. The reason
-  /// a change did not happen belongs to the diagnostics window.
-  async function toggleAutostart(): Promise<void> {
-    if (autostartBusy) return;
-    autostartBusy = true;
-    try {
-      const result = await invoke<AutostartState>('set_autostart', {
-        enabled: !autostart,
-      });
-      autostart = result.enabled;
-      autostartStatus = result.enabled ? STARTS_AT_LOGIN : WONT_START_AT_LOGIN;
-    } catch (e) {
-      reportError('autostart', String(e));
-      autostartStatus = LOGIN_UNCHANGED;
-    } finally {
-      autostartBusy = false;
-    }
-  }
-
-  async function saveMonitor(event: Event): Promise<void> {
-    const select = event.currentTarget as HTMLSelectElement;
-    try {
-      monitor = await invoke<number>('set_monitor', {
-        monitor: Number(select.value),
-      });
-    } catch (e) {
-      reportError('monitor', String(e));
-    }
-  }
 
   /// A colour the styles cannot read is a string the file happens to hold, not
   /// one the window can draw, and the file is editable by hand — so anything
@@ -431,21 +482,14 @@
   }
 
   /// The look reaches the window three ways — the load on mount, a press in the
-  /// menu, and a write from another window arriving as an event — and all three
-  /// come through here, so the variables and the menu are never two different
+  /// menu window, and a write from that window arriving as an event — and all
+  /// three come through here, so the bar and the body are never two different
   /// appearances and a value is checked before it reaches either.
   function applyAppearance(loaded: Appearance): void {
     accent = asAccent(loaded.accent);
-    blurPx = asSliderValue(loaded.blur_px, APPEARANCE_BLUR_MAX);
     tintOpacity = asSliderValue(loaded.tint_opacity, APPEARANCE_TINT_MAX);
     theme = asTheme(loaded.theme);
   }
-
-  /// The accent a swatch is on, which is the one the picker cannot show as a
-  /// preset: it is the only way back to a colour that is not one of them.
-  const customAccent = $derived(
-    accent !== null && !ACCENT_PRESETS.some((preset) => preset.value === accent)
-  );
 
   /// The look is two variables and a colour scheme on the document element, so
   /// every rule that reads them repaints without this page re-rendering. The
@@ -467,9 +511,7 @@
     } else {
       root.style.removeProperty('--goat-accent');
     }
-    const blur = asSliderValue(blurPx, APPEARANCE_BLUR_MAX);
     const tint = asSliderValue(tintOpacity, APPEARANCE_TINT_MAX);
-    root.style.setProperty('--goat-blur', `${blur}px`);
     root.style.setProperty('--goat-tint', `${tint}%`);
     if (theme === 'system') {
       root.style.removeProperty('color-scheme');
@@ -478,83 +520,21 @@
     }
   });
 
-  /// Every control ends up here. The command answers with what it kept, so the
-  /// window takes the file's own version of the look rather than the one that
-  /// was asked for, and a refusal leaves the menu where it was with the reason
-  /// in the diagnostics window.
-  async function commitAppearance(): Promise<void> {
-    try {
-      applyAppearance(
-        await invoke<Appearance>('set_appearance', {
-          appearance: {
-            accent,
-            blur_px: blurPx,
-            tint_opacity: tintOpacity,
-            theme,
-          },
-        })
-      );
-    } catch (e) {
-      reportError('appearance', String(e));
-    }
-  }
-
-  function pickAccent(value: string | null): void {
-    accent = value;
-    void commitAppearance();
-  }
-
-  /// A slider moves the window under the thumb on every step and hands the
-  /// finished value to the file when the gesture ends, so one drag repaints
-  /// continuously and rewrites the config once instead of once per step.
-  function readBlur(event: Event): void {
-    blurPx = asSliderValue(
-      Number((event.currentTarget as HTMLInputElement).value),
-      APPEARANCE_BLUR_MAX
-    );
-  }
-
-  function readTint(event: Event): void {
-    tintOpacity = asSliderValue(
-      Number((event.currentTarget as HTMLInputElement).value),
-      APPEARANCE_TINT_MAX
-    );
-  }
-
-  function readCustomAccent(event: Event): void {
-    accent = (event.currentTarget as HTMLInputElement).value;
-  }
-
-  function saveTheme(event: Event): void {
-    theme = asTheme((event.currentTarget as HTMLSelectElement).value);
-    void commitAppearance();
-  }
-
-  /// The window is a 48px bar until a capture fills it, so the panel has
-  /// nowhere to open into until the window is given the height the menu needs.
-  /// The width is read back rather than assumed, so a window the user widened
-  /// keeps that width while the menu is open.
-  async function growWindowForMenu(): Promise<void> {
-    const win = getCurrentWindow();
-    try {
-      const [size, scale] = await Promise.all([
-        win.outerSize(),
-        win.scaleFactor(),
-      ]);
-      const width = size.toLogical(scale).width;
-      await win.setSize(new LogicalSize(width, MENU_HEIGHT));
-      menuGrown = true;
-    } catch (e) {
-      reportError('window', `the window could not open the menu: ${String(e)}`);
-    }
-  }
-
   /// The bar is meant to sit along the top of the primary monitor, centred, and
   /// the window otherwise comes up wherever the desktop put it. Monitor geometry
   /// arrives in physical pixels while `setPosition` takes logical ones, so every
   /// distance goes through the window's own scale factor, the same way the menu
-  /// grow reads its width back. The move happens once: a bar the user has since
-  /// dragged somewhere is theirs, and re-placing it would take it away again.
+  /// grow reads its width back.
+  ///
+  /// The compositor owns placement where it is allowed to, and on Wayland the
+  /// client is not: there the move is ignored and the desktop puts the bar
+  /// wherever its rules say, which is why a KDE user pins it to the top with a
+  /// Window Rule rather than with anything in here. The call is therefore an
+  /// enhancement and never a guarantee — it holds the intended placement on X11,
+  /// Windows and macOS, and a Wayland session simply takes the no-op path.
+  ///
+  /// The move happens once: a bar the user has since dragged somewhere is theirs,
+  /// and re-placing it would take it away again.
   async function placeBarAtTop(list: MonitorInfo[]): Promise<void> {
     if (barPlaced) return;
     barPlaced = true;
@@ -575,34 +555,43 @@
     }
   }
 
-  /// Only a grow this page performed is taken back, so a window the user
-  /// resized, and the size the first capture needed, are both left alone.
-  async function shrinkWindowFromMenu(): Promise<void> {
-    if (!menuGrown) return;
-    menuGrown = false;
+  /// The menu is a window of its own, so the button only decides where it goes:
+  /// under the bar's right edge, the side the button is on, a gap below the bar
+  /// so the two surfaces are not flush. The bar's outer position and size arrive
+  /// in physical pixels while `setPosition` takes logical ones, so every
+  /// distance goes through the window's own scale factor the same way
+  /// `placeBarAtTop` divides its monitor geometry.
+  ///
+  /// A second press hides the window rather than opening it again, so the button
+  /// is its own answer: the window shows and takes focus, and the press that
+  /// loses the focus is the one that closes it, whichever window the user
+  /// pressed on.
+  async function toggleMenu(): Promise<void> {
+    const win = getCurrentWindow();
     try {
-      await getCurrentWindow().setSize(new LogicalSize(BAR_WIDTH, BAR_HEIGHT));
+      const menu = await WebviewWindow.getByLabel(MENU_LABEL);
+      if (!menu) {
+        reportError('window', 'the menu window is not there');
+        return;
+      }
+      if (await menu.isVisible()) {
+        await menu.hide();
+        return;
+      }
+      const [position, size, scale] = await Promise.all([
+        win.outerPosition(),
+        win.outerSize(),
+        win.scaleFactor(),
+      ]);
+      const origin = position.toLogical(scale);
+      const x = origin.x + size.toLogical(scale).width - MENU_WIDTH;
+      const y = origin.y + BAR_HEIGHT + MENU_GAP;
+      await menu.setPosition(new LogicalPosition(Math.round(x), Math.round(y)));
+      await menu.show();
+      await menu.setFocus();
     } catch (e) {
-      reportError('window', `the window could not be resized: ${String(e)}`);
+      reportError('window', `the menu could not be opened: ${String(e)}`);
     }
-  }
-
-  /// Once the body is there the window is already taller than the menu needs,
-  /// and the capture grow owns its size.
-  async function resizeForMenu(open: boolean): Promise<void> {
-    if (hasImage || hasGrown) return;
-    if (open) await growWindowForMenu();
-    else await shrinkWindowFromMenu();
-  }
-
-  function toggleMenu(): void {
-    menuOpen = !menuOpen;
-    void resizeForMenu(menuOpen);
-  }
-
-  function closeMenu(): void {
-    menuOpen = false;
-    void resizeForMenu(false);
   }
 
   /// The height the window has to be for the expanded view to fit whole, or null
@@ -663,9 +652,9 @@
     }, FIT_DEBOUNCE_MS);
   }
 
-  /// The expanded view is watched for exactly as long as it is on screen. The
-  /// menu sizes the window by itself and before the panel is in the document, so
-  /// that path is left alone rather than answered to.
+  /// The expanded view is watched for exactly as long as it is on screen, and
+  /// only while it is: the bar-only window holds no content to measure, and a
+  /// menu that is a window of its own no longer sizes this one.
   $effect(() => {
     const target = hasImage ? contentEl : undefined;
     if (!target) return;
@@ -688,30 +677,6 @@
       await invoke('hide_window');
     } catch (e) {
       reportError('window', `the window could not be hidden: ${String(e)}`);
-    }
-  }
-
-  /// Both rows save through the same command: a window-system session registers
-  /// the shortcut it is handed, while a portal session ignores it and opens the
-  /// desktop's own dialog instead. The reason a row failed belongs to the
-  /// diagnostics window, so the status line carries the outcome alone.
-  async function saveTrigger(trigger: Trigger): Promise<void> {
-    if (savingTrigger) return;
-    const isCapture = trigger === 'capture';
-    savingTrigger = trigger;
-    try {
-      const command = isCapture ? 'set_hotkey' : 'set_select_hotkey';
-      const held = await invoke<string>(command, {
-        hotkey: isCapture ? captureShortcut : selectShortcut,
-      });
-      if (isCapture) captureShortcut = held;
-      else selectShortcut = held;
-      status = isCapture ? 'Capture trigger saved' : 'Region trigger saved';
-    } catch (e) {
-      reportError('hotkey', String(e));
-      status = isCapture ? 'Capture trigger not saved' : 'Region trigger not saved';
-    } finally {
-      savingTrigger = null;
     }
   }
 
@@ -741,7 +706,7 @@
 
   function startSelect(): void {
     if (!hasImage) {
-      status = 'Capture a screenshot first, then drag on it to select a region';
+      note(NEEDS_SCREENSHOT, 'warning');
       return;
     }
     selStart = null;
@@ -750,26 +715,32 @@
     window.addEventListener('keydown', cancelSelectOnEsc);
   }
 
-  function stopSelectMode() {
+  /// Ends selection and takes the overlay off the screen, so a caller that is
+  /// about to grab a region can wait for that to be off the screen first. The
+  /// fullscreen request belongs to that and not to the caller: a refused one is
+  /// a refused teardown, which is reported here so it cannot abort the grab the
+  /// caller makes next.
+  async function stopSelectMode(): Promise<void> {
     const wasScreen = screenMode;
     selecting = false;
     screenMode = false;
     selStart = null;
     selRect = null;
     window.removeEventListener('keydown', cancelSelectOnEsc);
-    if (wasScreen) {
+    if (!wasScreen) return;
+    try {
       const win = getCurrentWindow();
-      win.isFullscreen().then((full) => {
-        if (full) {
-          win.setFullscreen(false);
-        }
-      });
+      if (await win.isFullscreen()) {
+        await win.setFullscreen(false);
+      }
+    } catch (e) {
+      reportError('window', String(e));
     }
   }
 
   function cancelSelectOnEsc(event: KeyboardEvent) {
     if (event.key === 'Escape') {
-      stopSelectMode();
+      void stopSelectMode();
     }
   }
 
@@ -825,37 +796,26 @@
     const mon = monitors.find((m) => m.index === monitor) ?? monitors[0];
     const scale = await getCurrentWindow().scaleFactor();
     const tooSmall = !rect || rect.w < 4 || rect.h < 4;
-    stopSelectMode();
+    await stopSelectMode();
     if (tooSmall || !rect || !mon) {
       if (!mon) reportError('monitor', 'no monitor info is available');
-      else status = 'Selection too small';
+      else note(SELECTION_TOO_SMALL, 'warning');
       return;
     }
     const x = Math.max(0, Math.round(rect.x * scale + mon.x));
     const y = Math.max(0, Math.round(rect.y * scale + mon.y));
     const width = Math.max(1, Math.round(rect.w * scale));
     const height = Math.max(1, Math.round(rect.h * scale));
-    busy = true;
-    status = 'Capturing region...';
-    try {
-      const result = await invoke<ResultPayload>('capture_region', {
-        monitor,
-        x,
-        y,
-        width,
-        height,
-      });
-      applyResult(result);
-    } catch (e) {
-      reportError('capture', String(e));
-      status = 'Capture failed';
-    } finally {
-      busy = false;
-    }
+    await runCapture(
+      'capture_region',
+      { monitor, x, y, width, height },
+      'capture',
+      CAPTURING_REGION
+    );
   }
 
   async function onSelUp(): Promise<void> {
-    if (!selecting || !selRect || busy) {
+    if (!selecting || !selRect || isBusy) {
       return;
     }
     if (screenMode) {
@@ -887,31 +847,30 @@
     const fullX = selOffset.x + x;
     const fullY = selOffset.y + y;
     const tooSmall = selRect.w < 4 || selRect.h < 4;
-    stopSelectMode();
+    await stopSelectMode();
     if (tooSmall) {
-      status = 'Selection too small';
+      note(SELECTION_TOO_SMALL, 'warning');
       return;
     }
-    busy = true;
-    status = 'Reading selection...';
-    try {
-      const result = await invoke<ResultPayload>('ocr_selection', {
-        x: fullX,
-        y: fullY,
-        width,
-        height,
-      });
-      applyResult(result, { x: fullX, y: fullY });
-    } catch (e) {
-      reportError('ocr', String(e));
-      status = 'Selection failed';
-    } finally {
-      busy = false;
-    }
+    await runCapture(
+      'ocr_selection',
+      { x: fullX, y: fullY, width, height },
+      'ocr',
+      READING_REGION,
+      { x: fullX, y: fullY }
+    );
   }
 </script>
 
 <main class:has-body={hasImage}>
+  <!-- The one place a run is announced. It is outside every branch below so it
+       is on the page through the whole of a run rather than only while a cover
+       happens to be up, and it is read politely so it never cuts across what the
+       user is already on. The covers over the fields are hidden from it and
+       take their text from the phase, which is what stops a single read being
+       announced twice — once per field. -->
+  <p class="visually-hidden" aria-live="polite">{phaseSentence}</p>
+
   {#if selecting && screenMode}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
       Full-screen drag surface; Esc to cancel is on window keydown. -->
@@ -933,11 +892,14 @@
     </div>
   {:else}
     <div class="bar">
+      <!-- Order contract: capture, region, grip, menu, close. The grip stays
+           between the leading actions and the trailing ones, so a press on a
+           button is never read as a window drag. -->
       <div class="actions">
         <button
           class="icon"
           onclick={capture}
-          disabled={busy}
+          disabled={isBusy}
           aria-label="Capture"
           title="Capture"
         >
@@ -946,26 +908,23 @@
         <button
           class="icon"
           onclick={startSelect}
-          disabled={busy || !hasImage}
+          disabled={isBusy || !hasImage}
           aria-label="Select region"
           title={hasImage ? 'Select region' : 'Capture a screenshot first'}
         >
           <ScanLine size={ICON_SIZE} />
         </button>
       </div>
-      <div class="actions">
+      <div class="grip" data-tauri-drag-region aria-hidden="true"></div>
+      <div class="actions trailing">
         <button
           class="icon"
           onclick={toggleMenu}
           aria-label="Menu"
           title="Menu"
-          aria-expanded={menuOpen}
         >
           <Menu size={ICON_SIZE} />
         </button>
-      </div>
-      <div class="grip" data-tauri-drag-region aria-hidden="true"></div>
-      <div class="actions trailing">
         <button
           class="icon ghost"
           onclick={closeToTray}
@@ -977,192 +936,11 @@
       </div>
     </div>
 
-    {#if menuOpen}
-      <button
-        class="scrim"
-        tabindex="-1"
-        aria-label="Close menu"
-        onclick={closeMenu}
-      ></button>
-      <div class="panel">
-        <div class="row">
-          <span class="keylabel">Start at login</span>
-          <button
-            class="switch"
-            class:checked={autostart}
-            role="switch"
-            aria-checked={autostart}
-            aria-label="Start at login"
-            title="Start at login"
-            disabled={autostartBusy}
-            onclick={toggleAutostart}
-          >
-            <span class="knob"></span>
-          </button>
-        </div>
-        {#if autostartStatus}
-          <p class="switchline" role="status">{autostartStatus}</p>
-        {/if}
-        <label class="row">
-          Monitor
-          <select value={monitor} onchange={saveMonitor}>
-            {#each monitors as m (m.index)}
-              <option value={m.index}>
-                {m.name}{m.is_primary ? ' (primary)' : ''} {m.width}x{m.height}
-              </option>
-            {/each}
-          </select>
-        </label>
-
-        <div class="keys">
-          <div class="row">
-            <span class="keylabel">Capture</span>
-            {#if portalBackend}
-              <span class="bound">{captureTrigger ?? NOT_BOUND}</span>
-              <button
-                class="choose"
-                aria-label={CHOOSE_CAPTURE_TITLE}
-                title={CHOOSE_CAPTURE_TITLE}
-                onclick={() => saveTrigger('capture')}
-                disabled={savingTrigger !== null}
-              >
-                Choose…
-              </button>
-            {:else}
-              <input
-                class="shortcut"
-                bind:value={captureShortcut}
-                aria-label="Capture trigger"
-                placeholder="Ctrl+Shift+S"
-              />
-              <button
-                class="icon"
-                aria-label={CAPTURE_TRIGGER_TITLE}
-                title={CAPTURE_TRIGGER_TITLE}
-                onclick={() => saveTrigger('capture')}
-                disabled={savingTrigger !== null}
-              >
-                <Save size={ICON_SIZE} />
-              </button>
-            {/if}
-          </div>
-          <div class="row">
-            <span class="keylabel">Region</span>
-            {#if portalBackend}
-              <span class="bound">{selectTrigger ?? NOT_BOUND}</span>
-              <button
-                class="choose"
-                aria-label={CHOOSE_REGION_TITLE}
-                title={CHOOSE_REGION_TITLE}
-                onclick={() => saveTrigger('region')}
-                disabled={savingTrigger !== null}
-              >
-                Choose…
-              </button>
-            {:else}
-              <input
-                class="shortcut"
-                bind:value={selectShortcut}
-                aria-label="Region trigger"
-                placeholder="Ctrl+Shift+E"
-              />
-              <button
-                class="icon"
-                aria-label={REGION_TRIGGER_TITLE}
-                title={REGION_TRIGGER_TITLE}
-                onclick={() => saveTrigger('region')}
-                disabled={savingTrigger !== null}
-              >
-                <Save size={ICON_SIZE} />
-              </button>
-            {/if}
-          </div>
-        </div>
-
-        <div class="appearance">
-          <div class="row">
-            <span class="keylabel">Accent</span>
-            <button
-              class="swatch system"
-              class:checked={accent === null}
-              aria-pressed={accent === null}
-              aria-label="System accent"
-              title="System accent"
-              onclick={() => pickAccent(null)}
-            ></button>
-            {#each ACCENT_PRESETS as preset (preset.value)}
-              <button
-                class="swatch"
-                class:checked={accent === preset.value}
-                style="background: {preset.value}"
-                aria-pressed={accent === preset.value}
-                aria-label={`${preset.name} accent`}
-                title={`${preset.name} accent`}
-                onclick={() => pickAccent(preset.value)}
-              ></button>
-            {/each}
-            <input
-              class="swatch custom"
-              class:checked={customAccent}
-              type="color"
-              value={accent ?? FALLBACK_ACCENT}
-              aria-label="Custom accent"
-              title="Custom accent"
-              oninput={readCustomAccent}
-              onchange={commitAppearance}
-            />
-          </div>
-          <div class="row">
-            <span class="keylabel">Blur</span>
-            <input
-              class="slider"
-              type="range"
-              min="0"
-              max={APPEARANCE_BLUR_MAX}
-              value={blurPx}
-              aria-label="Blur"
-              oninput={readBlur}
-              onchange={commitAppearance}
-            />
-            <span class="value">{blurPx}px</span>
-          </div>
-          <div class="row">
-            <span class="keylabel">Tint</span>
-            <input
-              class="slider"
-              type="range"
-              min="0"
-              max={APPEARANCE_TINT_MAX}
-              value={tintOpacity}
-              aria-label="Tint"
-              oninput={readTint}
-              onchange={commitAppearance}
-            />
-            <span class="value">{tintOpacity}%</span>
-          </div>
-          <label class="row">
-            <span class="keylabel">Theme</span>
-            <select value={theme} onchange={saveTheme}>
-              <option value="system">System</option>
-              <option value="dark">Dark</option>
-              <option value="light">Light</option>
-            </select>
-          </label>
-        </div>
-
-        {#if portalBackend}
-          <p class="note">
-            Shortcuts live in the desktop's own settings, and these buttons open
-            that window. Anything that fails to save goes to the GOaT Errors
-            window.
-          </p>
-        {/if}
-      </div>
-    {/if}
-
     {#if hasImage}
     <div class="body" bind:this={bodyEl}>
-      <p class="status" role="status">{status}</p>
+      {#if statusNote}
+        <p class="status" data-tone={statusTone} role="status">{statusNote}</p>
+      {/if}
 
       <div class="content" bind:this={contentEl}>
         <section class="shot">
@@ -1191,7 +969,7 @@
           {/if}
         </section>
 
-        <div class="side">
+        <div class="fields" aria-busy={awaitingResult || awaitingTranslate}>
           <section>
             <div class="head">
               <h2>OCR'ed text</h2>
@@ -1211,6 +989,12 @@
             </div>
             <textarea bind:value={ocrText} placeholder="Empty" rows={6}
             ></textarea>
+            {#if awaitingResult}
+              <div class="field-loading" aria-hidden="true">
+                <span class="field-spinner"></span>
+                <span>Reading…</span>
+              </div>
+            {/if}
           </section>
           <section>
             <div class="head">
@@ -1234,6 +1018,12 @@
               placeholder="Empty"
               rows={6}
             ></textarea>
+            {#if awaitingTranslate}
+              <div class="field-loading" aria-hidden="true">
+                <span class="field-spinner"></span>
+                <span>Translating…</span>
+              </div>
+            {/if}
           </section>
         </div>
       </div>
@@ -1260,7 +1050,7 @@
      colour in charge. */
   :global(:root) {
     --goat-accent: AccentColor;
-    --goat-tint: 35%;
+    --goat-tint: 72%;
   }
 
   :global(body) {
@@ -1301,10 +1091,34 @@
   }
 
   /* The window is only tall enough for the bar until a capture fills it, so the
-     full-height column is scoped to the body and the bar sits on transparency
-     instead of stretching over the rest of the window. */
+     wash is scoped to the body and the bar sits on transparency instead of
+     stretching over the rest of the window. Once the column is painted the
+     window is a whole app, and a wash under the whole of it is what keeps the
+     raw desktop out from behind the bar and around the body; the bar-only
+     window keeps nothing behind it. */
   main.has-body {
     min-height: 100vh;
+    background: rgba(10, 14, 22, 0.55);
+  }
+
+  /* The menu panel hangs below the bar and out of flow, so it makes the document
+     taller than a bar-only window and hands that window a scrollbar it has no
+     use for. The column is given the window's height first, because a panel
+     positioned out of flow is clipped by the box it is positioned against rather
+     than by the window, and the panel's own max-height already keeps whatever
+     does not fit scrolling inside the panel. The expanded view is the one meant
+     to scroll, so the rule is written as the other state; `clip` is declared
+     after `hidden` so a WebKit without it keeps the clip it does understand,
+     and the strip is the only thing inside this column, so the two answers
+     differ in nothing that is on screen. */
+  main:not(.has-body) {
+    min-height: 100vh;
+    overflow: hidden;
+    overflow: clip;
+    /* Frameless windows get no corner rounding from the desktop, so the bar
+       carries the native radius itself; the clip above makes it real. Scoped
+       to bar-only: expanded and overlay modes must stay square. */
+    border-radius: 10px;
   }
 
   /* There is no title bar of the desktop's own, so this strip stands in for one.
@@ -1314,23 +1128,31 @@
      window transparent rather than painted.
 
      The tint is the desktop's own accent colour, so the strip belongs to the
-     system the user chose rather than to this app. The navy line comes first on
+     system the user chose rather than to this app. The dark line comes first on
      purpose: a WebKit that cannot resolve `color-mix` or `AccentColor` drops the
-     second declaration and keeps the navy, which is a readable result rather than
-     a broken one. */
+     second declaration and keeps a plain dark strip, which belongs to no palette
+     at all rather than borrowing one the user never chose.
+
+     The strip is not frosted on this window, so the tint is what keeps a
+     button legible over whatever the desktop shows through it, and the blur
+     behind it is there for a compositor that frosts. The top highlight is
+     there for the same reason: without frosting, a glass edge is the only
+     thing on the strip that reads as glass. */
   .bar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
     display: flex;
     align-items: center;
     gap: 0.5rem;
     padding: 0.35rem 0.5rem;
-    background: rgba(27, 29, 33, 0.35);
+    background: rgba(16, 24, 40, 0.72);
     background: color-mix(
       in srgb,
       var(--goat-accent) var(--goat-tint),
       transparent
     );
-    backdrop-filter: blur(var(--goat-blur, 24px)) saturate(1.5);
-    -webkit-backdrop-filter: blur(var(--goat-blur, 24px)) saturate(1.5);
+    border-top: 1px solid rgba(255, 255, 255, 0.14);
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   }
 
@@ -1339,13 +1161,36 @@
     font-size: 0.95rem;
   }
 
+  /* One container language for the whole strip. A button that carries its own
+     wash next to another that carries the same one reads as a single lighter
+     slab set into the bar rather than as segments of a control, so the group
+     is the only shape and the buttons in it are the segments. */
   .actions {
     display: flex;
     gap: 0.25rem;
   }
 
+  /* A group holding the close glyph keeps no pill: that glyph sits where the
+     title bar's own button would, and a wash behind it would put it back inside
+     a container it is meant to stand outside of. */
+  .actions:not(:has(> .icon.ghost)) {
+    gap: 2px;
+    padding: 2px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 0.5rem;
+  }
+
   .actions.trailing {
     margin-left: auto;
+  }
+
+  /* A segment is flat, so the pill is the only resting surface and hover is the
+     only thing that ever raises one. */
+  .actions > .icon {
+    background: transparent;
+    border: none;
+    border-radius: 0.35rem;
   }
 
   /* A drag region around the buttons leaves a press on any of them answered by
@@ -1356,259 +1201,6 @@
     align-self: stretch;
     min-width: 1rem;
     cursor: grab;
-  }
-
-  .scrim {
-    position: fixed;
-    inset: 0;
-    z-index: 19;
-    padding: 0;
-    border: none;
-    background: transparent;
-    cursor: default;
-  }
-
-  .panel {
-    position: absolute;
-    top: 3rem;
-    right: 0.75rem;
-    z-index: 20;
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    /* The bar is only 300px wide, so the panel is capped to the window instead
-       of hanging off its right edge when a row wants more room than it has. */
-    max-width: calc(100vw - 1rem);
-    /* The panel hangs from a 48px bar, and a window fitted to a short capture
-       can be shorter than the panel needs, so it takes only the room the bar
-       leaves and scrolls the rest instead of running off the bottom edge. */
-    max-height: calc(100vh - 3rem);
-    overflow-y: auto;
-    padding: 0.5rem;
-    /* The panel is part of the same strip, so it takes the same accent tint and
-       the same navy fallback as the bar rather than a colour of its own. */
-    background: rgba(27, 29, 33, 0.35);
-    background: color-mix(
-      in srgb,
-      var(--goat-accent) var(--goat-tint),
-      transparent
-    );
-    backdrop-filter: blur(var(--goat-blur, 24px)) saturate(1.5);
-    -webkit-backdrop-filter: blur(var(--goat-blur, 24px)) saturate(1.5);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    border-radius: 0.5rem;
-    box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.45);
-  }
-
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: 0.85rem;
-    white-space: nowrap;
-  }
-
-  .row select {
-    min-width: 0;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    background: rgba(255, 255, 255, 0.12);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    border-radius: 0.4rem;
-    padding: 0.25rem 0.5rem;
-  }
-
-  /* The popup is drawn by the desktop, which ignores the page behind it, so the
-     options carry a background of their own. */
-  .row select option {
-    background: #2a2d33;
-    color: #fff;
-  }
-
-  .keys {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    padding-top: 0.5rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.18);
-  }
-
-  /* The appearance controls are the panel's last group, set off by the same
-     divider the triggers are, so the groups read the same way down the panel. */
-  .appearance {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    padding-top: 0.5rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.18);
-  }
-
-  /* A swatch is a small plate of the colour it stands for, so the choice is made
-     by seeing the colour rather than by reading its value. The chosen one is
-     marked by a ring instead of by growing, because a row that changes width
-     with the choice would move every swatch after it. */
-  .swatch {
-    flex: none;
-    width: 1.1rem;
-    height: 1.1rem;
-    padding: 0;
-    border: 1px solid rgba(255, 255, 255, 0.35);
-    border-radius: 0.3rem;
-    cursor: pointer;
-  }
-
-  .swatch:hover {
-    border-color: #fff;
-  }
-
-  .swatch.checked {
-    border-color: #fff;
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.75);
-  }
-
-  .swatch:focus-visible {
-    outline: 2px solid #9ec5ff;
-    outline-offset: 2px;
-  }
-
-  /* System is not a colour of its own, so it is drawn as the two halves no
-     palette is made of: what the plate stands for is the desktop's to say, and
-     this only marks that the window is following it. */
-  .swatch.system {
-    background: linear-gradient(135deg, #e8eaee 0 50%, #2a2d33 50% 100%);
-  }
-
-  /* The slider takes the accent the window is already wearing, so the control
-     that picks the colour is itself that colour and a theme that flips the
-     platform's own control palette still leaves it readable on this panel. */
-  .slider {
-    flex: 1;
-    min-width: 0;
-    height: 1.1rem;
-    margin: 0;
-    accent-color: var(--goat-accent);
-    cursor: pointer;
-  }
-
-  .value {
-    min-width: 2.4rem;
-    text-align: right;
-    color: #c9ccd2;
-  }
-
-  .keylabel {
-    min-width: 3.4rem;
-  }
-
-  .row input.shortcut {
-    width: 7.5rem;
-    min-width: 0;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-size: 0.85rem;
-    font-family: inherit;
-    background: rgba(255, 255, 255, 0.12);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    border-radius: 0.4rem;
-    padding: 0.25rem 0.5rem;
-  }
-
-  .bound {
-    color: #c9ccd2;
-  }
-
-  .choose {
-    margin-left: auto;
-    background: rgba(255, 255, 255, 0.12);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    border-radius: 0.4rem;
-    padding: 0.25rem 0.6rem;
-    font-family: inherit;
-    font-size: 0.85rem;
-    cursor: pointer;
-  }
-
-  .choose:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.22);
-  }
-
-  .choose:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  /* The switch sits on the right of its row like every other control in the
-     panel, and the knob is the only thing that moves, so the row keeps the same
-     height as the one above it whether it is on or off. */
-  .switch {
-    position: relative;
-    width: 2.2rem;
-    height: 1.15rem;
-    margin-left: auto;
-    padding: 0;
-    background: rgba(255, 255, 255, 0.12);
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    border-radius: 999px;
-    cursor: pointer;
-  }
-
-  .switch.checked {
-    background: #3f7fd4;
-    border-color: #6ba4e6;
-  }
-
-  .switch .knob {
-    position: absolute;
-    top: 0.1rem;
-    left: 0.1rem;
-    width: 0.85rem;
-    height: 0.85rem;
-    border-radius: 50%;
-    background: #fff;
-    transition: transform 0.12s ease-out;
-  }
-
-  .switch.checked .knob {
-    transform: translateX(1.05rem);
-  }
-
-  .switch:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.22);
-  }
-
-  .switch.checked:hover:not(:disabled) {
-    background: #4f8ade;
-  }
-
-  .switch:focus-visible {
-    outline: 2px solid #9ec5ff;
-    outline-offset: 2px;
-  }
-
-  .switch:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  /* The line under the switch is the outcome of the last press, so it is empty
-     until there is one and it never carries the reason a press went wrong. */
-  .switchline {
-    margin: -0.15rem 0 0;
-    color: #c9ccd2;
-    font-size: 0.75rem;
-  }
-
-  .note {
-    margin: 0;
-    max-width: 16rem;
-    color: #c9ccd2;
-    font-size: 0.75rem;
-    line-height: 1.35;
   }
 
   /* The body is the one place the window is a whole app, so it is the one place
@@ -1623,8 +1215,22 @@
     box-sizing: border-box;
     padding: 1rem;
     background: rgba(255, 255, 255, 0.04);
-    backdrop-filter: blur(var(--goat-blur, 18px));
-    -webkit-backdrop-filter: blur(var(--goat-blur, 18px));
+  }
+
+  /* On the page and out of sight: taken out of the layout rather than hidden,
+     because `display: none` and `visibility: hidden` are both read by a screen
+     reader as nothing being there, which is the one thing this line must not be
+     while a run is under way. */
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
   }
 
   .status {
@@ -1634,6 +1240,18 @@
     padding: 0.25rem 0.6rem;
     background: rgba(0, 0, 0, 0.75);
     border-radius: 0.4rem;
+  }
+
+  /* The tone travels with the sentence rather than being read back out of it, so
+     the two tones that ask the user for something are the two the setup window
+     uses as well: a line in amber is a line to act on and a line in red is a line
+     that says what went wrong. A line with neither is a step of a run. */
+  .status[data-tone='warning'] {
+    color: #ffc46b;
+  }
+
+  .status[data-tone='error'] {
+    color: #ff9d9d;
   }
 
   .placeholder {
@@ -1647,24 +1265,84 @@
 
   .content {
     display: grid;
-    grid-template-columns: 3fr 2fr;
+    grid-template-columns: 1fr;
     gap: 1rem;
   }
 
-  .side {
+  /* The screenshot is the one thing above the two text fields and the width of
+     all three is the width of the window, so the grid is a single column and the
+     fields take the row under it as a pair rather than beside it. */
+  .fields {
     display: grid;
-    grid-template-rows: 1fr 1fr;
+    grid-template-columns: 1fr 1fr;
     gap: 1rem;
+  }
+
+  /* Each field is covered for exactly the phase running inside it and nothing
+     else says that phase is under way, so the cover is scoped to one field: a
+     layer inside a field asks that field for no track of its own, so a cover
+     comes and goes without moving anything, and takes that field's copy button
+     with it when it goes. */
+  .fields section {
+    position: relative;
   }
 
   /* Each text block gets its own plate of the same thin wash, so the desktop
      reads through the body of the window rather than only around its edges. The
-     textareas inside stay as dark as they were, which is what keeps white text
-     legible over a busy background. */
-  .side section {
+     screenshot shares that one plate rather than carrying a second set of
+     numbers, which is what keeps the shot and the two fields reading as one
+     surface. The textareas inside stay as dark as they were, which is what keeps
+     white text legible over a busy background. */
+  .fields section,
+  .shot {
     padding: 0.5rem;
     background: rgba(255, 255, 255, 0.04);
     border-radius: 0.5rem;
+  }
+
+  /* The wash is the darkest one in the window and the ring sits in the middle of
+     it, so the text still under the layer is plainly not what is being read.
+     `role="status"` on the container is what has the label read out, and the
+     ring is decoration as far as anything listening is concerned. */
+  .field-loading {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    background: rgba(0, 0, 0, 0.72);
+    border-radius: 0.5rem;
+    font-size: 0.85rem;
+  }
+
+  /* A ring drawn with two borders and turned by one keyframe, so the spin costs
+     a transform and paints on its own layer. */
+  .field-spinner {
+    box-sizing: border-box;
+    width: 1.5rem;
+    height: 1.5rem;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: goat-field-spin 0.8s linear infinite;
+  }
+
+  @keyframes goat-field-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  /* Motion asked to be off is motion not asked for: the ring is then a ring and
+     the label beside it still says the phase is running. */
+  @media (prefers-reduced-motion: reduce) {
+    .field-spinner {
+      animation: none;
+      border-top-color: rgba(255, 255, 255, 0.3);
+    }
   }
 
   .head {
