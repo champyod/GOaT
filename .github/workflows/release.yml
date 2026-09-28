@@ -82,6 +82,17 @@ jobs:
         shell: bash
         run: bash sidecar-ocr/build.sh ${{ matrix.args }}
 
+      # The bundles copy `resources` (tauri.conf.json) out of models/, which is
+      # gitignored, so every runner fetches the published conversion before the
+      # bundler below runs. Needs a repo secret HF_TOKEN with read access.
+      - name: Fetch NLLB model
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install -q huggingface_hub
+          huggingface-cli download CCYod/GOaT-nllb-1.3B-ct2-int8 --local-dir models/nllb-200-distilled-1.3B-ct2-int8
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
