@@ -1,11 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "GOaT",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.goat.app",
   "build": {
     "beforeDevCommand": "bun run --cwd app dev",
     "beforeBuildCommand": "bun run --cwd app build",
+    "beforeBundleCommand": "bash tools/bundle-resources.sh",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../app/build"
   },
@@ -13,8 +14,53 @@
     "windows": [
       {
         "title": "GOaT",
-        "width": 800,
-        "height": 600
+        "width": 300,
+        "height": 48,
+        "resizable": true,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": true
+      },
+      {
+        "label": "menu",
+        "title": "GOaT Menu",
+        "url": "/menu",
+        "width": 300,
+        "height": 430,
+        "resizable": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": true
+      },
+      {
+        "label": "setup",
+        "title": "GOaT Setup",
+        "url": "/setup",
+        "width": 480,
+        "height": 400,
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "visible": false
+      },
+      {
+        "label": "errors",
+        "title": "GOaT Errors",
+        "url": "/errors",
+        "width": 520,
+        "height": 400,
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": false,
+        "visible": false
       }
     ],
     "security": {
@@ -24,6 +70,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": ["binaries/tesseract-ocr"],
+    "resources": ["models/nllb-200-distilled-1.3B-ct2-int8"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

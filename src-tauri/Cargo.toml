@@ -1,6 +1,6 @@
 [package]
 name = "goat"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [lib]
@@ -11,7 +11,36 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+anyhow = "1"
+xcap = "0.9.8"
+ct2rs = "0.10.1"
+pure-onnx-ocr-sync = "0.2"
+image = "0.25"
+
+# Only the Wayland backend talks to the portal, and the modules that do are
+# behind `cfg(target_os = "linux")`, so macOS and Windows have no use for any
+# of this.
+[target.'cfg(target_os = "linux")'.dependencies]
+# The Wayland backend is the only one that announces itself through a desktop
+# notification, so macOS and Windows carry neither this nor its registration.
+tauri-plugin-notification = "2"
+# Deliberately built without the `tokio` feature. With it, zbus::block_on builds
+# its own multi-thread runtime and block_on's it, which panics with "Cannot start
+# a runtime from within a runtime" the moment a blocking caller (notify-rust,
+# through tauri-plugin-notification) runs on one of Tauri's tokio workers.
+# Without it zbus drives itself on async-io, awaits cleanly from Tauri's runtime,
+# and the configuration tauri-plugin-autostart already pulls in is left untouched.
+zbus = "5.19"
+# zbus hands its signal streams out as bare Streams; this is how they are read.
+futures-util = "0.3"
+# The portal puts no deadline on its own reply, so a portal that accepts a call
+# and then stays silent has to be timed out here. Tauri already runs on tokio
+# and already compiles it with `time`; naming it here reaches that same timer
+# without building a runtime of our own inside Tauri's.
+tokio = { version = "1", features = ["time"] }

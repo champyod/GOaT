@@ -1,0 +1,3 @@
+# tesseract-rs embed-tessdata: always embed English + Thai.
+[env]
+TESSERACT_EMBED_LANGUAGES = "eng,tha"
