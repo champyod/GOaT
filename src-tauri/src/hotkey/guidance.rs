@@ -104,7 +104,8 @@ fn current_desktop() -> Option<String> {
     let desktops = std::env::var("XDG_CURRENT_DESKTOP")
         .unwrap_or_default()
         .to_lowercase();
-    let first = desktops.split(':').next().unwrap_or_default().trim();
+    let (first, _) = desktops.split_once(':').unwrap_or((desktops.as_str(), ""));
+    let first = first.trim();
     (!first.is_empty()).then(|| first.to_owned())
 }
 

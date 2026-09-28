@@ -7,11 +7,12 @@
 #
 # Nothing here installs anything: the package manager differs per machine and the user owns the machine, so the script only prints the command to run.
 #
-# usage: tools/preflight.sh [--for app|sidecar] [--strict] [--quiet]
+# usage: tools/preflight.sh [--for app|sidecar] [--strict] [--quiet] [-h|--help]
 #
-#   --for     check the toolchain one build needs: app (default) or sidecar
-#   --strict  fail on a missing recommended tool, not only a missing required one
-#   --quiet   print only missing tools, warnings and errors
+#   --for       check the toolchain one build needs: app (default) or sidecar
+#   --strict    fail on a missing recommended tool, not only a missing required one
+#   --quiet     print only missing tools, warnings and errors
+#   -h, --help  print this usage message
 #
 # Written for bash 3.2 because Git Bash on windows-latest ships it: no
 # associative arrays, no ${var^^}, no mapfile, no [[ ]].
@@ -138,9 +139,6 @@ package_for() {
         rustc:apt) printf '%s' "rustc" ;;
         cargo:brew | rustc:brew) printf '%s' "rust" ;;
         pkg-config:pacman | pkg-config:brew) printf '%s' "pkgconf" ;;
-        node:pacman) printf '%s' "nodejs" ;;
-        node:brew) printf '%s' "node" ;;
-        node:apt) printf '%s' "nodejs" ;;
         bun:brew) printf '%s' "oven-sh/bun/bun" ;;
         *) printf '%s' "$1" ;;
     esac

@@ -8,7 +8,7 @@
 # downloads "tha", so the cache is primed here (pinned to tessdata_fast) before
 # cargo is invoked. Without that step the sidecar cannot read Thai at all.
 #
-# usage: build.sh [--target <rust-target-triple>]
+# usage: build.sh [--target <rust-target-triple>] [-h|--help]
 #
 # With no argument the sidecar is built for the host triple and installed as
 # src-tauri/binaries/tesseract-ocr-<host-triple>[.exe], which is all a Linux or

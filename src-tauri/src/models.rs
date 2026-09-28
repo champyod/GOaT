@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use pure_onnx_ocr_sync::{OcrEngine, OcrEngineBuilder};
 
-// Placeholder local model paths. Models are never downloaded by the app;
-// place the files here yourself. All paths are local only.
+// Last-resort model path, checked after the resource and app data directories.
+// No such directory ships in the repository; the app never downloads models.
 pub const MODELS_DIR: &str = "../models";
 
 pub const OCR_DETECTION_MODEL: &str = "ppocrv5_mobile_det.onnx";
@@ -27,8 +27,8 @@ pub fn models_dir() -> PathBuf {
     PathBuf::from(MODELS_DIR)
 }
 
-// Final builds bundle models with the app (resource dir) or place them in
-// the app data dir. Dev placeholder comes last.
+// The bundle carries no resources key, so a final build ships no models and the
+// resource dir is only ever empty. The app data dir comes before the dev path.
 pub fn candidate_base_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     use tauri::Manager;
     let mut dirs = Vec::new();

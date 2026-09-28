@@ -122,17 +122,6 @@ fn capture_from(monitor: &Monitor, region: Option<Region>) -> Result<CapturedIma
     })
 }
 
-#[tauri::command]
-pub fn capture_screen(x: u32, y: u32, width: u32, height: u32) -> Result<CapturedImage, String> {
-    let region = Region {
-        x,
-        y,
-        width,
-        height,
-    };
-    capture_from(&select_monitor(MonitorSelector::Primary)?, Some(region))
-}
-
 pub fn capture_primary() -> Result<CapturedImage, String> {
     capture_from(&select_monitor(MonitorSelector::Primary)?, None)
 }
