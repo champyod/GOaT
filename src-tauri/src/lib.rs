@@ -100,6 +100,19 @@ fn default_select_hotkey() -> String {
     DEFAULT_SELECT_HOTKEY.to_string()
 }
 
+/// How far from the top of the screen the bar is put when the user has not said
+/// otherwise, and the range a number is held inside. A negative distance is off
+/// the top of the screen and a very large one is under whatever the desktop has
+/// down there, and a file the user edited by hand is the only way either arrives,
+/// so a value outside the range is brought back rather than obeyed.
+const DEFAULT_BAR_TOP_OFFSET: i32 = 28;
+const BAR_TOP_OFFSET_MIN: i32 = 0;
+const BAR_TOP_OFFSET_MAX: i32 = 500;
+
+fn default_bar_top_offset() -> i32 {
+    DEFAULT_BAR_TOP_OFFSET
+}
+
 pub(crate) struct AppState {
     pub(crate) ocr: Mutex<Option<pure_onnx_ocr_sync::OcrEngine>>,
     pub(crate) hotkey: Mutex<String>,
@@ -126,6 +139,12 @@ struct UserConfig {
     hide_bind_notice: bool,
     #[serde(default)]
     appearance: appearance::AppearanceConfig,
+    /// How far from the top of the screen the bar is put, in the logical pixels
+    /// a position is asked for in. A file written before this setting existed has
+    /// no such key, and a missing one has to mean the distance the bar has always
+    /// sat at rather than the top edge of the screen.
+    #[serde(default = "default_bar_top_offset")]
+    bar_top_offset: i32,
 }
 
 impl Default for UserConfig {
@@ -136,6 +155,7 @@ impl Default for UserConfig {
             monitor: 0,
             hide_bind_notice: false,
             appearance: appearance::AppearanceConfig::default(),
+            bar_top_offset: default_bar_top_offset(),
         }
     }
 }
@@ -1001,6 +1021,7 @@ fn config_from_state(app: &tauri::AppHandle, state: &tauri::State<'_, AppState>)
         monitor: *hotkey::lock(&state.monitor),
         hide_bind_notice: stored.hide_bind_notice,
         appearance: stored.appearance,
+        bar_top_offset: stored.bar_top_offset,
     }
 }
 
@@ -1025,6 +1046,45 @@ fn set_hide_bind_notice(
     cfg.hide_bind_notice = hide;
     save_config(&app, &cfg)?;
     Ok(hide)
+}
+
+/// The distance the bar is put from the top of the screen, in the logical pixels
+/// a position is asked for in. The file is the only place it is kept, so this is
+/// read off it rather than out of managed state, the same way the notice flag is.
+#[tauri::command]
+fn get_bar_top_offset(app: tauri::AppHandle) -> i32 {
+    load_config(&app).bar_top_offset
+}
+
+/// The distance the bar is put at, held inside a range a bar can be placed in.
+/// The file is editable by hand, and a window asked for an offset past the bottom
+/// of the screen is one the desktop can only refuse or bury, so a value outside
+/// the range is brought back into it rather than obeyed.
+fn clamped_bar_top_offset(offset: i32) -> i32 {
+    offset.clamp(BAR_TOP_OFFSET_MIN, BAR_TOP_OFFSET_MAX)
+}
+
+/// Records the distance the user chose, tells the windows about it, and answers
+/// with the value that was kept, so the bar is moved to the number the file
+/// actually holds and both windows show that one rather than the one that was
+/// sent.
+///
+/// The broadcast is what makes the slider move the bar while the app is open:
+/// the file alone would only take effect on the next launch, because the window
+/// is placed once at startup and has no other reason to look.
+#[tauri::command]
+fn set_bar_top_offset(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    offset: i32,
+) -> Result<i32, String> {
+    use tauri::Emitter;
+    let kept = clamped_bar_top_offset(offset);
+    let mut cfg = config_from_state(&app, &state);
+    cfg.bar_top_offset = kept;
+    save_config(&app, &cfg)?;
+    let _ = app.emit("bar-top-offset-changed", &kept);
+    Ok(kept)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1106,6 +1166,8 @@ pub fn run() {
             set_select_hotkey,
             get_hide_bind_notice,
             set_hide_bind_notice,
+            get_bar_top_offset,
+            set_bar_top_offset,
             appearance::get_appearance,
             appearance::set_appearance,
             appearance::set_window_size,
@@ -1278,6 +1340,28 @@ mod tests {
         assert_eq!(stamp.len(), 20, "unexpected shape: {stamp}");
         assert!(stamp.ends_with('Z'), "unexpected shape: {stamp}");
         assert!(stamp.starts_with("20"), "unexpected shape: {stamp}");
+    }
+
+    /// A file written before the setting existed carries no such key, and
+    /// loading it must not cost the user the rest of their config over a field
+    /// that has a default: the bar is placed where it always has been.
+    #[test]
+    fn a_config_written_before_the_bar_offset_existed_sits_the_bar_where_it_always_did() {
+        let config: UserConfig = serde_json::from_str(
+            r#"{"hotkey":"Ctrl+Shift+S","select_hotkey":"Ctrl+Shift+E","monitor":0,"hide_bind_notice":false}"#,
+        )
+        .expect("an older config still loads");
+        assert_eq!(config.bar_top_offset, DEFAULT_BAR_TOP_OFFSET);
+    }
+
+    /// A hand-edited file is the only way a number outside the range arrives, and
+    /// an offset past the bottom of the screen is a bar the desktop can only
+    /// refuse or bury, so it is brought back rather than obeyed.
+    #[test]
+    fn a_bar_offset_outside_the_range_it_can_be_placed_in_is_brought_back() {
+        assert_eq!(clamped_bar_top_offset(-40), BAR_TOP_OFFSET_MIN);
+        assert_eq!(clamped_bar_top_offset(9_000), BAR_TOP_OFFSET_MAX);
+        assert_eq!(clamped_bar_top_offset(64), 64);
     }
 
     #[test]

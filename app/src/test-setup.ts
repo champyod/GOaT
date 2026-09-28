@@ -38,6 +38,8 @@ const DEFAULT_COMMANDS: CommandTable = {
   ],
   get_monitor: 0,
   set_monitor: 0,
+  get_bar_top_offset: 28,
+  set_bar_top_offset: 28,
   get_appearance: { accent: null, blur_px: 0, tint_opacity: 72, theme: 'system' },
   set_appearance: { accent: null, blur_px: 0, tint_opacity: 72, theme: 'system' },
   os_platform: 'linux',

@@ -23,6 +23,13 @@
     'A development build never adds itself to your login items';
   const APPEARANCE_BLUR_MAX = 30;
   const APPEARANCE_TINT_MAX = 100;
+  /// Where the bar sits before the stored setting answers, and the range the
+  /// slider offers. The bar is a top-edge control, so the far end of the range is
+  /// only as far down as a window this size can go before it stops being a bar:
+  /// a value past the bottom of a laptop screen is a bar nobody can reach, which
+  /// is a number worth refusing at the control rather than at the desktop.
+  const DEFAULT_BAR_TOP_OFFSET = 28;
+  const BAR_TOP_OFFSET_MAX = 500;
   const HEX_COLOR = /^#[\da-f]{6}$/i;
   const NATIVE_BLUR_TITLE = 'Native blur';
   /// What the switch says about itself where there is no material to apply. A
@@ -127,6 +134,7 @@
   let autostartRefused = $state(false);
   let monitors = $state<MonitorInfo[]>([]);
   let monitor = $state(0);
+  let barTopOffset = $state(DEFAULT_BAR_TOP_OFFSET);
   let accent = $state<string | null>(null);
   /// Echoed back on commit so removing the slider does not rot the stored
   /// value; nothing on this page reads it.
@@ -222,6 +230,13 @@
       .catch((e) => {
         reportError('monitor', String(e));
       });
+    invoke<number>('get_bar_top_offset')
+      .then((value) => {
+        barTopOffset = asBarTopOffset(value);
+      })
+      .catch((e) => {
+        reportError('bar', String(e));
+      });
     void subscribe<HotkeyStatus>('hotkey-status', applyStatus);
     invoke<HotkeyStatus>('hotkey_status')
       .then((value) => {
@@ -277,6 +292,36 @@
     } catch (e) {
       reportError('monitor', String(e));
     }
+  }
+
+  /// The stored distance, rounded and held inside the range the slider offers: a
+  /// file written by anything other than this menu is the only way a number
+  /// arrives that is not one, and a value the slider cannot show is a row reading
+  /// something the control itself is not set to.
+  function asBarTopOffset(value: number): number {
+    if (!Number.isFinite(value)) return DEFAULT_BAR_TOP_OFFSET;
+    return Math.min(Math.max(Math.round(value), 0), BAR_TOP_OFFSET_MAX);
+  }
+
+  /// The row follows the thumb as it is dragged and hands the finished value to
+  /// the file when the gesture ends, so the bar is placed once per drag instead
+  /// of once per step. That write is what moves the bar: it answers with the
+  /// value the file kept and broadcasts it, so the row shows what was stored and
+  /// the bar window is moved to the same number.
+  async function commitBarTopOffset(): Promise<void> {
+    try {
+      barTopOffset = await invoke<number>('set_bar_top_offset', {
+        offset: barTopOffset,
+      });
+    } catch (e) {
+      reportError('bar', String(e));
+    }
+  }
+
+  function readBarTopOffset(event: Event): void {
+    barTopOffset = asBarTopOffset(
+      Number((event.currentTarget as HTMLInputElement).value)
+    );
   }
 
   /// The monitors as the list names them, which is the text the native option
@@ -669,6 +714,20 @@
   <div class="row">
     Monitor
     {@render dropdown('monitor', 'Monitor', monitorOptions, false)}
+  </div>
+  <div class="row">
+    <span class="keylabel">Bar top</span>
+    <input
+      class="slider"
+      type="range"
+      min="0"
+      max={BAR_TOP_OFFSET_MAX}
+      value={barTopOffset}
+      aria-label="Bar top"
+      oninput={readBarTopOffset}
+      onchange={commitBarTopOffset}
+    />
+    <span class="value">{barTopOffset}px</span>
   </div>
 
   <div class="keys">

@@ -19,7 +19,12 @@
   const ICON_SIZE = 16;
   const BAR_WIDTH = 300;
   const BAR_HEIGHT = 48;
-  const BAR_TOP_OFFSET = 28;
+  /// The distance the bar is put from the top of the screen while the stored
+  /// setting has not answered, and the range it is held inside. The value is the
+  /// user's to change in the menu, so a slow load and a failed one are the same
+  /// thing here: the bar goes where it has always gone.
+  const FALLBACK_BAR_TOP_OFFSET = 28;
+  const BAR_TOP_OFFSET_MAX = 500;
   /// The menu is a window of its own, and these two are where it is put: its
   /// width is the bar's, and it hangs under the hamburger button's own edges
   /// (measured at press time), with the gap keeping it off the bar's edge.
@@ -119,6 +124,7 @@
   let hasImage = $state(false);
   let monitors = $state<MonitorInfo[]>([]);
   let monitor = $state(0);
+  let barTopOffset = $state(FALLBACK_BAR_TOP_OFFSET);
   let accent = $state<string | null>(null);
   let tintOpacity = $state(FALLBACK_TINT_PERCENT);
   let theme = $state<AppearanceTheme>('system');
@@ -411,21 +417,10 @@
       .catch((e) => {
         reportError('models', String(e));
       });
-    invoke<MonitorInfo[]>('list_monitors')
-      .then((value) => {
-        monitors = value;
-        void placeBarAtTop(value);
-      })
-      .catch((e) => {
-        reportError('monitor', String(e));
-      });
-    invoke<number>('get_monitor')
-      .then((value) => {
-        monitor = value;
-      })
-      .catch((e) => {
-        reportError('monitor', String(e));
-      });
+    void loadBarPlacement();
+    void subscribe<number>('bar-top-offset-changed', (offset) => {
+      void repositionBarToTop(offset);
+    });
     void subscribe<Appearance>('appearance-changed', applyAppearance);
     invoke<Appearance>('get_appearance')
       .then(applyAppearance)
@@ -471,6 +466,15 @@
     return value === 'dark' || value === 'light' ? value : 'system';
   }
 
+  /// The stored distance, rounded and held inside the range the menu offers. A
+  /// file written by anything other than this app is the only way a number
+  /// arrives that is not one, and a window asked for an offset past the bottom of
+  /// the screen is one the desktop can only refuse or bury.
+  function asBarTopOffset(value: number): number {
+    if (!Number.isFinite(value)) return FALLBACK_BAR_TOP_OFFSET;
+    return Math.min(Math.max(Math.round(value), 0), BAR_TOP_OFFSET_MAX);
+  }
+
   /// The look reaches the window three ways — the load on mount, a press in the
   /// menu window, and a write from that window arriving as an event — and all
   /// three come through here, so the bar and the body are never two different
@@ -510,11 +514,56 @@
     }
   });
 
-  /// The bar is meant to sit along the top of the primary monitor, centred, and
-  /// the window otherwise comes up wherever the desktop put it. Monitor geometry
-  /// arrives in physical pixels while `setPosition` takes logical ones, so every
-  /// distance goes through the window's own scale factor, the same way the menu
-  /// grow reads its width back.
+  /// The three answers the bar is placed against, and the wait between them and
+  /// the move. The monitor the user captures from and the distance from the top
+  /// are both stored values, so placing before either has answered would put the
+  /// bar where a later answer says it does not belong — and the move happens
+  /// once, so there is no second attempt to correct it.
+  ///
+  /// Each answer is kept to its own failure, so one that is refused leaves the
+  /// other two in place and the bar is still placed from what did arrive.
+  async function loadBarPlacement(): Promise<void> {
+    const listed = invoke<MonitorInfo[]>('list_monitors')
+      .then((value) => {
+        monitors = value;
+        return value;
+      })
+      .catch((e) => {
+        reportError('monitor', String(e));
+        return null;
+      });
+    const chosen = invoke<number>('get_monitor')
+      .then((value) => {
+        monitor = value;
+      })
+      .catch((e) => {
+        reportError('monitor', String(e));
+      });
+    const offset = invoke<number>('get_bar_top_offset')
+      .then((value) => {
+        barTopOffset = asBarTopOffset(value);
+      })
+      .catch((e) => {
+        reportError('bar', String(e));
+      });
+    const list = await Promise.all([listed, chosen, offset]);
+    await placeBarAtTop(list[0] ?? []);
+  }
+
+  /// The bar is meant to sit along the top of the monitor the user captures from,
+  /// centred, at the distance they chose, and the window otherwise comes up
+  /// wherever the desktop put it. The monitor is the one captures are taken from
+  /// rather than the primary: the two are the same screen on a desk with one
+  /// output, and on a desk with more the bar belongs over the screen the user is
+  /// working in. A desktop that names no monitor at all falls back to the primary,
+  /// then to the first it lists, and finally to the window's own screen, which is
+  /// the only geometry left when nothing is named.
+  ///
+  /// Monitor geometry arrives in physical pixels while `setPosition` takes
+  /// logical ones, so every distance goes through the window's own scale factor,
+  /// the same way the menu grow reads its width back. The offset is already the
+  /// user's own number and is not scaled again: it is the distance from the top of
+  /// the screen in the same logical pixels as everything else beside it.
   ///
   /// The compositor owns placement where it is allowed to, and on Wayland the
   /// client is not: there the move is ignored and the desktop puts the bar
@@ -523,26 +572,47 @@
   /// enhancement and never a guarantee — it holds the intended placement on X11,
   /// Windows and macOS, and a Wayland session simply takes the no-op path.
   ///
-  /// The move happens once: a bar the user has since dragged somewhere is theirs,
-  /// and re-placing it would take it away again.
-  async function placeBarAtTop(list: MonitorInfo[]): Promise<void> {
-    if (barPlaced) return;
-    barPlaced = true;
+  /// The move itself, with the monitor list already in hand. Kept apart from
+  /// the two callers above and below so the launch and a change the user makes
+  /// later travel the same geometry, the same scale factor, and reach the same
+  /// report when the desktop refuses.
+  async function moveBarToTop(list: MonitorInfo[]): Promise<void> {
     const win = getCurrentWindow();
     try {
       const [size, scale] = await Promise.all([
         win.outerSize(),
         win.scaleFactor(),
       ]);
-      const primary = list.find((m) => m.is_primary) ?? list[0];
-      const monitorWidth = primary ? primary.width / scale : window.screen.width;
-      const monitorLeft = primary ? primary.x / scale : 0;
+      const chosen =
+        list.find((m) => m.index === monitor) ??
+        list.find((m) => m.is_primary) ??
+        list[0];
+      const monitorWidth = chosen ? chosen.width / scale : window.screen.width;
+      const monitorLeft = chosen ? chosen.x / scale : 0;
       const barWidth = size.toLogical(scale).width;
       const x = Math.round(monitorLeft + (monitorWidth - barWidth) / 2);
-      await win.setPosition(new LogicalPosition(x, BAR_TOP_OFFSET));
+      await win.setPosition(new LogicalPosition(x, barTopOffset));
     } catch (e) {
       reportError('window', `the bar could not be placed: ${String(e)}`);
     }
+  }
+
+  /// The move happens once: a bar the user has since dragged somewhere is theirs,
+  /// and re-placing it would take it away again.
+  async function placeBarAtTop(list: MonitorInfo[]): Promise<void> {
+    if (barPlaced) return;
+    barPlaced = true;
+    await moveBarToTop(list);
+  }
+
+  /// A distance the user has just chosen is a position they are asking for now,
+  /// and it outranks a bar they had dragged by hand earlier — otherwise the
+  /// slider would answer by saving a value nothing on screen ever used. So this
+  /// path deliberately goes around the once-only guard, and centres on the
+  /// monitor already chosen for captures, the same one the launch used.
+  async function repositionBarToTop(offset: number): Promise<void> {
+    barTopOffset = asBarTopOffset(offset);
+    await moveBarToTop(monitors);
   }
 
   /// The menu is a window of its own, so the button only decides where it goes:

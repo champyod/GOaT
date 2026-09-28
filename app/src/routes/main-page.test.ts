@@ -1,11 +1,13 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
+import type { LogicalPosition, Position } from '@tauri-apps/api/dpi';
 import { describe, expect, it } from 'vitest';
 import Main from './+page.svelte';
 import {
   clipboardWrite,
   drain,
   installTauriMock,
-  lastPaintedFrame
+  lastPaintedFrame,
+  type TauriHarness
 } from '../test-setup';
 
 const IMAGE = {
@@ -66,6 +68,21 @@ function mustFind<T extends Element>(root: ParentNode, selector: string): T {
 }
 
 type Box = { left: number; top: number; width: number; height: number };
+
+/// Where the window was last asked to sit, in the logical points a position is
+/// asked for in. One move is what the bar allows itself, so this is read as a
+/// list: a second entry is a bar the user has since dragged being taken back.
+/// The harness records the call before it is serialized, so the point is read
+/// off the position the API wraps rather than off the wire shape.
+function placedAt(harness: TauriHarness): { x: number; y: number }[] {
+  return harness
+    .argsOf('plugin:window|set_position')
+    .map((args) => {
+      const call = args as { value: Position };
+      const point = call.value.position as LogicalPosition;
+      return { x: point.x, y: point.y };
+    });
+}
 
 function stubBox(element: Element, box: Box): void {
   element.getBoundingClientRect = () => ({
@@ -201,6 +218,66 @@ describe('the capture window', () => {
 
     await fireEvent.click(screen.getByLabelText<HTMLButtonElement>('Copy translated text'));
     expect(clipboardWrite).toHaveBeenCalledWith('hello');
+  });
+});
+
+/// The bar is placed once, against the monitor captures are taken from and the
+/// distance from the top the user chose. Both are stored values, so a move made
+/// before either has answered is a move that is never corrected.
+describe('placing the bar', () => {
+  const SCREENS = [
+    { index: 0, name: 'DP-1', is_primary: true, width: 1920, height: 1080, x: 0, y: 0 },
+    {
+      index: 1,
+      name: 'HDMI-1',
+      is_primary: false,
+      width: 1920,
+      height: 1080,
+      x: 1920,
+      y: 0
+    }
+  ];
+
+  /// The window is 300 points wide on a screen 1920 across, so the side monitor
+  /// at x=1920 centres the bar at 1920 + (1920 - 300) / 2 = 2730.
+  it('centres the bar on the monitor captures are taken from', async () => {
+    const harness = installTauriMock({
+      list_monitors: SCREENS,
+      get_monitor: 1,
+      get_bar_top_offset: 64
+    });
+    render(Main);
+    await drain();
+
+    expect(placedAt(harness)).toEqual([{ x: 2730, y: 64 }]);
+  });
+
+  it('falls back to the primary screen when the stored monitor is not listed', async () => {
+    const harness = installTauriMock({
+      list_monitors: SCREENS,
+      get_monitor: 7,
+      get_bar_top_offset: 28
+    });
+    render(Main);
+    await drain();
+
+    expect(placedAt(harness)).toEqual([{ x: 810, y: 28 }]);
+  });
+
+  it('waits for the stored distance rather than placing the bar at the default', async () => {
+    const offset = deferred<number>();
+    const harness = installTauriMock({
+      list_monitors: SCREENS,
+      get_monitor: 0,
+      get_bar_top_offset: () => offset.promise
+    });
+    render(Main);
+    await drain();
+    expect(placedAt(harness)).toEqual([]);
+
+    offset.resolve(120);
+    await drain();
+    expect(placedAt(harness)).toEqual([{ x: 810, y: 120 }]);
   });
 });
 

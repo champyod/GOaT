@@ -106,4 +106,24 @@ describe('the menu window', () => {
     expect(screen.getByLabelText<HTMLInputElement>('Capture trigger').value).toBe('Ctrl+Shift+S');
     expect(screen.getByLabelText<HTMLInputElement>('Region trigger').value).toBe('Ctrl+Shift+E');
   });
+
+  it('offers the distance the backend holds for the bar', async () => {
+    installTauriMock({ get_bar_top_offset: 96 });
+    render(Menu);
+    await drain();
+
+    expect(screen.getByLabelText<HTMLInputElement>('Bar top').value).toBe('96');
+  });
+
+  it('hands the finished distance to the file and shows what it kept', async () => {
+    const harness = installTauriMock({ get_bar_top_offset: 28, set_bar_top_offset: 0 });
+    render(Menu);
+    await drain();
+
+    const slider = screen.getByLabelText<HTMLInputElement>('Bar top');
+    await fireEvent.input(slider, { target: { value: '0' } });
+    await fireEvent.change(slider);
+    expect(harness.argsOf('set_bar_top_offset')).toEqual([{ offset: 0 }]);
+    expect(slider.value).toBe('0');
+  });
 });
