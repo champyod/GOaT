@@ -1,7 +1,7 @@
 {
   "name": "goat",
-  "version": "1.0.0",
-  "description": "Global Ocr And Translator",
+  "version": "0.2.0",
+  "description": "Global OCR and Translator - NLLB translation, Linux KDE Wayland compatible",
   "private": true,
   "scripts": {
     "preflight": "bash tools/preflight.sh",
