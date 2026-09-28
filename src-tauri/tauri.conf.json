@@ -24,6 +24,20 @@
         "focus": true
       },
       {
+        "label": "menu",
+        "title": "GOaT Menu",
+        "url": "/menu",
+        "width": 300,
+        "height": 430,
+        "resizable": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": true
+      },
+      {
         "label": "setup",
         "title": "GOaT Setup",
         "url": "/setup",
