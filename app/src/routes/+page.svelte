@@ -1147,6 +1147,12 @@
   main.has-body {
     min-height: 100vh;
     background: rgba(10, 14, 22, 0.55);
+    overflow: hidden;
+    overflow: clip;
+    /* Frameless windows get no corner rounding from the desktop, so the
+       expanded view carries the same radius as the bar; the clip above
+       makes it real. */
+    border-radius: 10px;
   }
 
   /* The menu panel hangs below the bar and out of flow, so it makes the document
@@ -1164,8 +1170,7 @@
     overflow: hidden;
     overflow: clip;
     /* Frameless windows get no corner rounding from the desktop, so the bar
-       carries the native radius itself; the clip above makes it real. Scoped
-       to bar-only: expanded and overlay modes must stay square. */
+       carries the radius itself; the clip above makes it real. */
     border-radius: 10px;
   }
 
