@@ -24,6 +24,19 @@ jobs:
         run: bun install --cwd app
       - name: Frontend type check
         run: bun run --cwd app check
+      # svelte-check reads types and never runs a component, so a page that
+      # throws on mount, a command the IPC harness does not model, and a broken
+      # assertion are all invisible to the step above. jsdom needs no window
+      # server, so this needs nothing installed beyond the app's own deps.
+      #
+      # Vitest's bin is `#!/usr/bin/env node`, so the runner's Node is what
+      # executes it. Vitest 5 declares ^22.12.0 || ^24 || >=26, and the
+      # ubuntu-latest image (ubuntu-24.04, image 20260920.314.1) ships Node
+      # 22.23.2, which clears that floor — hence no setup-node step. When the
+      # image default ever drops below it, add setup-node here rather than
+      # letting the step fail on the floor instead of on a test.
+      - name: Frontend unit tests
+        run: bun run --cwd app test --run
       - name: Install Tauri CLI
         run: bun install
 
@@ -40,6 +53,12 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
       - name: Rust fmt check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      # clippy and rustfmt both read the sources without ever building the test
+      # harness, so a broken assertion is invisible to them and the next job
+      # would still bundle a binary whose unit tests had never been run. This
+      # step is the only place the main crate's tests execute.
+      - name: Rust unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
       # tesseract-rs only warns when a language is missing from the crate's
       # cache, so a green build can still ship an eng-only binary. This job is
       # the gate that would have caught it: the sidecar's own tests assert both
