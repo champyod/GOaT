@@ -5,6 +5,7 @@ mod hotkey;
 mod models;
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
@@ -24,6 +25,68 @@ const ERROR_LOG_CAP: usize = 100;
 const OCR_ENGINE_PRIMARY: &str = "tract";
 const OCR_ENGINE_FALLBACK: &str = "tesseract";
 const OCR_ENGINE_NONE: &str = "";
+
+/// Set the moment the first screenshot is published. A window the app raises on
+/// its own is answered from this rather than from what has happened so far,
+/// because a capture is the one fact that ends a launch: before it the app is
+/// still waiting to be asked for something, and after it the windows are there
+/// for the user to work in.
+static CAPTURED: AtomicBool = AtomicBool::new(false);
+
+/// Whether a window the app raises for itself is allowed on screen. It is not
+/// until something has been captured, so a launch that never reaches a capture
+/// leaves the desktop as it was and the problems recorded before the first one
+/// are read when the user goes looking. Only the app's own raising is gated: the
+/// tray, a trigger and a command are the user asking, and they open a window
+/// whatever has been captured.
+fn may_auto_show(captured: &AtomicBool) -> bool {
+    captured.load(Ordering::SeqCst)
+}
+
+/// The latch is one way. A capture that has happened is a fact about the session
+/// and nothing in the app can take it back, so there is no second answer to give
+/// once it has been set.
+fn mark_captured(captured: &AtomicBool) {
+    captured.store(true, Ordering::SeqCst);
+}
+
+/// The latch as the app sets it. A capture that reaches the screen counts even
+/// when it failed on the way, because the user asked for a capture and the app
+/// has answered them — leaving the latch unset would keep a first-run failure in
+/// the log with nothing on screen to point at it.
+pub(crate) fn record_capture_attempted() {
+    mark_captured(&CAPTURED);
+}
+
+/// How long the window is given to leave the screen before a grab is taken. The
+/// compositor draws a frame at a time and answering a request to unmap a
+/// surface is not the frame that unmap lands in, so a grab taken straight after
+/// the answer still finds the window in it. 250ms covers the one or two frames a
+/// Wayland compositor needs to be rid of the surface, which is the whole
+/// difference between a screenshot of the region the user pointed at and a
+/// screenshot of GOaT.
+const GRAB_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Takes the window off the screen and waits for it to actually be gone, so every
+/// grab in the app is taken the same way and none of them can photograph this
+/// app instead of the desktop behind it. The window stays on top of everything,
+/// so a grab taken while it is up is a screenshot of GOaT.
+///
+/// A refusal is reported rather than swallowed, because the grab that follows is
+/// then of this window and the user has no other way to know why.
+pub(crate) async fn clear_the_screen(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main")
+        && let Err(e) = window.hide()
+    {
+        report_error(
+            app,
+            "capture",
+            &format!("The window could not be hidden: {e}"),
+        );
+    }
+    tokio::time::sleep(GRAB_SETTLE).await;
+}
 
 fn default_select_hotkey() -> String {
     DEFAULT_SELECT_HOTKEY.to_string()
@@ -298,10 +361,16 @@ fn report_frontend_error(app: tauri::AppHandle, source: String, message: String)
 
 /// The window that records a problem opens itself when one arrives, and an
 /// already open one is left exactly as it is: a capture that fails twice must
-/// not pull the window away from the screenshot the user is working on.
+/// not pull the window away from the screenshot the user is working on. Nothing
+/// opens before the first capture either, because a problem the user has not
+/// asked anything for yet is a log entry waiting to be read rather than a window
+/// to put in front of a desktop they are working in.
 #[cfg(desktop)]
 fn show_error_window(app: &tauri::AppHandle) {
     use tauri::Manager;
+    if !may_auto_show(&CAPTURED) {
+        return;
+    }
     let Some(window) = app.get_webview_window("errors") else {
         return;
     };
@@ -326,15 +395,6 @@ fn forward_hotkey_errors(app: &tauri::AppHandle) {
             serde_json::from_str::<String>(payload).unwrap_or_else(|_| payload.to_string());
         report_error(&handle, "hotkey", &message);
     });
-}
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}!", name)
-}
-#[tauri::command]
-fn ping() -> String {
-    "pong from Rust!".to_string()
 }
 
 #[tauri::command]
@@ -366,37 +426,12 @@ fn ensure_engine<'a>(
 }
 
 #[tauri::command]
-fn ocr(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    image: capture::CapturedImage,
-) -> Result<String, String> {
-    let dynamic = image.to_dynamic_image()?;
-    let mut guard = state.ocr.lock().map_err(|e| e.to_string())?;
-    let engine = ensure_engine(&app, &mut guard)?;
-    models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}"))
-}
-
-#[tauri::command]
-fn translate(app: tauri::AppHandle, text: String) -> Result<String, String> {
-    models::run_translate(&app, &text).map_err(|e| format!("{e}"))
-}
-
-#[tauri::command]
 fn hide_window(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
     if let Some(window) = app.get_webview_window("main") {
         window.hide().map_err(|e| e.to_string())?;
     }
     Ok(())
-}
-
-/// The bind instructions live in the setup window, so the action bar only asks
-/// for it to be raised and a window already on screen is left as it is.
-#[tauri::command]
-fn show_setup(app: tauri::AppHandle) {
-    #[cfg(desktop)]
-    show_bind_setup(&app);
 }
 
 /// What the desktop now holds for a login, and the place it keeps it. The
@@ -501,21 +536,74 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<AutostartState,
     verified_autostart(&app, &manager, enabled)
 }
 
+/// The state the desktop holds right now, asked without changing anything, in
+/// the same shape a write answers in. Linux answers from the file, because the
+/// file is the only place the entry is really kept and its presence is the only
+/// proof the desktop will act on one. The other platforms register the entry
+/// under its name rather than in a file this app can point at, so there the
+/// plugin's own answer stands in for both fields.
 #[tauri::command]
-fn is_autostart(app: tauri::AppHandle) -> Result<bool, String> {
+fn is_autostart(app: tauri::AppHandle) -> Result<AutostartState, String> {
+    current_autostart(&app)
+}
+
+#[cfg(target_os = "linux")]
+fn current_autostart(app: &tauri::AppHandle) -> Result<AutostartState, String> {
+    let entry = autostart_entry(app)?;
+    Ok(AutostartState {
+        enabled: entry.exists(),
+        path: entry.display().to_string(),
+        is_dev: tauri::is_dev(),
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn current_autostart(app: &tauri::AppHandle) -> Result<AutostartState, String> {
     use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+    let enabled = app.autolaunch().is_enabled().map_err(|e| e.to_string())?;
+    Ok(AutostartState {
+        enabled,
+        path: app.package_info().name.clone(),
+        is_dev: tauri::is_dev(),
+    })
 }
 
 pub(crate) async fn run_pipeline(
     app: &tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
 ) -> Result<ResultPayload, String> {
+    let image = grab_monitor(app, state).await?;
+    run_pipeline_with_image(app, state, image).await
+}
+
+/// The pixels of the whole monitor, taken the way every grab in this app is
+/// taken: the window off the screen first, and long enough for it to be gone.
+/// The stored screenshot is what a selection crops from, so it is written here
+/// rather than by the callers that happen to be holding the image.
+pub(crate) async fn grab_monitor(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+) -> Result<capture::CapturedImage, String> {
+    clear_the_screen(app).await;
     let monitor = *state.monitor.lock().map_err(|e| e.to_string())?;
     let image = capture::capture_monitor(monitor).or_else(|_| capture::capture_primary())?;
     *state.full_image.lock().map_err(|e| e.to_string())? = Some(image.clone());
-    run_pipeline_with_image(app, state, image).await
+    restore_screen(app);
+    Ok(image)
 }
+
+/// Puts the window back once the pixels are in hand. A grab takes it off the
+/// screen on every platform, and a window that never comes back is a capture the
+/// user has no result to look at. It goes back before the pipeline publishes the
+/// screenshot, so the window returns on its bar and the picture arrives into a
+/// window that is already there.
+#[cfg(desktop)]
+fn restore_screen(app: &tauri::AppHandle) {
+    show_main_window(app);
+}
+
+#[cfg(not(desktop))]
+fn restore_screen(_app: &tauri::AppHandle) {}
 
 #[tauri::command]
 async fn capture_region(
@@ -527,8 +615,13 @@ async fn capture_region(
     width: u32,
     height: u32,
 ) -> Result<ResultPayload, String> {
+    // The overlay the user picked in is this app's own window, so it has to be off
+    // the screen on the same terms as the whole-window grab: a region read with
+    // the window still up is a read of GOaT.
+    clear_the_screen(&app).await;
     let image = capture::capture_monitor_region(monitor, x, y, width, height)?;
     *state.full_image.lock().map_err(|e| e.to_string())? = Some(image.clone());
+    restore_screen(&app);
     run_pipeline_with_image(&app, &state, image).await
 }
 
@@ -537,6 +630,10 @@ async fn run_pipeline_with_image(
     state: &tauri::State<'_, AppState>,
     image: capture::CapturedImage,
 ) -> Result<ResultPayload, String> {
+    // The latch is set before the screenshot is published rather than after, so
+    // a problem raised while this first capture is still being read is already
+    // allowed to open the window it would have opened after it.
+    mark_captured(&CAPTURED);
     // Show the screenshot immediately; OCR/translate follow on the full image.
     // This is the only place a capture hands a window its pixels, and the step
     // they belong to travels with them: a window painting an image it was told
@@ -715,6 +812,8 @@ pub(crate) fn enter_screen_select(app: &tauri::AppHandle) {
     };
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
+        // KWin ignores a position request like this one and the call is a no-op on
+        // a Wayland session; the crop offset finishScreenSelect adds covers that.
         let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
             x: mx,
             y: my,
@@ -752,7 +851,10 @@ fn show_bind_setup(app: &tauri::AppHandle) {
 /// to act on and the setup window is shown in its place. The portal backend only
 /// finds out after an awaited dialog, so the status line is watched as well as
 /// read here: reading it once would open the window for a backend that fails
-/// during startup and never for one that fails later.
+/// during startup and never for one that fails later. Neither is opened before
+/// the first capture, so a launch that never gets that far is not interrupted by
+/// a trigger the user has not been asked to choose yet, and the status line is
+/// read when they are.
 #[cfg(desktop)]
 fn watch_unbound_triggers(app: &tauri::AppHandle) {
     use tauri::Listener;
@@ -761,11 +863,11 @@ fn watch_unbound_triggers(app: &tauri::AppHandle) {
     }
     let handle = app.clone();
     let _listener = app.listen("hotkey-status", move |_| {
-        if triggers_unbound(&handle) {
+        if may_auto_show(&CAPTURED) && triggers_unbound(&handle) {
             show_bind_setup(&handle);
         }
     });
-    if triggers_unbound(app) {
+    if may_auto_show(&CAPTURED) && triggers_unbound(app) {
         show_bind_setup(app);
     }
 }
@@ -868,6 +970,17 @@ fn set_monitor(
     Ok(monitor)
 }
 
+/// The desktop this build is running on, in the name the standard library uses.
+/// The frontend has to be told rather than read the user agent: Tauri moved its
+/// own `os` module out into a plugin, so the API package offers no way to ask,
+/// and a webview naming its own platform is naming what it was sent rather than
+/// what it is on. The names are `macos`, `windows` and `linux` — not `darwin`
+/// and `win32`, which is the spelling this information used to travel in.
+#[tauri::command]
+fn os_platform() -> &'static str {
+    std::env::consts::OS
+}
+
 /// The whole config as it stands: the live hotkey block, plus the notice flag and
 /// the appearance as the file holds them. Reading the block from managed state and
 /// the rest from disk is what keeps a write of one from putting the other's saved
@@ -954,23 +1067,29 @@ pub fn run() {
                 let _ = window.hide();
                 api.prevent_close();
             }
+            // The menu is a window of the app rather than a task of the user's,
+            // so losing focus is the end of it. It hides rather than closes,
+            // because the bar raises it again on the next press and a closed one
+            // would have to be built from scratch to answer. Only a real focus
+            // loss counts: the desktop taking the pointer away from the window is
+            // not the user putting the menu down.
+            if let tauri::WindowEvent::Focused(false) = event
+                && window.label() == "menu"
+            {
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
-            ping,
             init_models,
             models_status,
-            ocr,
-            translate,
-            capture::capture_screen,
             capture::list_monitors,
             capture_primary,
             capture_region,
             ocr_selection,
             get_monitor,
             set_monitor,
+            os_platform,
             hide_window,
-            show_setup,
             set_autostart,
             is_autostart,
             get_hotkey,
@@ -1026,6 +1145,33 @@ mod tests {
         push_error(&mut log, entry("second"));
         push_error(&mut log, entry("first"));
         assert_eq!(log.len(), 3);
+    }
+
+    /// The frontend switches on exactly these three names, and treats anything
+    /// else as a desktop it cannot blur. A name outside them would leave the
+    /// control permanently disabled on a desktop that could honour it, which is
+    /// the same spelling mistake the API package once shipped.
+    #[test]
+    fn the_platform_is_named_one_the_frontend_understands() {
+        assert!(
+            matches!(os_platform(), "macos" | "windows" | "linux"),
+            "unexpected platform name: {}",
+            os_platform()
+        );
+    }
+
+    #[test]
+    fn a_launch_raises_no_window_of_its_own_before_the_first_capture() {
+        let captured = AtomicBool::new(false);
+        assert!(
+            !may_auto_show(&captured),
+            "a launch is silent until something has been captured"
+        );
+        mark_captured(&captured);
+        assert!(
+            may_auto_show(&captured),
+            "the first capture is what lets the app open a window of its own"
+        );
     }
 
     /// A dev binary that wrote a login entry would leave a stale GOaT at every
