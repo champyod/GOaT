@@ -281,22 +281,24 @@ def _window_block(samples: list[dict], window: Window, interval_s: float,
 def _advance_windows(pid: int, now_s: float, windows: list[Window],
                      phases: dict[str, dict]) -> None:
     """Move every window's state up to `now_s`: reset `memory.peak` on first entry,
-    read it on the first sample past the end, and read `/proc/<pid>/status` at that
+    read it at the window's declared end, and read `/proc/<pid>/status` at that
     same close so the anon/file split and the window-end `VmHWM` belong to this
     window rather than to the end of the run.
 
     Resetting per window rather than once at startup is what makes each phase's peak
     cover that phase and not the run. Reading at the close rather than at the end of
-    the run is what keeps the figure inside the window: up to one extra poll interval
-    of later activity is included, and `read_at_s` records exactly how late it was.
+    the run is what keeps the figure inside the window.
+
+    Closes are processed before opens, and a close fires at the declared end rather
+    than after it, because a window's end may be the next window's start: a reset by
+    the window that opens destroys the peak of the window that has not read its own
+    yet, so the closing window must read first even when both are due at one instant.
+    Ordering by declaration time rather than by list position is what makes that hold
+    whichever order the windows were declared in.
     """
     for window in windows:
         phase = phases[window.name]
-        if not phase["opened"] and window.contains(now_s):
-            phase["opened"], phase["cgroup_reset"] = True, reset_cgroup_peak(pid)
-            _info("ram", "window open", name=window.name, at_s=round(now_s, 3),
-                  cgroup_peak_reset=phase["cgroup_reset"])
-        if phase["opened"] and not phase["closed"] and now_s > window.end_s:
+        if phase["opened"] and not phase["closed"] and now_s >= window.end_s:
             phase["closed"] = True
             phase["status_at_close"] = _proc_status(pid)
             phase["cgroup"] = {**read_cgroup_peak(pid), "read_at_s": now_s}
@@ -304,6 +306,12 @@ def _advance_windows(pid: int, now_s: float, windows: list[Window],
                   vm_hwm_at_close_mb=(phase["status_at_close"].get("VmHWM", 0)
                                      / BYTES_PER_MB),
                   cgroup_peak_bytes=phase["cgroup"]["peak_bytes"])
+    for window in windows:
+        phase = phases[window.name]
+        if not phase["opened"] and window.contains(now_s):
+            phase["opened"], phase["cgroup_reset"] = True, reset_cgroup_peak(pid)
+            _info("ram", "window open", name=window.name, at_s=round(now_s, 3),
+                  cgroup_peak_reset=phase["cgroup_reset"])
 
 
 def _collect_samples(pid: int, args: argparse.Namespace, windows: list[Window],

@@ -10,11 +10,13 @@ that could not be measured names the reason instead of sitting null.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
 from pathlib import Path
 
+import psutil
 import pytest
 
 _HERE = Path(__file__).resolve()
@@ -101,15 +103,15 @@ def test_each_window_reads_status_at_its_own_close(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(ram, "reset_cgroup_peak", lambda pid: True)
     monkeypatch.setattr(ram, "read_cgroup_peak", lambda pid: _peak(200.0))
 
-    _advance([0.0, 5.0, 10.0], phases)
+    _advance([0.0, 5.0, 9.5], phases)
     assert [phases[name]["cgroup_reset"] for name in ("idle", "active")] == [True, None]
     assert reads == []  # idle has not closed yet, so nothing has been read from it
 
-    _advance([10.5], phases)  # the first sample past idle's end
+    _advance([10.0], phases)  # idle's declared end
     assert reads == [idle_status]
     assert phases["active"]["status_at_close"] is None  # active is untouched so far
 
-    _advance([20.0, 30.5], phases)
+    _advance([20.0, 30.0], phases)
     assert reads == [idle_status, active_status]
     assert [phases[name]["status_at_close"] for name in ("idle", "active")] == [idle_status,
                                                                                 active_status]
@@ -206,10 +208,59 @@ def test_touching_windows_are_the_declared_boundary_and_run(
                                     "--idle-duration", "60", "--active-start", "60",
                                     "--active-duration", "60"])
 
+    peak = {"mb": 0.0}
+    hwm = {"mb": 300.0}
+
+    def fake_reset(pid: int) -> bool:
+        peak["mb"] = 0.0
+        return True
+
+    def fake_read(pid: int) -> dict:
+        return _peak(peak["mb"])
+
+    def fake_status(pid: int) -> dict[str, int]:
+        return _status(90.0, 10.0, hwm["mb"])
+
+    def drive(pid: int, args: argparse.Namespace, windows: list[ram.Window],
+              phases: dict[str, dict], proc: psutil.Process) -> list[dict]:
+        """Stand in for the poll loop over two windows touching at 60 s: idle runs up to
+        a 300 MB peak, active opens on that same instant and runs up to 100 MB, and the
+        kernel's own high-water mark grows only afterwards.
+
+        `memory.peak` and `VmHWM` are faked as the independent counters they are, so the
+        two figures need not agree; what each must do is land on the window it belongs to.
+        """
+        for now_s, peak_mb, hwm_mb in ((0.0, 0.0, 300.0), (30.0, 300.0, 300.0),
+                                       (60.0, None, None), (90.0, 100.0, 400.0),
+                                       (120.0, None, None)):
+            if peak_mb is not None:
+                peak["mb"] = peak_mb
+            if hwm_mb is not None:
+                hwm["mb"] = hwm_mb
+            ram._advance_windows(pid, now_s, windows, phases)
+        return []
+
+    monkeypatch.setattr(ram, "reset_cgroup_peak", fake_reset)
+    monkeypatch.setattr(ram, "read_cgroup_peak", fake_read)
+    monkeypatch.setattr(ram, "_proc_status", fake_status)
+    monkeypatch.setattr(ram, "_collect_samples", drive)
+
     ram.main()
 
     summary = json.loads(output.read_text(encoding="utf-8"))
-    assert [(summary["windows"][name]["window"]["start_s"],
-             summary["windows"][name]["window"]["end_s"])
-            for name in ("idle", "active")] == [(0.0, 60.0), (60.0, 120.0)]
-    assert ram._first_overlap(WINDOWS) is None
+    idle, active = summary["windows"]["idle"], summary["windows"]["active"]
+    assert [(idle["window"]["start_s"], idle["window"]["end_s"]),
+            (active["window"]["start_s"], active["window"]["end_s"])] == [(0.0, 60.0),
+                                                                        (60.0, 120.0)]
+    assert ram._first_overlap([ram.Window("idle", 0.0, 60.0),
+                               ram.Window("active", 60.0, 60.0)]) is None
+
+    # the boundary is shared, so the reset that opens active must not land before idle has
+    # read its own peak: 300 MB is idle's figure and 100 MB is active's
+    assert idle["cgroup_peak"]["peak_mb"] == 300.0
+    assert active["cgroup_peak"]["peak_mb"] == 100.0
+    assert [idle["cgroup_peak"]["read_at_s"],
+            active["cgroup_peak"]["read_at_s"]] == [60.0, 120.0]
+    # the same ordering bounds the kernel read: idle's VmHWM is taken before active grows
+    assert idle["vm_hwm"]["value_at_window_end_mb"] == 300.0
+    assert active["vm_hwm"]["value_at_window_end_mb"] == 400.0
