@@ -73,7 +73,14 @@ class Window(NamedTuple):
         return self.start_s + self.duration_s
 
     def contains(self, t_s: float) -> bool:
-        return self.start_s <= t_s <= self.end_s
+        """Whether this polled instant is one of the window's own: `[start_s, end_s)`.
+
+        Half-open at the end, so two windows that touch share no sample: the instant where
+        one ends is where the next begins, and it belongs to the one that begins there. A
+        closed interval would put the boundary sample in both phases, and neither mean
+        would then describe the window it is labelled with.
+        """
+        return self.start_s <= t_s < self.end_s
 
 
 def _proc_status(pid: int) -> dict[str, int]:
@@ -281,20 +288,23 @@ def _window_block(samples: list[dict], window: Window, interval_s: float,
 def _advance_windows(pid: int, now_s: float, windows: list[Window],
                      phases: dict[str, dict]) -> None:
     """Move every window's state up to `now_s`: reset `memory.peak` on first entry,
-    read it at the window's declared end, and read `/proc/<pid>/status` at that
+    read it at the window's close, and read `/proc/<pid>/status` at that
     same close so the anon/file split and the window-end `VmHWM` belong to this
     window rather than to the end of the run.
+
+    A close fires at the first poll at or after the window's declared end, so up to one
+    polling interval of later activity is included, and `read_at_s` records exactly how
+    late that read was.
 
     Resetting per window rather than once at startup is what makes each phase's peak
     cover that phase and not the run. Reading at the close rather than at the end of
     the run is what keeps the figure inside the window.
 
-    Closes are processed before opens, and a close fires at the declared end rather
-    than after it, because a window's end may be the next window's start: a reset by
-    the window that opens destroys the peak of the window that has not read its own
-    yet, so the closing window must read first even when both are due at one instant.
-    Ordering by declaration time rather than by list position is what makes that hold
-    whichever order the windows were declared in.
+    Closes are processed before opens because a window's end may be the next window's
+    start: a reset by the window that opens destroys the peak of the window that has not
+    read its own yet, so the closing window must read first even when both are due at one
+    instant. Ordering by declaration time rather than by list position is what makes that
+    hold whichever order the windows were declared in.
     """
     for window in windows:
         phase = phases[window.name]
@@ -308,7 +318,7 @@ def _advance_windows(pid: int, now_s: float, windows: list[Window],
                   cgroup_peak_bytes=phase["cgroup"]["peak_bytes"])
     for window in windows:
         phase = phases[window.name]
-        if not phase["opened"] and window.contains(now_s):
+        if not phase["opened"] and now_s >= window.start_s:
             phase["opened"], phase["cgroup_reset"] = True, reset_cgroup_peak(pid)
             _info("ram", "window open", name=window.name, at_s=round(now_s, 3),
                   cgroup_peak_reset=phase["cgroup_reset"])

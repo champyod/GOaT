@@ -4,7 +4,8 @@ Every kernel source is faked here — `/proc/<pid>/status`, `memory.peak`, and t
 sampler's own clock — so the whole file runs in milliseconds with no target process,
 no sleeps and no cgroup of its own. What it pins are the decisions a report depends
 on: each window reads its own figures at its own close, a peak whose reset failed is
-reported unavailable instead of published, an overlapping run is refused, and a figure
+reported unavailable instead of published, an overlapping run is refused, the boundary
+instant belongs to one window whichever order the windows were declared in, and a figure
 that could not be measured names the reason instead of sitting null.
 """
 
@@ -36,12 +37,17 @@ IDLE = ram.Window("idle", 0.0, 10.0)
 ACTIVE = ram.Window("active", 20.0, 10.0)
 WINDOWS = [IDLE, ACTIVE]
 
+#: Two windows that touch — idle ends at 60 s and active opens on that same instant, so one
+#: instant is both a close and an open.
+TOUCHING_IDLE = ram.Window("idle", 0.0, 60.0)
+TOUCHING_ACTIVE = ram.Window("active", 60.0, 60.0)
 
-def _phases() -> dict[str, dict]:
+
+def _phases(windows: list[ram.Window] = WINDOWS) -> dict[str, dict]:
     """Phase records in the state `main()` builds them in."""
     return {window.name: {"opened": False, "closed": False, "cgroup": None,
                           "cgroup_reset": None, "status_at_close": None}
-            for window in WINDOWS}
+            for window in windows}
 
 
 def _status(anon_mb: float, file_mb: float, hwm_mb: float) -> dict[str, int]:
@@ -71,6 +77,47 @@ def _advance(times: list[float], phases: dict[str, dict]) -> None:
     """Run the sampler's own window state machine at these instants, in order."""
     for now_s in times:
         ram._advance_windows(PID, now_s, WINDOWS, phases)
+
+
+def _boundary_counters() -> dict[str, float]:
+    """A mutable `memory.peak` and `VmHWM` in MB, which `_install_boundary_sources` reads."""
+    return {"peak_mb": 0.0, "hwm_mb": 300.0}
+
+
+#: `memory.peak` and `VmHWM` as the independent counters they are, stepped over two windows
+#: touching at 60 s: idle runs up to a 300 MB peak, active opens on that same instant and
+#: runs up to 100 MB, and the kernel's own high-water mark grows only afterwards. `None`
+#: leaves a counter where it is, because only the figure the current window owns is set
+#: at an instant.
+BOUNDARY_STEPS = ((0.0, 0.0, 300.0), (30.0, 300.0, 300.0), (60.0, None, None),
+                  (90.0, 100.0, 400.0), (120.0, None, None))
+
+
+def _install_boundary_sources(monkeypatch: pytest.MonkeyPatch,
+                              counters: dict[str, float]) -> None:
+    """Fake the reset, `memory.peak` and `/proc/<pid>/status` onto one mutable counter
+    each, so a window reads the value the kernel figure held when it closed."""
+
+    def fake_reset(pid: int) -> bool:
+        counters["peak_mb"] = 0.0
+        return True
+
+    monkeypatch.setattr(ram, "reset_cgroup_peak", fake_reset)
+    monkeypatch.setattr(ram, "read_cgroup_peak", lambda pid: _peak(counters["peak_mb"]))
+    monkeypatch.setattr(ram, "_proc_status",
+                        lambda pid: _status(90.0, 10.0, counters["hwm_mb"]))
+
+
+def _drive_boundary(counters: dict[str, float], windows: list[ram.Window],
+                    phases: dict[str, dict]) -> None:
+    """Advance the fakes to each of `BOUNDARY_STEPS` and the sampler's state machine with
+    them, in whatever order `windows` was declared."""
+    for now_s, peak_mb, hwm_mb in BOUNDARY_STEPS:
+        if peak_mb is not None:
+            counters["peak_mb"] = peak_mb
+        if hwm_mb is not None:
+            counters["hwm_mb"] = hwm_mb
+        ram._advance_windows(PID, now_s, windows, phases)
 
 
 def _block(window: ram.Window, phases: dict[str, dict]) -> dict:
@@ -208,41 +255,16 @@ def test_touching_windows_are_the_declared_boundary_and_run(
                                     "--idle-duration", "60", "--active-start", "60",
                                     "--active-duration", "60"])
 
-    peak = {"mb": 0.0}
-    hwm = {"mb": 300.0}
-
-    def fake_reset(pid: int) -> bool:
-        peak["mb"] = 0.0
-        return True
-
-    def fake_read(pid: int) -> dict:
-        return _peak(peak["mb"])
-
-    def fake_status(pid: int) -> dict[str, int]:
-        return _status(90.0, 10.0, hwm["mb"])
+    counters = _boundary_counters()
 
     def drive(pid: int, args: argparse.Namespace, windows: list[ram.Window],
               phases: dict[str, dict], proc: psutil.Process) -> list[dict]:
-        """Stand in for the poll loop over two windows touching at 60 s: idle runs up to
-        a 300 MB peak, active opens on that same instant and runs up to 100 MB, and the
-        kernel's own high-water mark grows only afterwards.
-
-        `memory.peak` and `VmHWM` are faked as the independent counters they are, so the
-        two figures need not agree; what each must do is land on the window it belongs to.
-        """
-        for now_s, peak_mb, hwm_mb in ((0.0, 0.0, 300.0), (30.0, 300.0, 300.0),
-                                       (60.0, None, None), (90.0, 100.0, 400.0),
-                                       (120.0, None, None)):
-            if peak_mb is not None:
-                peak["mb"] = peak_mb
-            if hwm_mb is not None:
-                hwm["mb"] = hwm_mb
-            ram._advance_windows(pid, now_s, windows, phases)
+        """Stand in for the poll loop over the two windows `main()` declared, so the
+        boundary is the only thing the assertions rest on."""
+        _drive_boundary(counters, windows, phases)
         return []
 
-    monkeypatch.setattr(ram, "reset_cgroup_peak", fake_reset)
-    monkeypatch.setattr(ram, "read_cgroup_peak", fake_read)
-    monkeypatch.setattr(ram, "_proc_status", fake_status)
+    _install_boundary_sources(monkeypatch, counters)
     monkeypatch.setattr(ram, "_collect_samples", drive)
 
     ram.main()
@@ -252,8 +274,7 @@ def test_touching_windows_are_the_declared_boundary_and_run(
     assert [(idle["window"]["start_s"], idle["window"]["end_s"]),
             (active["window"]["start_s"], active["window"]["end_s"])] == [(0.0, 60.0),
                                                                         (60.0, 120.0)]
-    assert ram._first_overlap([ram.Window("idle", 0.0, 60.0),
-                               ram.Window("active", 60.0, 60.0)]) is None
+    assert ram._first_overlap([TOUCHING_IDLE, TOUCHING_ACTIVE]) is None
 
     # the boundary is shared, so the reset that opens active must not land before idle has
     # read its own peak: 300 MB is idle's figure and 100 MB is active's
@@ -264,3 +285,46 @@ def test_touching_windows_are_the_declared_boundary_and_run(
     # the same ordering bounds the kernel read: idle's VmHWM is taken before active grows
     assert idle["vm_hwm"]["value_at_window_end_mb"] == 300.0
     assert active["vm_hwm"]["value_at_window_end_mb"] == 400.0
+
+
+def test_closes_precede_opens_with_the_windows_declared_active_first(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same touching boundary, declared in the opposite order.
+
+    Closing before opening is what keeps each window's own figures, and it has to hold
+    whichever list the windows arrive in: a single pass in declaration order would let
+    active's reset destroy idle's unread peak.
+    """
+    windows = [TOUCHING_ACTIVE, TOUCHING_IDLE]
+    phases = _phases(windows)
+    counters = _boundary_counters()
+    _install_boundary_sources(monkeypatch, counters)
+
+    _drive_boundary(counters, windows, phases)
+
+    idle = ram._window_block([], TOUCHING_IDLE, INTERVAL_S, phases["idle"])
+    active = ram._window_block([], TOUCHING_ACTIVE, INTERVAL_S, phases["active"])
+    assert idle["cgroup_peak"]["peak_mb"] == 300.0
+    assert active["cgroup_peak"]["peak_mb"] == 100.0
+    assert idle["vm_hwm"]["value_at_window_end_mb"] == 300.0
+    assert active["vm_hwm"]["value_at_window_end_mb"] == 400.0
+    assert [idle["cgroup_peak"]["read_at_s"],
+            active["cgroup_peak"]["read_at_s"]] == [60.0, 120.0]
+
+
+def test_the_touching_boundary_sample_belongs_to_the_window_that_opens_there() -> None:
+    phases = _phases([TOUCHING_IDLE, TOUCHING_ACTIVE])
+    samples = [{"t_s": 30.0, "rss_bytes": int(45 * MB), "vm_hwm_bytes": None},
+               {"t_s": 60.0, "rss_bytes": int(120 * MB), "vm_hwm_bytes": None}]
+
+    idle = ram._window_block(samples, TOUCHING_IDLE, INTERVAL_S, phases["idle"])
+    active = ram._window_block(samples, TOUCHING_ACTIVE, INTERVAL_S, phases["active"])
+
+    # 60 s is idle's end and active's start, and a sample counted in both phases would
+    # make both means describe neither window
+    assert idle["rss_sampled"]["stats_mb"]["n"] == 1
+    assert idle["rss_sampled"]["stats_mb"]["mean_mb"] == 45.0
+    assert active["rss_sampled"]["stats_mb"]["n"] == 1
+    assert active["rss_sampled"]["stats_mb"]["mean_mb"] == 120.0
+    assert TOUCHING_IDLE.contains(60.0) is False
+    assert TOUCHING_ACTIVE.contains(60.0) is True
