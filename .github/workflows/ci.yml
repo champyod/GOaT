@@ -63,7 +63,14 @@ jobs:
         run: |
           bash build.sh
           cargo test --release
+      # The goat build script resolves the `resources` bundle key while compiling,
+      # and tauri.conf.json lists models/ paths that are gitignored, so a plain
+      # cargo build of the crate fails on the missing files. tauri-build merges
+      # TAURI_CONFIG over the file config, which empties resources for the two
+      # compile-only steps below; the build job still bundles the real ones.
       - name: Rust clippy
+        env:
+          TAURI_CONFIG: '{"bundle":{"resources":[]}}'
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
       - name: Rust fmt check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
@@ -72,6 +79,8 @@ jobs:
       # would still bundle a binary whose unit tests had never been run. This
       # step is the only place the main crate's tests execute.
       - name: Rust unit tests
+        env:
+          TAURI_CONFIG: '{"bundle":{"resources":[]}}'
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - uses: astral-sh/setup-uv@v4
