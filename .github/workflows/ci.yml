@@ -70,7 +70,7 @@ jobs:
       # and tauri.conf.json lists models/ paths that are gitignored, so a plain
       # cargo build of the crate fails on the missing files. tauri-build merges
       # TAURI_CONFIG over the file config, which empties resources for the two
-      # compile-only steps below; the build job still bundles the real ones.
+      # compile-only steps below.
       - name: Rust clippy
         env:
           TAURI_CONFIG: '{"bundle":{"resources":[]}}'
@@ -137,5 +137,13 @@ jobs:
       # bundler below cannot resolve it.
       - name: Build OCR sidecar
         run: bash sidecar-ocr/build.sh
+      # CI has no model weights and must not reach for the ones it would need
+      # to bundle: the gitignored models/ paths tauri.conf.json lists do not
+      # exist on a fresh checkout, so the bundler fails on them. Emptying
+      # resources keeps this a compile-and-bundle-shaped check; the real bundle
+      # is release.yml's job, which fetches the model and stages it ahead of the
+      # release build.
       - name: Build Tauri app
+        env:
+          TAURI_CONFIG: '{"bundle":{"resources":[]}}'
         run: bun run tauri build
