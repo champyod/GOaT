@@ -52,8 +52,13 @@ jobs:
         working-directory: model
         run: uv sync
 
+      # ubuntu-22.04 ships pipewire 0.3.48, whose headers lack the SPA symbols
+      # libspa-sys 0.10.1 binds against (spa_meta_region_is_valid, spa_meta_first,
+      # spa_video_info_raw.flags). The upstream PPA carries PipeWire 1.x, which has
+      # them, so the repo is added before apt-get update to refresh the index.
       - name: Install Linux build dependencies
         run: |
+          sudo add-apt-repository -y ppa:pipewire-debian/pipewire-updates
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libpipewire-0.3-dev
         if: matrix.platform == 'ubuntu-22.04'
@@ -100,19 +105,13 @@ jobs:
         shell: bash
         run: bash tools/bundle-resources.sh
 
+      # Signing is intentionally off: the repo holds no TAURI_SIGNING_* or APPLE_*
+      # secrets, and passing them as empty strings makes tauri-action attempt a
+      # codesign keychain import that then fails (see run 37170825011, macOS row).
+      # Re-add the variables here once the secrets actually exist.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Code signing — set TAURI_SIGNING_PRIVATE_KEY + PASSWORD secrets to enable
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS notarization — set APPLE_* secrets to enable
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tauriScript: bun run tauri
           tagName: v__VERSION__
