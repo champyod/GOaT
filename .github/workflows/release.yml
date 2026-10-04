@@ -132,3 +132,35 @@ jobs:
             }
           ')
           curl -s --fail-with-body -H "Content-Type: application/json" -d "$payload" "${WEBHOOK_URL}"
+
+  # A manual dispatch runs from a branch, so it carries no v* ref and tauri-action has
+  # nothing to release under. Minting the tag here, after the matrix is green, is what
+  # keeps a red build from ever reaching a published tag; the resulting tag push then
+  # starts the run that actually builds the official release. Gated on workflow_dispatch
+  # so that second run skips this job instead of re-pushing a tag at itself.
+  tag-release:
+    needs: [publish]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mint release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          TAG="v$VERSION"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "$TAG already exists on origin — nothing to mint"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG" HEAD
+          git push origin "refs/tags/$TAG"
+          echo "minted $TAG at $(git rev-parse --short HEAD)"
