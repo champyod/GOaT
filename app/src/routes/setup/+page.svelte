@@ -1,204 +1,58 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import Keyboard from '@lucide/svelte/icons/keyboard';
   import Check from '@lucide/svelte/icons/check';
   import { CheckFlowbite, HourglassFlowbite, KeyboardFlowbite } from 'svelte-animated-icons';
 
+  import {
+    CAPTURE_PLACEHOLDER,
+    CAPTURE_TRIGGER_TITLE,
+    GUIDANCE_ID,
+    NO_DIALOG_TITLE,
+    NOT_BOUND,
+    REGION_PLACEHOLDER,
+    REGION_TRIGGER_TITLE,
+    createKeybindConfig,
+    type StatusTone,
+    type TriggerRow
+  } from '$lib/keybind.svelte';
+
   const ICON_SIZE = 16;
-  const CAPTURE_TRIGGER_TITLE = 'Choose capture trigger';
-  const REGION_TRIGGER_TITLE = 'Choose region trigger';
-  // A button that is off because the desktop has no dialog to open has to say so
-  // where the pointer is, and the guidance under it is what the title points at.
-  const NO_DIALOG_TITLE = 'This desktop has no shortcut dialog — see below';
-  // The guidance the two buttons point at when they are off, and the element the
-  // description of a disabled button names.
-  const GUIDANCE_ID = 'no-shortcut-dialog-guidance';
-  const WAITING_TITLE = 'Waiting...';
-  const DIALOG_WAIT_HINT = 'Desktop dialog open — pick keys there.';
   const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
-  const CAPTURE_PLACEHOLDER = 'Ctrl+Shift+S';
-  const REGION_PLACEHOLDER = 'Ctrl+Shift+E';
-  const CAPTURE_STEP_HINT = 'Press your capture shortcut to grab the screen.';
-  const UNBOUND_HINT = 'Once bound, press it to grab the screen.';
-  const NOT_BOUND = 'Not bound';
-  const UNBOUND_NOTE = 'No shortcut bound yet.';
-  const FLASH_MS = 900;
 
-  type HotkeyStatus = {
-    backend: 'system' | 'portal';
-    detail: string;
-    warning: string;
-    // The trigger each shortcut is actually bound to, or null when the backend
-    // has bound none. The rows must read these, never the saved values: on a
-    // portal the saved shortcut is not what fires.
-    capture_trigger: string | null;
-    select_trigger: string | null;
-    // Whether the desktop can be asked for its shortcut dialog. A portal that
-    // implements an interface old enough to predate that dialog cannot be, so
-    // there is nothing behind a Choose button there and the guidance replaces
-    // it. A window-system session never asks, and is never held to it. Null is
-    // not a "no": it is a session that has not reported yet, which keeps the
-    // buttons live rather than switching them off on a desktop that has one.
-    configure_supported: boolean | null;
-  };
+  const keybind = createKeybindConfig();
+  const view = $derived(keybind.view);
 
-  type TriggerRow = 'capture' | 'region';
-  type StatusTone = 'info' | 'warning' | 'error';
-  type IconState = 'idle' | 'waiting' | 'flash';
-
-  const TRIGGER_COMMANDS: Record<TriggerRow, { read: string; write: string; saved: string }> = {
-    capture: { read: 'get_hotkey', write: 'set_hotkey', saved: 'Capture trigger saved' },
-    region: { read: 'get_select_hotkey', write: 'set_select_hotkey', saved: 'Region trigger saved' },
-  };
-
-  // The portal names the shortcut it is reconfiguring, so the waiting state lands
-  // on the row that asked for it rather than on both. These mirror the ids the
-  // backend holds in `binding::CAPTURE_ID` and `binding::SELECT_ID`.
-  const ROWS_BY_ID: Record<string, TriggerRow> = {
-    goat_capture: 'capture',
-    goat_region_select: 'region',
-  };
-
-  let newHotkey = $state(CAPTURE_PLACEHOLDER);
-  let newSelectHotkey = $state(REGION_PLACEHOLDER);
-  let hotkeyStatus = $state<HotkeyStatus | null>(null);
-  let statusNote = $state('');
-  let statusTone = $state<StatusTone>('info');
-  let savingHotkey = $state(false);
-  // The desktop's own dialog owns the round from the moment it opens, so the
-  // button reports a wait the user can see somewhere else instead of a call that
-  // is still in flight here.
-  let waitingChoice = $state(false);
-  let waitingRow = $state<TriggerRow | null>(null);
-  let flashRow = $state<TriggerRow | null>(null);
+  // What this window says about its own controls, held apart from the trigger
+  // machine so a reason is still read out when only this window has one.
+  let localNote = $state('');
+  let localNoteTone = $state<StatusTone>('info');
   let reducedMotion = $state(false);
   let dontShow = $state(false);
-  // The line for a desktop with no dialog. The bind that would have produced it
-  // is the very button that is disabled, so it is asked for on its own, and only
-  // once: the verdict comes from the backend and does not change mid-session.
-  let guidanceText = $state('');
-  let guidanceAsked = false;
-  let flashTimer: ReturnType<typeof setTimeout> | null = null;
-  const registered: UnlistenFn[] = [];
 
-  // A portal session fires only the trigger its own dialog produced, so the saved
-  // value is not what is bound and the row shows it as read-only text.
-  const portalBackend = $derived(hotkeyStatus?.backend === 'portal');
-  // The rows show what the backend actually holds, so "unbound" means a trigger
-  // is genuinely missing — never just that a warning exists. A warning with both
-  // triggers present (e.g. a stale-release note after a good remap) is not
-  // "No shortcut bound yet."
-  const captureTrigger = $derived(hotkeyStatus?.capture_trigger ?? null);
-  const selectTrigger = $derived(hotkeyStatus?.select_trigger ?? null);
-  const triggerUnbound = $derived(
-    portalBackend
-      ? captureTrigger === null || selectTrigger === null
-      : Boolean(hotkeyStatus?.warning)
-  );
-  const stepHint = $derived(captureTrigger ? CAPTURE_STEP_HINT : UNBOUND_HINT);
-  // A portal that reports an interface old enough to predate the dialog has none
-  // to open, so the buttons that open it are off from the moment the backend says
-  // so rather than failing on a press. Only a "no" turns them off: a session that
-  // has not reported yet is left alone, because a desktop that does have a dialog
-  // would then be showing a button that cannot work. A window-system session binds
-  // what is typed and is never asked for a dialog.
-  const noShortcutDialog = $derived(portalBackend && hotkeyStatus?.configure_supported === false);
-  // A disabled button cannot show the title the reason is in, so the reason is
-  // also read out as the description of the button, and the line that carries it
-  // is the one that is named. It is named only once it is on screen.
-  const dialogReason = $derived(noShortcutDialog && guidanceText ? GUIDANCE_ID : undefined);
   // One line carries whatever the last action left behind, so a reason is read
   // where it was produced instead of in a window the bind flow never opens.
-  const statusLine = $derived(statusNote || (triggerUnbound ? UNBOUND_NOTE : ''));
-  const statusLineTone = $derived<StatusTone>(statusNote ? statusTone : 'warning');
+  const statusLine = $derived(localNote || view.statusLine);
+  const statusLineTone = $derived<StatusTone>(
+    localNote ? localNoteTone : view.statusLineTone
+  );
 
-  // The draw inside the icon is the feedback, so each state is a different icon
-  // rather than a different animation on the same one.
-  function iconState(row: TriggerRow): IconState {
-    if (flashRow === row) return 'flash';
-    if (waitingChoice && waitingRow === row) return 'waiting';
-    return 'idle';
+  function fieldValue(row: TriggerRow): string {
+    return keybind.field(row);
   }
 
-  // A button that is off because the desktop has no dialog says why, and points
-  // at the line below that says what to do instead. The pointer reads it from the
-  // button when it is live and from the box around it when it is not, because a
-  // disabled button shows no title of its own.
-  function bindTitle(row: TriggerRow): string {
-    if (savingHotkey || waitingChoice) return WAITING_TITLE;
-    if (noShortcutDialog) return NO_DIALOG_TITLE;
-    return row === 'capture' ? CAPTURE_TRIGGER_TITLE : REGION_TRIGGER_TITLE;
-  }
-
-  async function loadGuidance(): Promise<void> {
-    if (guidanceAsked) return;
-    guidanceAsked = true;
-    try {
-      guidanceText = await invoke<string>('configure_guidance_text');
-    } catch (e: unknown) {
-      statusNote = String(e);
-      statusTone = 'error';
-    }
-  }
-
-  $effect(() => {
-    if (noShortcutDialog) void loadGuidance();
-  });
-
-  function showFlash(row: TriggerRow): void {
-    flashRow = row;
-    if (flashTimer !== null) clearTimeout(flashTimer);
-    flashTimer = setTimeout(() => {
-      flashRow = null;
-      flashTimer = null;
-    }, FLASH_MS);
-  }
-
-  async function loadTrigger(row: TriggerRow): Promise<void> {
-    try {
-      const value = await invoke<string>(TRIGGER_COMMANDS[row].read);
-      if (row === 'capture') newHotkey = value;
-      else newSelectHotkey = value;
-    } catch (e: unknown) {
-      statusNote = String(e);
-      statusTone = 'error';
-    }
-  }
-
-  async function saveTrigger(row: TriggerRow): Promise<void> {
-    if (savingHotkey) return;
-    savingHotkey = true;
-    statusNote = '';
-    try {
-      // The backend hands back the shortcut it actually holds, which on a portal
-      // is not the one typed, so the field follows it instead of the keystrokes.
-      const bound = await invoke<string>(TRIGGER_COMMANDS[row].write, {
-        hotkey: row === 'capture' ? newHotkey : newSelectHotkey,
-      });
-      if (row === 'capture') newHotkey = bound;
-      else newSelectHotkey = bound;
-      statusNote = TRIGGER_COMMANDS[row].saved;
-      statusTone = 'info';
-      showFlash(row);
-    } catch (e: unknown) {
-      statusNote = String(e);
-      statusTone = 'error';
-    } finally {
-      savingHotkey = false;
-      waitingChoice = false;
-      waitingRow = null;
-    }
+  function setFieldValue(row: TriggerRow, value: string): void {
+    keybind.setField(row, value);
   }
 
   async function close(): Promise<void> {
     try {
       await getCurrentWindow().close();
     } catch (e: unknown) {
-      statusNote = String(e);
-      statusTone = 'error';
+      localNote = String(e);
+      localNoteTone = 'error';
     }
   }
 
@@ -206,8 +60,8 @@
     try {
       dontShow = await invoke<boolean>('set_hide_bind_notice', { hide });
     } catch (e: unknown) {
-      statusNote = String(e);
-      statusTone = 'error';
+      localNote = String(e);
+      localNoteTone = 'error';
       return;
     }
     // Checking the box only records the preference; the window stays open
@@ -220,45 +74,14 @@
   }
 
   onMount(() => {
-    void loadTrigger('capture');
-    void loadTrigger('region');
+    void keybind.start();
     invoke<boolean>('get_hide_bind_notice')
       .then((value) => {
         dontShow = value;
       })
       .catch((e: unknown) => {
-        statusNote = String(e);
-        statusTone = 'error';
-      });
-    invoke<HotkeyStatus>('hotkey_status')
-      .then((value) => {
-        hotkeyStatus = value;
-      })
-      .catch((e: unknown) => {
-        statusNote = String(e);
-        statusTone = 'error';
-      });
-    void listen<HotkeyStatus>('hotkey-status', (e) => {
-      hotkeyStatus = e.payload;
-    })
-      .then((unlisten) => {
-        registered.push(unlisten);
-      })
-      .catch((e: unknown) => {
-        statusNote = String(e);
-        statusTone = 'error';
-      });
-    void listen<string>('hotkey-dialog-opened', (e) => {
-      savingHotkey = false;
-      waitingChoice = true;
-      waitingRow = ROWS_BY_ID[e.payload] ?? null;
-    })
-      .then((unlisten) => {
-        registered.push(unlisten);
-      })
-      .catch((e: unknown) => {
-        statusNote = String(e);
-        statusTone = 'error';
+        localNote = String(e);
+        localNoteTone = 'error';
       });
     const motion = window.matchMedia(REDUCED_MOTION_QUERY);
     reducedMotion = motion.matches;
@@ -267,26 +90,26 @@
     };
     motion.addEventListener('change', onMotionChange);
     return () => {
-      for (const unlisten of registered) unlisten();
+      keybind.stop();
       motion.removeEventListener('change', onMotionChange);
-      if (flashTimer !== null) clearTimeout(flashTimer);
     };
   });
 </script>
 
 <main>
   {#snippet triggerIcon(row: TriggerRow)}
+    {@const state = keybind.iconState(row)}
     {#if reducedMotion}
-      {#if flashRow === row}
+      {#if state === 'flash'}
         <Check size={ICON_SIZE} />
       {:else}
         <Keyboard size={ICON_SIZE} />
       {/if}
     {:else}
-      {#key iconState(row)}
-        {#if iconState(row) === 'flash'}
+      {#key state}
+        {#if state === 'flash'}
           <CheckFlowbite size={ICON_SIZE} event="none" />
-        {:else if iconState(row) === 'waiting'}
+        {:else if state === 'waiting'}
           <HourglassFlowbite size={ICON_SIZE} event="none" />
         {:else}
           <KeyboardFlowbite size={ICON_SIZE} event="none" />
@@ -298,25 +121,29 @@
   <ol class="steps">
     <li>
       <div class="row">
-        {#if portalBackend}
+        {#if view.portalBackend}
           <span class="rowlabel">
             Capture
-            <span class="bound">{captureTrigger ?? NOT_BOUND}</span>
+            <span class="bound">{view.captureTrigger ?? NOT_BOUND}</span>
           </span>
         {:else}
           <label class="rowlabel">
             Capture
-            <input bind:value={newHotkey} placeholder={CAPTURE_PLACEHOLDER} />
+            <input
+              bind:value={() => fieldValue('capture'),
+                (value) => setFieldValue('capture', value)}
+              placeholder={CAPTURE_PLACEHOLDER}
+            />
           </label>
         {/if}
-        <span class="bindwrap" title={noShortcutDialog ? NO_DIALOG_TITLE : undefined}>
+        <span class="bindwrap" title={view.noShortcutDialog ? NO_DIALOG_TITLE : undefined}>
           <button
             class="icon bind"
             aria-label={CAPTURE_TRIGGER_TITLE}
-            aria-describedby={dialogReason}
-            title={bindTitle('capture')}
-            onclick={() => saveTrigger('capture')}
-            disabled={savingHotkey || waitingChoice || noShortcutDialog}
+            aria-describedby={view.guidanceId}
+            title={keybind.bindTitle('capture')}
+            onclick={() => keybind.saveTrigger('capture')}
+            disabled={view.bindDisabled}
           >
             {@render triggerIcon('capture')}
           </button>
@@ -325,25 +152,29 @@
     </li>
     <li>
       <div class="row">
-        {#if portalBackend}
+        {#if view.portalBackend}
           <span class="rowlabel">
             Region
-            <span class="bound">{selectTrigger ?? NOT_BOUND}</span>
+            <span class="bound">{view.selectTrigger ?? NOT_BOUND}</span>
           </span>
         {:else}
           <label class="rowlabel">
             Region
-            <input bind:value={newSelectHotkey} placeholder={REGION_PLACEHOLDER} />
+            <input
+              bind:value={() => fieldValue('region'),
+                (value) => setFieldValue('region', value)}
+              placeholder={REGION_PLACEHOLDER}
+            />
           </label>
         {/if}
-        <span class="bindwrap" title={noShortcutDialog ? NO_DIALOG_TITLE : undefined}>
+        <span class="bindwrap" title={view.noShortcutDialog ? NO_DIALOG_TITLE : undefined}>
           <button
             class="icon bind"
             aria-label={REGION_TRIGGER_TITLE}
-            aria-describedby={dialogReason}
-            title={bindTitle('region')}
-            onclick={() => saveTrigger('region')}
-            disabled={savingHotkey || waitingChoice || noShortcutDialog}
+            aria-describedby={view.guidanceId}
+            title={keybind.bindTitle('region')}
+            onclick={() => keybind.saveTrigger('region')}
+            disabled={view.bindDisabled}
           >
             {@render triggerIcon('region')}
           </button>
@@ -353,11 +184,11 @@
   </ol>
 
   <p class="hintline">
-    {waitingChoice ? DIALOG_WAIT_HINT : portalBackend ? stepHint : CAPTURE_STEP_HINT}
+    {view.hintLine}
   </p>
 
-  {#if noShortcutDialog && guidanceText}
-    <p id={GUIDANCE_ID} class="guidance" role="status">{guidanceText}</p>
+  {#if view.noShortcutDialog && view.guidanceText}
+    <p id={GUIDANCE_ID} class="guidance" role="status">{view.guidanceText}</p>
   {/if}
 
   {#if statusLine}
@@ -371,11 +202,11 @@
         GOaT waits for a trigger before it captures anything, and it reads the
         shortcut from whichever backend your session gives it.
       </p>
-      {#if portalBackend}
+      {#if view.portalBackend}
         <p>
           These triggers are set in your desktop's own shortcut settings, not in
           GOaT.
-          {#if noShortcutDialog}
+          {#if view.noShortcutDialog}
             This desktop has no dialog for the buttons to open, so they are off
             until a trigger is bound there.
           {:else}
@@ -385,12 +216,12 @@
           → Keyboard → View and Customize Shortcuts.
         </p>
       {/if}
-      {#if hotkeyStatus}
-        <p class="hotkeyline" data-backend={hotkeyStatus.backend}>
-          {hotkeyStatus.detail}
+      {#if view.status}
+        <p class="hotkeyline" data-backend={view.status.backend}>
+          {view.status.detail}
         </p>
-        {#if hotkeyStatus.warning}
-          <p class="statusline" data-tone="warning" role="status">{hotkeyStatus.warning}</p>
+        {#if view.status.warning}
+          <p class="statusline" data-tone="warning" role="status">{view.status.warning}</p>
         {/if}
       {/if}
     </div>
