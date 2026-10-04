@@ -5,7 +5,7 @@ mod hotkey;
 mod models;
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
@@ -66,6 +66,54 @@ pub(crate) fn record_capture_attempted() {
     mark_captured(&CAPTURED);
 }
 
+/// Which capture request is the newest. Every run takes the next number as it
+/// starts, and a run may only put anything on the screen while its own number is
+/// still the one held here, so a request the user has already answered with a
+/// newer one cannot repaint the window behind it.
+static CAPTURE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// One run's claim on the pipeline: the number it was handed as it started.
+///
+/// This is the whole of "latest request wins". Superseding decides what a run is
+/// allowed to *say*, not what work it is allowed to finish — the read is already
+/// inside the ONNX runtime or the translator by the time anyone can supersede it,
+/// and neither takes a cancellation. A run therefore finishes the call it is in
+/// and then finds itself stale, which costs the user nothing they can see.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct CaptureTicket(u64);
+
+impl CaptureTicket {
+    /// Claims the pipeline for a run that is starting now, superseding whatever
+    /// was under way. Taken before the screen is grabbed rather than once the
+    /// pixels are in hand: a grab takes a quarter of a second, and a run that
+    /// claimed afterwards would be handed a number putting it ahead of a request
+    /// the user actually made later.
+    pub(crate) fn claim(generation: &AtomicU64) -> Self {
+        Self(generation.fetch_add(1, Ordering::SeqCst) + 1)
+    }
+
+    /// Whether this run is still the one the desktop last asked for.
+    pub(crate) fn is_current(&self, generation: &AtomicU64) -> bool {
+        self.0 == generation.load(Ordering::SeqCst)
+    }
+}
+
+/// A run that failed while it was still the current one is a failure the user has
+/// to be told about. One that failed after they asked for something else is not:
+/// the window is already filling with the run they asked for, and a reason from
+/// the run they replaced would land on top of it.
+fn failure_if_current(
+    generation: &AtomicU64,
+    ticket: CaptureTicket,
+    reason: String,
+) -> Result<Option<ResultPayload>, String> {
+    if ticket.is_current(generation) {
+        Err(reason)
+    } else {
+        Ok(None)
+    }
+}
+
 /// How long the window is given to leave the screen before a grab is taken. The
 /// compositor draws a frame at a time and answering a request to unmap a
 /// surface is not the frame that unmap lands in, so a grab taken straight after
@@ -82,7 +130,11 @@ const GRAB_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 ///
 /// A refusal is reported rather than swallowed, because the grab that follows is
 /// then of this window and the user has no other way to know why.
-pub(crate) async fn clear_the_screen(app: &tauri::AppHandle) {
+///
+/// The wait is a blocking sleep rather than an await so a grab can hold the lock
+/// that keeps two of them apart: a guard live across an await would make the
+/// future holding it un-sendable, and a Tauri command may not be one.
+pub(crate) fn clear_the_screen(app: &tauri::AppHandle) {
     use tauri::Manager;
     if let Some(window) = app.get_webview_window("main")
         && let Err(e) = window.hide()
@@ -93,7 +145,7 @@ pub(crate) async fn clear_the_screen(app: &tauri::AppHandle) {
             &format!("The window could not be hidden: {e}"),
         );
     }
-    tokio::time::sleep(GRAB_SETTLE).await;
+    std::thread::sleep(GRAB_SETTLE);
 }
 
 fn default_select_hotkey() -> String {
@@ -119,6 +171,10 @@ pub(crate) struct AppState {
     pub(crate) select_hotkey: Mutex<String>,
     pub(crate) monitor: Mutex<usize>,
     pub(crate) full_image: Mutex<Option<capture::CapturedImage>>,
+    /// Held for as long as one grab has the window off the screen, so two grabs
+    /// cannot read the screen together and photograph this app in the gap between
+    /// one putting the window back and the other taking it away again.
+    pub(crate) grab: Mutex<()>,
     pub(crate) hotkey_status: Mutex<hotkey::HotkeyStatus>,
     pub(crate) errors: Mutex<Vec<ErrorEntry>>,
 }
@@ -599,24 +655,64 @@ fn current_autostart(app: &tauri::AppHandle) -> Result<AutostartState, String> {
 pub(crate) async fn run_pipeline(
     app: &tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
-) -> Result<ResultPayload, String> {
-    let image = grab_monitor(app, state).await?;
-    run_pipeline_with_image(app, state, image).await
+    ticket: CaptureTicket,
+) -> Result<Option<ResultPayload>, String> {
+    let image = grab_monitor(app, state, ticket)?;
+    run_pipeline_with_image(app, state, image, ticket).await
+}
+
+/// The window off the screen, the pixels read, the window back — under one lock
+/// that nothing else may hold across those three steps.
+///
+/// Two grabs running side by side would each put the window back while the other
+/// was still reading, and the screenshot taken in between photographs GOaT rather
+/// than the desktop the user pointed at. Superseding a run does not spare it:
+/// both requests were accepted before either one read the screen, and a grab that
+/// is thrown away still has to be taken off the screen to be thrown away cleanly.
+fn grab_exclusive(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    read: impl FnOnce() -> Result<capture::CapturedImage, String>,
+) -> Result<capture::CapturedImage, String> {
+    let _one_grab_at_a_time = hotkey::lock(&state.grab);
+    clear_the_screen(app);
+    let image = read();
+    restore_screen(app);
+    image
+}
+
+/// Stores the screenshot a later region read is cut from. A grab that was
+/// superseded while it was taking its pixels does not get to own that slot: the
+/// window is showing a later run's image, and a region dragged on it has to be cut
+/// from the same pixels it was drawn from or the text comes back from somewhere
+/// else on the screen.
+fn store_full_image(
+    state: &AppState,
+    generation: &AtomicU64,
+    ticket: CaptureTicket,
+    image: &capture::CapturedImage,
+) -> Result<(), String> {
+    if !ticket.is_current(generation) {
+        return Ok(());
+    }
+    *state.full_image.lock().map_err(|e| e.to_string())? = Some(image.clone());
+    Ok(())
 }
 
 /// The pixels of the whole monitor, taken the way every grab in this app is
 /// taken: the window off the screen first, and long enough for it to be gone.
 /// The stored screenshot is what a selection crops from, so it is written here
 /// rather than by the callers that happen to be holding the image.
-pub(crate) async fn grab_monitor(
+pub(crate) fn grab_monitor(
     app: &tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
+    ticket: CaptureTicket,
 ) -> Result<capture::CapturedImage, String> {
-    clear_the_screen(app).await;
     let monitor = *state.monitor.lock().map_err(|e| e.to_string())?;
-    let image = capture::capture_monitor(monitor).or_else(|_| capture::capture_primary())?;
-    *state.full_image.lock().map_err(|e| e.to_string())? = Some(image.clone());
-    restore_screen(app);
+    let image = grab_exclusive(app, state, || {
+        capture::capture_monitor(monitor).or_else(|_| capture::capture_primary())
+    })?;
+    store_full_image(state, &CAPTURE_GENERATION, ticket, &image)?;
     Ok(image)
 }
 
@@ -642,32 +738,49 @@ async fn capture_region(
     y: u32,
     width: u32,
     height: u32,
-) -> Result<ResultPayload, String> {
+) -> Result<Option<ResultPayload>, String> {
+    let ticket = CaptureTicket::claim(&CAPTURE_GENERATION);
     // The overlay the user picked in is this app's own window, so it has to be off
     // the screen on the same terms as the whole-window grab: a region read with
     // the window still up is a read of GOaT.
-    clear_the_screen(&app).await;
-    let image = capture::capture_monitor_region(monitor, x, y, width, height)?;
-    *state.full_image.lock().map_err(|e| e.to_string())? = Some(image.clone());
-    restore_screen(&app);
-    run_pipeline_with_image(&app, &state, image).await
+    let image = match grab_exclusive(&app, &state, || {
+        capture::capture_monitor_region(monitor, x, y, width, height)
+    }) {
+        Ok(image) => image,
+        Err(reason) => return failure_if_current(&CAPTURE_GENERATION, ticket, reason),
+    };
+    store_full_image(&state, &CAPTURE_GENERATION, ticket, &image)?;
+    run_pipeline_with_image(&app, &state, image, ticket).await
 }
 
 async fn run_pipeline_with_image(
     app: &tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
     image: capture::CapturedImage,
-) -> Result<ResultPayload, String> {
+    ticket: CaptureTicket,
+) -> Result<Option<ResultPayload>, String> {
     // The latch is set before the screenshot is published rather than after, so
     // a problem raised while this first capture is still being read is already
     // allowed to open the window it would have opened after it.
     mark_captured(&CAPTURED);
+    if !ticket.is_current(&CAPTURE_GENERATION) {
+        return Ok(None);
+    }
     // Show the screenshot immediately; OCR/translate follow on the full image.
     // This is the only place a capture hands a window its pixels, and the step
     // they belong to travels with them: a window painting an image it was told
     // nothing about has to guess whether the read is under way.
     publish_progress(app, &CaptureProgress::reading(&image));
-    let read = ocr_with_fallback(app, state, &image).await?;
+    let read = match ocr_with_fallback(app, state, &image).await {
+        Ok(read) => read,
+        Err(reason) => return failure_if_current(&CAPTURE_GENERATION, ticket, reason),
+    };
+    // The read is the only await in a run, so this is where a request the user
+    // made while it was under way arrives, and where a run that is already stale
+    // stops before paying for a translation nothing will report.
+    if !ticket.is_current(&CAPTURE_GENERATION) {
+        return Ok(None);
+    }
     let ocr_text = read.text;
     let ocr_engine = read.engine;
     let mut error = read.error;
@@ -691,8 +804,11 @@ async fn run_pipeline_with_image(
         ocr_engine: ocr_engine.to_string(),
         error,
     };
+    if !ticket.is_current(&CAPTURE_GENERATION) {
+        return Ok(None);
+    }
     publish_progress(app, &CaptureProgress::done(&payload));
-    Ok(payload)
+    Ok(Some(payload))
 }
 
 #[tauri::command]
@@ -703,23 +819,29 @@ async fn ocr_selection(
     y: u32,
     width: u32,
     height: u32,
-) -> Result<ResultPayload, String> {
-    let image = state
-        .full_image
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clone()
-        .ok_or_else(|| "no screenshot yet, capture first".to_string())?;
-    let crop = image.crop(x, y, width, height)?;
-    run_pipeline_with_image(&app, &state, crop).await
+) -> Result<Option<ResultPayload>, String> {
+    let ticket = CaptureTicket::claim(&CAPTURE_GENERATION);
+    let stored = state.full_image.lock().map_err(|e| e.to_string())?.clone();
+    let Some(image) = stored else {
+        return failure_if_current(
+            &CAPTURE_GENERATION,
+            ticket,
+            "no screenshot yet, capture first".to_string(),
+        );
+    };
+    let crop = match image.crop(x, y, width, height) {
+        Ok(crop) => crop,
+        Err(reason) => return failure_if_current(&CAPTURE_GENERATION, ticket, reason),
+    };
+    run_pipeline_with_image(&app, &state, crop, ticket).await
 }
 
 #[tauri::command]
 async fn capture_primary(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> Result<ResultPayload, String> {
-    run_pipeline(&app, &state).await
+) -> Result<Option<ResultPayload>, String> {
+    run_pipeline(&app, &state, CaptureTicket::claim(&CAPTURE_GENERATION)).await
 }
 
 /// What one read of a screenshot produced. `error` is empty unless neither
@@ -853,9 +975,10 @@ pub(crate) fn enter_screen_select(app: &tauri::AppHandle) {
 }
 
 /// The same entry a trigger takes, opened to the window as well. The bar's region
-/// capture button is one of two region controls, and it is the only one that can
-/// start a selection from a bar with no screenshot on it — so a bar that had a
-/// single button reached nothing when the crop was the one thing it could not do.
+/// button is the only control that can start a selection, and it has no way in
+/// here on its own, so a bar with no screenshot on it had a button that armed a
+/// crop of a picture that was not there and reached nothing when the crop was
+/// the one thing it could not do.
 #[cfg(desktop)]
 #[tauri::command]
 fn enter_region_select(app: tauri::AppHandle) {
@@ -1111,6 +1234,7 @@ pub fn run() {
             select_hotkey: Mutex::new(default_select_hotkey()),
             monitor: Mutex::new(0),
             full_image: Mutex::new(None),
+            grab: Mutex::new(()),
             hotkey_status: Mutex::new(hotkey::status::initial()),
             errors: Mutex::new(Vec::new()),
         });
@@ -1320,6 +1444,128 @@ mod tests {
         assert_eq!(
             failed["error"], reason,
             "the window is shown the reason rather than a sentence of its own"
+        );
+    }
+
+    /// A capture started while a read is under way is a request the user made
+    /// later, so it is the one the window is filling. Every run is handed a
+    /// number as it starts and only the newest keeps it: a run that checked
+    /// nothing here would hand back the text of a screenshot the user has already
+    /// replaced, and the window would have no way to tell which of the two the
+    /// user meant.
+    #[test]
+    fn only_the_newest_capture_run_may_speak() {
+        let generation = AtomicU64::new(0);
+        let first = CaptureTicket::claim(&generation);
+        assert!(
+            first.is_current(&generation),
+            "the run that just started is the current one"
+        );
+
+        let second = CaptureTicket::claim(&generation);
+        assert!(
+            !first.is_current(&generation),
+            "a run the user answered with a newer one may say nothing"
+        );
+        assert!(
+            second.is_current(&generation),
+            "the newer run is the one filling the window"
+        );
+
+        let third = CaptureTicket::claim(&generation);
+        assert!(
+            !second.is_current(&generation),
+            "two requests later, the first is as stale as the one before it"
+        );
+        assert!(third.is_current(&generation));
+    }
+
+    /// Nothing is claimed by number alone — two runs can never hold the same one,
+    /// so a claim is a decision rather than a comparison against whoever came
+    /// before. The counter this is pinned against is the app's own, incremented
+    /// only by `claim`, and it starts at zero so the first run a session ever
+    /// makes is number one rather than zero, which `is_current` would otherwise
+    /// read as current before anything had been claimed at all.
+    #[test]
+    fn a_claim_is_never_handed_out_twice() {
+        let generation = AtomicU64::new(0);
+        let mut claimed = Vec::new();
+        for _ in 0..8 {
+            let ticket = CaptureTicket::claim(&generation);
+            assert!(
+                !claimed.contains(&ticket),
+                "two runs were handed the same claim: {ticket:?}"
+            );
+            claimed.push(ticket);
+        }
+        assert_eq!(claimed.len(), 8);
+    }
+
+    /// A run the user has replaced answers its own call with nothing rather than
+    /// with a failure: the window it would have reported to is already filling
+    /// with the run that replaced it, and a reason from the run they threw away
+    /// would land on top of the result they asked for.
+    #[test]
+    fn a_run_the_user_replaced_reports_no_failure_and_hands_back_no_result() {
+        let generation = AtomicU64::new(0);
+        let replaced = CaptureTicket::claim(&generation);
+        let current = CaptureTicket::claim(&generation);
+
+        let discarded = failure_if_current(&generation, replaced, "the sidecar died".to_string());
+        assert!(
+            matches!(discarded, Ok(None)),
+            "a superseded run answers with no result rather than with a failure"
+        );
+        assert_eq!(
+            failure_if_current(&generation, current, "the sidecar died".to_string()).err(),
+            Some("the sidecar died".to_string()),
+            "the run still on screen reports its own failure"
+        );
+    }
+
+    /// A region read is cut from the screenshot the window is showing, so the
+    /// slot that screenshot is kept in belongs to the run that put it there. A
+    /// grab the user replaced arrives afterwards — it takes a quarter of a second
+    /// to take the screen — and would otherwise leave the slot holding pixels of
+    /// an image nothing is displaying, which reads as text from somewhere else on
+    /// the screen.
+    #[test]
+    fn a_grab_the_user_replaced_does_not_take_the_screenshot_a_later_one_stored() {
+        let state = AppState {
+            ocr: Mutex::new(None),
+            hotkey: Mutex::new(DEFAULT_HOTKEY.to_string()),
+            select_hotkey: Mutex::new(DEFAULT_SELECT_HOTKEY.to_string()),
+            monitor: Mutex::new(0),
+            full_image: Mutex::new(None),
+            grab: Mutex::new(()),
+            hotkey_status: Mutex::new(hotkey::status::initial()),
+            errors: Mutex::new(Vec::new()),
+        };
+        let generation = AtomicU64::new(0);
+        let stale = CaptureTicket::claim(&generation);
+        let kept = CaptureTicket::claim(&generation);
+
+        let shown = capture::CapturedImage {
+            width: 2,
+            height: 1,
+            rgba: vec![1, 1, 1, 255, 2, 2, 2, 255],
+        };
+        let discarded = capture::CapturedImage {
+            width: 1,
+            height: 1,
+            rgba: vec![9, 9, 9, 255],
+        };
+
+        store_full_image(&state, &generation, kept, &shown).expect("the shown one is kept");
+        store_full_image(&state, &generation, stale, &discarded)
+            .expect("a superseded grab stores nothing rather than failing");
+
+        let stored = hotkey::lock(&state.full_image)
+            .clone()
+            .expect("a screenshot is kept");
+        assert_eq!(
+            stored.rgba, shown.rgba,
+            "the slot holds the image on screen"
         );
     }
 

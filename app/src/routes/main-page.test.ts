@@ -163,7 +163,7 @@ describe('the capture window', () => {
     await fireEvent.click(captureButton());
     await screen.findByText('Capturing the screen.');
     expect(announcedPhase()).toBe('Capturing the screen.');
-    expect(captureButton().disabled).toBe(true);
+    expect(captureButton().disabled).toBe(false);
 
     run.resolve(result());
     await screen.findByText('Capture complete.');
@@ -177,19 +177,51 @@ describe('the capture window', () => {
     });
   });
 
-  it('drops a second press while a run is under way', async () => {
-    const run = deferred<ResultPayload>();
-    const harness = installTauriMock({ capture_primary: () => run.promise });
+  it('takes a second press as a new request rather than dropping it', async () => {
+    const runs = [deferred<ResultPayload | null>(), deferred<ResultPayload | null>()];
+    let handed = 0;
+    const harness = installTauriMock({
+      capture_primary: () => runs[handed++].promise
+    });
     render(Main);
     await drain();
 
     await fireEvent.click(captureButton());
     await screen.findByText('Capturing the screen.');
-    expect(captureButton().disabled).toBe(true);
+    expect(captureButton().disabled).toBe(false);
 
     await fireEvent.click(captureButton());
     await drain();
-    expect(harness.argsOf('capture_primary')).toHaveLength(1);
+    expect(harness.argsOf('capture_primary')).toHaveLength(2);
+  });
+
+  /// The backend answers a run it has replaced with nothing rather than with that
+  /// run's text, because the text belongs to a screenshot the user has moved on
+  /// from. Settling nothing is what keeps the covers over the newer run's fields
+  /// up: a run that took the covers down on its way out would uncover text the
+  /// read underneath has not produced yet.
+  it('leaves the covers up when the run that replaced another answers with nothing', async () => {
+    const runs = [deferred<ResultPayload | null>(), deferred<ResultPayload | null>()];
+    let handed = 0;
+    const harness = installTauriMock({
+      capture_primary: () => runs[handed++].promise
+    });
+    render(Main);
+    await drain();
+
+    await fireEvent.click(captureButton());
+    await screen.findByText('Capturing the screen.');
+    await fireEvent.click(captureButton());
+    await drain();
+
+    runs[0].resolve(null);
+    await drain();
+    expect(announcedPhase()).toBe('Capturing the screen.');
+    expect(harness.argsOf('report_frontend_error')).toHaveLength(0);
+
+    runs[1].resolve(result());
+    await screen.findByText('Capture complete.');
+    expect(screen.getByDisplayValue('hello')).toBeDefined();
   });
 
   it('follows the phases the backend publishes', async () => {
@@ -569,5 +601,35 @@ describe('reading a region of the screenshot', () => {
         height: IMAGE.height - 10 * SCALE
       }
     ]);
+  });
+
+  /// The read under way is the only thing a second request used to be refused
+  /// for. Refusing it cost the user the thing they actually wanted — a region of
+  /// the capture they were already looking at — and made the wait for the read a
+  /// wait for nothing, since the read's own text was about to be thrown away by
+  /// the next press anyway.
+  it('reads a region while a capture is still running', async () => {
+    const pending = deferred<ResultPayload | null>();
+    let handed = 0;
+    const harness = installTauriMock({
+      capture_primary: () =>
+        handed++ === 0 ? Promise.resolve(result()) : pending.promise,
+      ocr_selection: () => result()
+    });
+    render(Main);
+    await drain();
+    const shot = await armRegionSelection();
+    await fireEvent.mouseUp(shot);
+    await drain();
+
+    await fireEvent.click(captureButton());
+    await screen.findByText('Capturing the screen.');
+    await fireEvent.click(cropButton());
+    await drag(shot, { x: 20, y: 20 }, { x: 24, y: 24 });
+
+    expect(harness.argsOf('ocr_selection')).toEqual([
+      { x: 20 * SCALE, y: 20 * SCALE, width: 4 * SCALE, height: 4 * SCALE }
+    ]);
+    pending.resolve(null);
   });
 });

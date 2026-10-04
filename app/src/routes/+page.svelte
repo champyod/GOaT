@@ -161,13 +161,13 @@
   let barPlaced = false;
   const registered: UnlistenFn[] = [];
 
-  /// The three things the phase is asked for rather than kept. The screenshot is
-  /// handed over before the backend has read it, so a read can be under way with
-  /// no call of this page's own to mark it: a cover is up exactly while its own
-  /// phase is running, and comes off the moment that phase ends.
-  const isBusy = $derived(
-    phase === 'capturing' || phase === 'reading' || phase === 'translating'
-  );
+  /// The two things the phase is asked for rather than kept, and both are about
+  /// the fields rather than about the controls. The screenshot is handed over
+  /// before the backend has read it, so a read can be under way with no call of
+  /// this page's own to mark it: a cover is up exactly while its own phase is
+  /// running, and comes off the moment that phase ends. Nothing here gates a
+  /// control — a capture the user asks for while another is under way is a new
+  /// request, not a second press of the same one.
   const awaitingResult = $derived(phase === 'capturing' || phase === 'reading');
   const awaitingTranslate = $derived(phase === 'translating');
 
@@ -346,17 +346,23 @@
   /// it is reading from — so that is all they pass. The result is awaited
   /// before the run is settled, which is what keeps the covers up over the
   /// fields the result is about to fill.
+  ///
+  /// A run is not refused while another is under way: it is started, and the
+  /// backend answers a run it has replaced with nothing, because what that run
+  /// found belongs to a screenshot the user has moved on from. Settling nothing
+  /// leaves the phase the newer run set, so its covers do not come down
+  /// underneath it.
   async function runCapture(
     command: string,
     args: Record<string, unknown> | undefined,
     source: string,
     origin: { x: number; y: number } | null = null
   ): Promise<void> {
-    if (isBusy) return;
     phase = 'capturing';
     awaitingFrame = true;
     try {
-      const result = await invoke<ResultPayload>(command, args);
+      const result = await invoke<ResultPayload | null>(command, args);
+      if (result === null) return;
       await applyResult(result, origin);
     } catch (e) {
       fail(source, String(e));
@@ -986,7 +992,7 @@
   }
 
   async function onSelUp(): Promise<void> {
-    if (!selecting || !selRect || isBusy) {
+    if (!selecting || !selRect) {
       return;
     }
     if (screenMode) {
@@ -1068,7 +1074,6 @@
         <button
           class="icon"
           onclick={capture}
-          disabled={isBusy}
           aria-label="Capture"
           title="Capture"
         >
@@ -1077,7 +1082,6 @@
         <button
           class="icon"
           onclick={captureRegion}
-          disabled={isBusy}
           aria-label="Capture region"
           title="Capture region"
         >
@@ -1086,7 +1090,7 @@
         <button
           class="icon"
           onclick={startCrop}
-          disabled={isBusy || !hasImage}
+          disabled={!hasImage}
           aria-label="Crop region"
           title={hasImage
             ? 'Crop region'

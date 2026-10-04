@@ -53,10 +53,11 @@ impl Action {
 }
 
 /// Set while a triggered capture is in flight. A trigger held down is a key
-/// press per repeat, and a second run started on top of the first would grab the
-/// screen again mid-read and leave the window holding whichever result arrived
-/// last. The button path has its own guard in the window, which is why this is
-/// only about the trigger: nothing else starts a capture behind a window's back.
+/// press per repeat, and every one of those repeats would otherwise grab the
+/// screen again — the same run being restarted over and over rather than a
+/// different request, which is nothing the user asked for. This is the only
+/// re-entrance left: a capture asked for anywhere else supersedes the run under
+/// way rather than being refused, so nothing but key repeat reaches this.
 static CAPTURE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// Claims the run, or reports that one is already under way. The press is
@@ -93,11 +94,23 @@ pub fn dispatch(app: &AppHandle, action: Action) {
 ///
 /// The claim is released on the way out of every branch, so a run that failed
 /// does not leave the trigger refusing to work for the rest of the session.
+///
+/// The run claims the pipeline for itself rather than holding it: a capture asked
+/// for in the window supersedes this one, and this run then finishes the read it
+/// is inside and answers the trigger with nothing.
 async fn capture_off_screen(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let image = match crate::grab_monitor(app, &state).await {
+    let ticket = crate::CaptureTicket::claim(&crate::CAPTURE_GENERATION);
+    let image = match crate::grab_monitor(app, &state, ticket) {
         Ok(image) => image,
         Err(e) => {
+            if !ticket.is_current(&crate::CAPTURE_GENERATION) {
+                // A grab that failed after the user asked for something else is
+                // not a failure to read: the window is already filling with the
+                // run they asked for.
+                CAPTURE_IN_PROGRESS.store(false, Ordering::SeqCst);
+                return;
+            }
             let message = format!("Screen capture failed: {e}");
             report(app, &message);
             crate::show_main_window(app);
@@ -113,8 +126,10 @@ async fn capture_off_screen(app: &AppHandle) {
     };
     // The grab put the window back as soon as it had the pixels, before the
     // pipeline published the screenshot, so the window is already on its bar by
-    // the time this returns the image to the caller.
-    if let Err(e) = crate::run_pipeline_with_image(app, &state, image).await {
+    // the time this returns the image to the caller. A run this trigger no longer
+    // owns answers with nothing and publishes nothing, which is the whole of what
+    // a superseded run is allowed to do.
+    if let Err(e) = crate::run_pipeline_with_image(app, &state, image, ticket).await {
         let message = format!("Reading the screenshot failed: {e}");
         report(app, &message);
         // The screenshot is already on screen by this point, so the read is the
