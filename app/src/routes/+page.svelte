@@ -50,6 +50,38 @@
   /// desktop's own colour in charge here too.
   const FALLBACK_TINT_PERCENT = 72;
 
+  /// The Unix-epoch milliseconds this webview's own clock counts from, read once
+  /// and never again. `performance.now()` is a bare offset with no anchor, so on
+  /// its own it says how long since the window loaded and nothing about when
+  /// that was; adding it to this puts every reading back on the timeline the
+  /// backend's rows are already on, which is what lets a render stamp and a
+  /// capture seam be read side by side rather than as two unrelated numbers.
+  const PERF_TIME_ORIGIN = performance.timeOrigin;
+  /// The stamp taken the moment a `capture-progress` message reached the window,
+  /// for the draw that message is about to cause. Per message and not per run
+  /// because a run publishes four of them and only the ones carrying pixels are
+  /// followed by a draw.
+  let pendingEventMs: number | null = null;
+  /// The pair the run being finished reports: a message that reached the window,
+  /// and the draw that followed it. Absent is not zero — a run that ended before
+  /// either stamp had nothing to report, and 0 would read as a stamp taken at
+  /// the origin.
+  let runEventMs: number | null = null;
+  let runDrawDoneMs: number | null = null;
+  /// Whether the run being reported has published its screenshot. A run whose grab
+  /// failed never does, and that is the only thing separating a failure belonging
+  /// to this run from one belonging to an earlier one: the pair belongs to
+  /// whichever run last drew, so a run that never drew has to clear it rather
+  /// than report it.
+  let runHasImage = false;
+  /// Whether this run's row has gone to the backend already. A run this page
+  /// started reaches `settle` twice — the result the backend publishes ends it,
+  /// and so does the call this page was awaiting — and only the first of those
+  /// carries the stamps, because the first one clears them. Reporting on both
+  /// would put a row with nothing in it in the file beside the row that says what
+  /// the run cost, and a file of those is not a count of runs.
+  let runRowReported = false;
+
   type AppearanceTheme = 'system' | 'dark' | 'light';
 
   type Appearance = {
@@ -196,6 +228,29 @@
     );
   }
 
+  /// The stamps belong to one run and are cleared where a run starts, so a run
+  /// never reports the previous run's numbers: a run that reached no draw of its
+  /// own has to report nothing, which is a different statement from reporting the
+  /// last run's figure.
+  function beginFrontendRun(): void {
+    pendingEventMs = null;
+    runEventMs = null;
+    runDrawDoneMs = null;
+    runHasImage = false;
+    runRowReported = false;
+  }
+
+  /// A run's stamps start at the message that opens it. `reading` is that message
+  /// for every run, and a failure published with no reading behind it opened a run
+  /// of its own — so the pair is cleared on either, and a failure that did have a
+  /// reading keeps the pair its own screenshot produced.
+  function beginRunOnFirstMessage(progress: CaptureProgress): void {
+    if (progress.phase === 'reading' || (progress.phase === 'error' && !runHasImage)) {
+      beginFrontendRun();
+    }
+    if (progress.phase === 'reading') runHasImage = true;
+  }
+
   /// A registration that fails hands back no unlisten function, so a rejected
   /// `listen` would be an unhandled rejection and the teardown could never wait
   /// on it. Settling it once here keeps a failure in the diagnostics window and
@@ -204,7 +259,9 @@
     event: EventName,
     handler: (payload: T) => void
   ): Promise<void> {
-    return listen<T>(event, (e) => handler(e.payload))
+    return listen<T>(event, (e) => {
+      handler(e.payload);
+    })
       .then((unlisten) => {
         registered.push(unlisten);
       })
@@ -218,6 +275,16 @@
   /// can be shown as an empty box: the throw is what turns it into a failure with
   /// a reason on the status bar, instead of a settled run over a blank canvas
   /// and a status line claiming the text is there.
+  ///
+  /// The stamp goes after the pixels are in the canvas, so it is a draw that
+  /// happened rather than one that was asked for. The compositor has still not
+  /// put them on the screen at this point and nothing here can say when it did,
+  /// which is why the stamp is the canvas and not the display.
+  ///
+  /// It is paired with the message that caused this draw, and only the first draw
+  /// of a run is recorded: the screenshot is painted again when the result
+  /// arrives, and taking the second draw's stamp would report how long a repaint
+  /// of pixels already on the canvas took.
   function draw(image: CapturedImage): void {
     if (!canvasEl) {
       throw new Error('the canvas the screenshot is drawn on is not on the page');
@@ -235,6 +302,12 @@
     );
     ctx.putImageData(imageData, 0, 0);
     hasImage = true;
+    const eventMs = pendingEventMs;
+    pendingEventMs = null;
+    if (eventMs !== null && runEventMs === null) {
+      runEventMs = eventMs;
+      runDrawDoneMs = performance.now();
+    }
   }
 
   /// The window is one window at two sizes rather than one window at whatever
@@ -312,9 +385,43 @@
   /// The one exit every capture run takes. A result applied, an `invoke` that
   /// rejected and a failure the backend published all end here, so the fields
   /// are never left covered over and the bar is never left holding a run that is
-  /// over.
+  /// over. A run this page started ends twice over, once by each of the first two,
+  /// which is why the window is put back in order every time and the row is
+  /// written only the first: one row per run, carrying that run's own stamps.
+  ///
+  /// The stamps go out from here rather than where they are taken because this is
+  /// the only moment the run is known to be over, and a stamp reported the moment
+  /// it was taken would describe a run still in flight. The pair is cleared
+  /// afterwards so the next run reports its own and not these.
+  ///
+  /// Either field may be absent, and a field the run never took is left off
+  /// rather than sent as 0: a run that failed before the screenshot arrived has
+  /// no render to measure, which is not the same statement as a render that took
+  /// no time.
+  ///
+  /// A report that fails is an instrumentation problem and not a capture
+  /// problem: the capture itself has already succeeded by the time this runs, so
+  /// it goes to the console rather than opening the diagnostics window over a
+  /// screenshot the user is in the middle of reading.
   function settle(outcome: 'done' | 'error'): void {
     phase = outcome;
+    const eventReceivedMs = runEventMs;
+    const drawDoneMs = runDrawDoneMs;
+    runEventMs = null;
+    runDrawDoneMs = null;
+    pendingEventMs = null;
+    runHasImage = false;
+    if (runRowReported) return;
+    runRowReported = true;
+    void invoke('record_frontend_perf', {
+      marks: {
+        perfTimeOrigin: PERF_TIME_ORIGIN,
+        perfEventReceivedMs: eventReceivedMs,
+        perfDrawDoneMs: drawDoneMs
+      }
+    }).catch((e: unknown) => {
+      console.error('GOaT could not record the render stamps', e);
+    });
   }
 
   /// A run that failed, whatever told this page so: a rejected call of its own
@@ -340,6 +447,7 @@
     origin: { x: number; y: number } | null = null
   ): Promise<void> {
     if (isBusy) return;
+    beginFrontendRun();
     phase = 'capturing';
     try {
       const result = await invoke<ResultPayload>(command, args);
@@ -374,7 +482,20 @@
   /// The whole of a capture, as the one message the backend sends it on. The
   /// phase is set before the picture or the text that goes under the covers
   /// arrives, so a cover is never up after what it was covering has landed.
+  ///
+  /// The stamp is taken here and not in the subscription, because this is the only
+  /// message whose arrival a render can be measured from. Stamping every message
+  /// this window receives would leave the render figure describing whichever
+  /// message happened to arrive last — an appearance change or a monitor change is
+  /// not a capture, and neither is anything the window is told outside a run.
+  ///
+  /// It is taken before the switch, so it is when the window was told rather than
+  /// how long this page then took to act on it: a handler that awaits before it
+  /// paints would otherwise fold its own work into what is meant to be the wait
+  /// for the message.
   function onCaptureProgress(progress: CaptureProgress): void {
+    beginRunOnFirstMessage(progress);
+    pendingEventMs = performance.now();
     switch (progress.phase) {
       case 'reading':
         phase = 'reading';

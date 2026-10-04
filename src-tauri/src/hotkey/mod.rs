@@ -95,7 +95,11 @@ pub fn dispatch(app: &AppHandle, action: Action) {
 /// does not leave the trigger refusing to work for the rest of the session.
 async fn capture_off_screen(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let image = match crate::grab_monitor(app, &state).await {
+    // A hotkey capture is a whole capture, so it is measured as one: the row is
+    // opened here and closed by whichever pipeline reads the pixels, and the
+    // grab it holds is the same grab a button press would have paid.
+    let mut timing = crate::CaptureTiming::begin();
+    let image = match crate::grab_monitor(app, &state, &mut timing).await {
         Ok(image) => image,
         Err(e) => {
             let message = format!("Screen capture failed: {e}");
@@ -114,7 +118,7 @@ async fn capture_off_screen(app: &AppHandle) {
     // The grab put the window back as soon as it had the pixels, before the
     // pipeline published the screenshot, so the window is already on its bar by
     // the time this returns the image to the caller.
-    if let Err(e) = crate::run_pipeline_with_image(app, &state, image).await {
+    if let Err(e) = crate::run_pipeline_with_image(app, &state, image, &mut timing).await {
         let message = format!("Reading the screenshot failed: {e}");
         report(app, &message);
         // The screenshot is already on screen by this point, so the read is the

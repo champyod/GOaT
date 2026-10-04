@@ -66,6 +66,7 @@ const DEFAULT_COMMANDS: CommandTable = {
   list_errors: [],
   clear_errors: null,
   report_frontend_error: null,
+  record_frontend_perf: null,
   set_window_size: null,
   hide_window: null,
   list_webview_windows: ['menu'],

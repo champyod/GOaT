@@ -4,9 +4,10 @@ mod capture;
 mod hotkey;
 mod models;
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 use hotkey::parse_shortcut;
@@ -82,7 +83,12 @@ const GRAB_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 ///
 /// A refusal is reported rather than swallowed, because the grab that follows is
 /// then of this window and the user has no other way to know why.
-pub(crate) async fn clear_the_screen(app: &tauri::AppHandle) {
+///
+/// The wait is stamped as its own seam rather than left inside the grab it
+/// belongs to. It is a fixed cost every capture pays, so a grab that is slow for
+/// a reason of its own and a grab that is slow because of this cannot be told
+/// apart from the grab figure alone.
+pub(crate) async fn clear_the_screen(app: &tauri::AppHandle, timing: &mut CaptureTiming) {
     use tauri::Manager;
     if let Some(window) = app.get_webview_window("main")
         && let Err(e) = window.hide()
@@ -93,7 +99,9 @@ pub(crate) async fn clear_the_screen(app: &tauri::AppHandle) {
             &format!("The window could not be hidden: {e}"),
         );
     }
+    timing.mark(GRAB_SETTLE_ENTER_NS);
     tokio::time::sleep(GRAB_SETTLE).await;
+    timing.mark(GRAB_SETTLE_EXIT_NS);
 }
 
 fn default_select_hotkey() -> String {
@@ -596,27 +604,448 @@ fn current_autostart(app: &tauri::AppHandle) -> Result<AutostartState, String> {
     })
 }
 
+/// The environment variable naming the file one JSONL row per capture is
+/// appended to. Nothing is written unless it is set: an ordinary session must
+/// leave the data directory as it found it, and a row per capture would
+/// otherwise grow without bound in a directory nothing ever prunes.
+const LATENCY_LOG_ENV: &str = "GOAT_LATENCY_LOG";
+
+/// What a row's numbers do and do not include, carried into every row so that a
+/// figure read out of one cannot be restated as something it is not.
+///
+/// The MT seam is the one a reader is most likely to misread: the translator is
+/// built inside the seam, so `mt_ms` is a load from disk plus inference and is
+/// never the cost of translating. The other two seams carry their own fixed
+/// costs, which is why the grab waits and the OCR sidecar are named separately
+/// rather than folded into a single per-stage number.
+const LATENCY_SCOPE: &str = "one capture per row, measured inside the GOaT process; \
+mt_ms wraps a CTranslate2 translator loaded from disk inside the seam, so mt_ms = mt_load_ms + mt_infer_ms and is not inference alone; \
+grab_ms includes the fixed GRAB_SETTLE wait and the window being put back; \
+ocr_ms includes a tesseract sidecar spawn when the bundled engine failed; \
+the *_ns stamps are a monotonic clock offset from this process's own first stamp, not from any absolute time, and must never be subtracted from t_wall_unix_ms, the only field on a shared timeline";
+
+/// The seams of one capture, named as the two stamps each is made of. Every key
+/// in a row is one of these, so a row cannot carry a field this module has no
+/// seam for, and a seam a run never reached is absent rather than zero.
+const GRAB_ENTER_NS: &str = "grab_enter_ns";
+const GRAB_EXIT_NS: &str = "grab_exit_ns";
+const GRAB_SETTLE_ENTER_NS: &str = "grab_settle_enter_ns";
+const GRAB_SETTLE_EXIT_NS: &str = "grab_settle_exit_ns";
+const OCR_ENTER_NS: &str = "ocr_enter_ns";
+const OCR_EXIT_NS: &str = "ocr_exit_ns";
+const MT_ENTER_NS: &str = "mt_enter_ns";
+const MT_LOAD_ENTER_NS: &str = "mt_load_enter_ns";
+const MT_LOAD_EXIT_NS: &str = "mt_load_exit_ns";
+const MT_INFER_ENTER_NS: &str = "mt_infer_enter_ns";
+const MT_INFER_EXIT_NS: &str = "mt_infer_exit_ns";
+const MT_EXIT_NS: &str = "mt_exit_ns";
+const PIPELINE_EXIT_NS: &str = "pipeline_exit_ns";
+
+/// Which of the two row shapes a line of the log is. The file carries both a
+/// capture's own seams and the window's, and the two are told apart by this
+/// field rather than by which keys happen to be present: a reader filtering on
+/// a key it expects would silently read the wrong row type on a row that
+/// happened to be short one field.
+const ROW_KIND_CAPTURE: &str = "capture";
+const ROW_KIND_FRONTEND: &str = "frontend";
+
+/// What a window's stamps do and do not include, carried into every frontend row
+/// on the same terms `LATENCY_SCOPE` is carried into every capture row.
+///
+/// The thing a reader is most likely to get wrong here is the subtraction:
+/// `perf_draw_done_ms` is a `performance.now()` reading, it is not a duration,
+/// and the only thing that makes it comparable with anything is
+/// `perf_time_origin` beside it. It is written into the row rather than left to
+/// the reader because a stamp without its origin cannot be lined up against
+/// anything at all.
+const FRONTEND_SCOPE: &str = "one window's stamps per row, measured with performance.now() inside the webview; \
+perf_event_received_ms and perf_draw_done_ms are performance.now() readings, not durations, and are milliseconds since the webview's own time origin; \
+perf_time_origin is the Unix-epoch milliseconds that origin sits at, so perf_time_origin + a reading gives the wall-clock instant of that reading and is the only way to line one of these up against a capture row's t_wall_unix_ms; \
+these stamps must never be subtracted from the capture rows' *_ns fields, which are a different clock in the app's own process";
+
+/// The capture this session has measured so far, so two rows written inside one
+/// millisecond can still be told apart.
+static LATENCY_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The clock every capture's stamps are measured against. `Instant` carries no
+/// absolute value of its own, so `t_app_mono_ns` is nanoseconds since the first
+/// stamp of this process: it orders captures within a session and says nothing
+/// about where that session sits on the wall clock, which is what
+/// `t_wall_unix_ms` is for. The two are never subtracted from one another.
+static MONO_ORIGIN: OnceLock<Instant> = OnceLock::new();
+
+fn mono_offset_ns(at: Instant) -> u64 {
+    let origin = *MONO_ORIGIN.get_or_init(|| at);
+    u64::try_from(at.saturating_duration_since(origin).as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// The wall clock in milliseconds since the Unix epoch, the one field in a row
+/// another tool reading an unrelated log can be lined up against. A host whose
+/// clock reads before the epoch answers 0, and such a row is not usable for
+/// correlation; the monotonic stamps beside it are unaffected by it.
+fn wall_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+/// FNV-1a over the bytes of `text`, as sixteen lowercase hex digits. A row may
+/// carry what was on the screen only as a length and a fingerprint, so two
+/// captures of the same text can be recognised as such without the text itself
+/// being written down. This is a checksum and not a digest: it identifies an
+/// input, it proves nothing about it, and two different inputs can share one.
+fn fnv1a64(text: &str) -> String {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    format!("{hash:016x}")
+}
+
+/// Milliseconds to the microsecond. Finer than the run-to-run spread of every
+/// seam measured here, so rounding here is presentation rather than measurement,
+/// and it keeps a JSONL line readable without carrying a float's worth of noise
+/// on every figure.
+fn millis(nanos: f64) -> f64 {
+    (nanos / 1e6 * 1e3).round() / 1e3
+}
+
+/// What the capture produced, as lengths and fingerprints. There is no field a
+/// screen's own text could be written into, which is what keeps it out of a file
+/// an operator collects and commits without anyone having to remember to redact.
+#[derive(serde::Serialize)]
+struct LatencyText {
+    ocr_engine: String,
+    ocr_chars: u32,
+    ocr_fnv1a64: String,
+    translated_chars: u32,
+    translated_fnv1a64: String,
+}
+
+/// The interval between the stamps of the run, in milliseconds. A stage whose
+/// two ends were not both stamped is absent rather than zero: half a stage is not
+/// a duration, and zero is not what a stage that did not run took.
+#[derive(serde::Serialize)]
+struct LatencyPerf {
+    pipeline_total_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grab_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grab_settle_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ocr_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mt_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mt_load_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mt_infer_ms: Option<f64>,
+}
+
+/// One capture's own clock, handed to the seams as it passes them. It is created
+/// where a capture starts and closes into one JSONL row, so the row belongs to
+/// the capture it was carried through and cannot be read as another one's.
+#[derive(serde::Serialize)]
+pub(crate) struct CaptureTiming {
+    row_kind: &'static str,
+    seq: u64,
+    t_wall_unix_ms: u64,
+    t_app_mono_ns: u64,
+    latency_scope: &'static str,
+    /// Every seam the run reached, as a monotonic offset from this process's
+    /// first stamp. A `BTreeMap` so a row's keys come out in the same order every
+    /// time and two rows can be diffed line for line.
+    #[serde(flatten)]
+    stamps_ns: BTreeMap<&'static str, u64>,
+    perf: LatencyPerf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<LatencyText>,
+}
+
+impl CaptureTiming {
+    /// Opens a capture. This call is the row's `t_app_mono_ns`, so every stamp
+    /// after it is an offset from the same instant and the run's total is
+    /// measured against the moment the run began rather than against whenever
+    /// the row happened to be serialised.
+    pub(crate) fn begin() -> Self {
+        let started = Instant::now();
+        Self {
+            row_kind: ROW_KIND_CAPTURE,
+            seq: LATENCY_SEQ.fetch_add(1, Ordering::Relaxed),
+            t_wall_unix_ms: wall_unix_ms(),
+            t_app_mono_ns: mono_offset_ns(started),
+            latency_scope: LATENCY_SCOPE,
+            stamps_ns: BTreeMap::new(),
+            perf: LatencyPerf {
+                pipeline_total_ms: None,
+                grab_ms: None,
+                grab_settle_ms: None,
+                ocr_ms: None,
+                mt_ms: None,
+                mt_load_ms: None,
+                mt_infer_ms: None,
+            },
+            text: None,
+        }
+    }
+
+    /// Stamps one end of one seam. Both ends of a seam go through this one
+    /// method and a duration is the difference between them, so no figure can be
+    /// produced from a start that was not read on the same side of the work it
+    /// claims to measure as its end.
+    pub(crate) fn mark(&mut self, seam: &'static str) {
+        let at = Instant::now();
+        self.stamps_ns.insert(seam, mono_offset_ns(at));
+    }
+
+    /// The interval between one seam's two stamps, in milliseconds. Both ends
+    /// have to be on the row for there to be an interval: half a stage is not a
+    /// duration, and zero is not what a stage that did not run took.
+    fn span_ms(&self, entered: &str, left: &str) -> Option<f64> {
+        let from = self.stamps_ns.get(entered)?;
+        let to = self.stamps_ns.get(left)?;
+        Some(millis(*to as f64 - *from as f64))
+    }
+
+    /// Closes this run's row on the way out of a failure one of its own steps
+    /// produced, and hands the reason back so the caller reports it and the log
+    /// gains the row in a single statement.
+    ///
+    /// A run that failed is one of the runs a per-stage figure is wanted for: the
+    /// grab figure is what shows the grab is what failed, and a grab that failed
+    /// is exactly the run whose cost nobody would otherwise have. The closure
+    /// lives here rather than in each caller because a caller that had to
+    /// remember would forget it on whichever path was added last.
+    pub(crate) fn close_failed<T>(&mut self, reason: String) -> Result<T, String> {
+        self.finish(None);
+        self.append_row();
+        Err(reason)
+    }
+
+    /// Closes the row: the interval between each seam's stamps, and what the
+    /// capture produced. `payload` is absent on a run that never got as far as
+    /// one, and such a row carries no text facts at all rather than a set of
+    /// zeroes that a reader would take for a blank screen.
+    pub(crate) fn finish(&mut self, payload: Option<&ResultPayload>) {
+        self.mark(PIPELINE_EXIT_NS);
+        let perf = LatencyPerf {
+            pipeline_total_ms: self
+                .stamps_ns
+                .get(PIPELINE_EXIT_NS)
+                .map(|left| millis(*left as f64 - self.t_app_mono_ns as f64)),
+            grab_ms: self.span_ms(GRAB_ENTER_NS, GRAB_EXIT_NS),
+            grab_settle_ms: self.span_ms(GRAB_SETTLE_ENTER_NS, GRAB_SETTLE_EXIT_NS),
+            ocr_ms: self.span_ms(OCR_ENTER_NS, OCR_EXIT_NS),
+            mt_ms: self.span_ms(MT_ENTER_NS, MT_EXIT_NS),
+            mt_load_ms: self.span_ms(MT_LOAD_ENTER_NS, MT_LOAD_EXIT_NS),
+            mt_infer_ms: self.span_ms(MT_INFER_ENTER_NS, MT_INFER_EXIT_NS),
+        };
+        self.perf = perf;
+        self.text = payload.map(|result| LatencyText {
+            ocr_engine: result.ocr_engine.clone(),
+            ocr_chars: result.ocr_text.chars().count() as u32,
+            ocr_fnv1a64: fnv1a64(&result.ocr_text),
+            translated_chars: result.translated_text.chars().count() as u32,
+            translated_fnv1a64: fnv1a64(&result.translated_text),
+        });
+    }
+
+    /// Appends one row to the file `LATENCY_LOG_ENV` names, and does nothing at
+    /// all when it is unset.
+    pub(crate) fn append_row(&self) {
+        let Some(path) = latency_log_path() else {
+            return;
+        };
+        if let Err(reason) = append_row_to(&path, self) {
+            eprintln!(
+                "GOaT: a latency row was neither encoded nor written to {} ({reason})",
+                path.display()
+            );
+        }
+    }
+}
+
+/// One JSONL row appended to one named file, shared by the two row shapes so
+/// neither can be written in a way the other is not. A reader tells the shapes
+/// apart on `row_kind`, so a line that broke the shared shape would be a line it
+/// read as the wrong kind of run.
+fn append_row_to<T: serde::Serialize>(path: &std::path::Path, row: &T) -> Result<(), String> {
+    let encoded = serde_json::to_string(row).map_err(|e| e.to_string())?;
+    append_line(path, &encoded).map_err(|e| e.to_string())
+}
+
+/// The file the rows go to, or nothing at all when no file was named. Blank
+/// counts as unset: a value that names no file is the same as no value, and an
+/// operator who exported an empty variable has not asked for a log.
+///
+/// The named value is an argument rather than read from the environment here, so
+/// the gate can be held by a test. The process's environment is shared by every
+/// test in the binary, and a gate proved by setting it would be proved by a race.
+fn latency_log_path_from(named: Option<&str>) -> Option<std::path::PathBuf> {
+    let named = named?.trim();
+    if named.is_empty() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(named))
+}
+
+fn latency_log_path() -> Option<std::path::PathBuf> {
+    latency_log_path_from(std::env::var(LATENCY_LOG_ENV).ok().as_deref())
+}
+
+/// What the window's own clock saw, as the window sends it.
+///
+/// `perf_time_origin` is the field the rest are read against and the reason this
+/// row is a row rather than two loose numbers: `performance.now()` counts from
+/// an origin that is private to the webview, and adding it to `timeOrigin` puts
+/// every stamp back on the Unix timeline the capture rows are already on. It is
+/// also why no stamp here is ever subtracted from a `*_ns` field beside it — the
+/// two clocks are in two processes and the gap between their origins is not a
+/// number either of them knows.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FrontendMarks {
+    perf_time_origin: f64,
+    perf_event_received_ms: Option<f64>,
+    perf_draw_done_ms: Option<f64>,
+}
+
+/// One window's stamps, closed into a row of the same file the capture rows go
+/// to. It is a separate row rather than fields on the capture's own because the
+/// two are two clocks: folding them together would put a `performance.now()`
+/// reading next to an `Instant` offset with nothing saying they are not the same
+/// scale, and the difference between the two would read as a stage.
+#[derive(serde::Serialize)]
+struct FrontendPerf {
+    row_kind: &'static str,
+    t_wall_unix_ms: u64,
+    frontend_scope: &'static str,
+    perf_time_origin: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    perf_event_received_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    perf_draw_done_ms: Option<f64>,
+}
+
+impl FrontendPerf {
+    /// The row the window's stamps become. `t_wall_unix_ms` is read here rather
+    /// than sent by the window, because it is the app's clock reading and the
+    /// window has no access to it: the row has to be dated on the same clock as
+    /// the capture rows beside it or the two cannot be ordered.
+    fn from_marks(marks: FrontendMarks) -> Self {
+        Self {
+            row_kind: ROW_KIND_FRONTEND,
+            t_wall_unix_ms: wall_unix_ms(),
+            frontend_scope: FRONTEND_SCOPE,
+            perf_time_origin: marks.perf_time_origin,
+            perf_event_received_ms: marks.perf_event_received_ms,
+            perf_draw_done_ms: marks.perf_draw_done_ms,
+        }
+    }
+}
+
+/// Appends the window's stamps to the file `LATENCY_LOG_ENV` names, and writes
+/// nothing at all when it is unset — the same gate the capture rows answer to,
+/// so a run either logs both clocks or neither.
+#[tauri::command]
+fn record_frontend_perf(marks: FrontendMarks) {
+    let Some(path) = latency_log_path() else {
+        return;
+    };
+    let row = FrontendPerf::from_marks(marks);
+    if let Err(reason) = append_row_to(&path, &row) {
+        eprintln!(
+            "GOaT: a frontend latency row was neither encoded nor written to {} ({reason})",
+            path.display()
+        );
+    }
+}
+
+fn append_line(path: &std::path::Path, line: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(line.as_bytes())?;
+    file.write_all(b"\n")
+}
+
 pub(crate) async fn run_pipeline(
     app: &tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
+    timing: &mut CaptureTiming,
 ) -> Result<ResultPayload, String> {
-    let image = grab_monitor(app, state).await?;
-    run_pipeline_with_image(app, state, image).await
+    let image = grab_monitor(app, state, timing).await?;
+    run_pipeline_with_image(app, state, image, timing).await
+}
+
+/// A lock no other thread can take is one this thread poisoned, and taking it
+/// back out of its poison would hand over state no writer can vouch for. The
+/// read fails on the same terms the read itself does, because a screenshot
+/// nothing can store is not a screenshot.
+fn locked<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, String> {
+    mutex.lock().map_err(|e| e.to_string())
+}
+
+/// The pixels of the whole monitor, stored where a selection read crops from.
+/// The stored screenshot is what a selection crops from, so it is written here
+/// rather than by whichever caller happened to be holding the image.
+fn whole_screen(state: &tauri::State<'_, AppState>) -> Result<capture::CapturedImage, String> {
+    let monitor = *locked(&state.monitor)?;
+    let image = capture::capture_monitor(monitor).or_else(|_| capture::capture_primary())?;
+    store_full_image(state, image)
+}
+
+/// The pixels in hand, into the state a selection read crops from. The image is
+/// handed back so the caller does not have to clone it a second time to keep it.
+fn store_full_image(
+    state: &tauri::State<'_, AppState>,
+    image: capture::CapturedImage,
+) -> Result<capture::CapturedImage, String> {
+    *locked(&state.full_image)? = Some(image.clone());
+    Ok(image)
+}
+
+/// The screenshot a previous grab stored, which a selection read crops from.
+/// The pixels are cloned out and the lock let go before this returns, so the
+/// caller is not left holding a guard while a pipeline runs behind it.
+fn stored_full_image(state: &tauri::State<'_, AppState>) -> Result<capture::CapturedImage, String> {
+    let stored = locked(&state.full_image)?;
+    stored
+        .clone()
+        .ok_or_else(|| "no screenshot yet, capture first".to_string())
 }
 
 /// The pixels of the whole monitor, taken the way every grab in this app is
 /// taken: the window off the screen first, and long enough for it to be gone.
-/// The stored screenshot is what a selection crops from, so it is written here
-/// rather than by the callers that happen to be holding the image.
+///
+/// The grab is stamped around the whole of it, settle and window restore
+/// included, so the figure a reader takes for "the screenshot" covers everything
+/// between the run being asked for and the pixels being in hand.
+///
+/// Every way this can fail closes the row it opened. A grab that failed has still
+/// cost the run its settle wait, and that wait is a fixed cost every capture pays
+/// — leaving a failed grab out of the file would make the grab figures describe
+/// only the grabs that worked, which is the selection a latency report cannot be
+/// built from.
 pub(crate) async fn grab_monitor(
     app: &tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
+    timing: &mut CaptureTiming,
 ) -> Result<capture::CapturedImage, String> {
-    clear_the_screen(app).await;
-    let monitor = *state.monitor.lock().map_err(|e| e.to_string())?;
-    let image = capture::capture_monitor(monitor).or_else(|_| capture::capture_primary())?;
-    *state.full_image.lock().map_err(|e| e.to_string())? = Some(image.clone());
+    timing.mark(GRAB_ENTER_NS);
+    clear_the_screen(app, timing).await;
+    let image = match whole_screen(state) {
+        Ok(image) => image,
+        Err(reason) => return timing.close_failed(reason),
+    };
     restore_screen(app);
+    timing.mark(GRAB_EXIT_NS);
     Ok(image)
 }
 
@@ -646,17 +1075,25 @@ async fn capture_region(
     // The overlay the user picked in is this app's own window, so it has to be off
     // the screen on the same terms as the whole-window grab: a region read with
     // the window still up is a read of GOaT.
-    clear_the_screen(&app).await;
-    let image = capture::capture_monitor_region(monitor, x, y, width, height)?;
-    *state.full_image.lock().map_err(|e| e.to_string())? = Some(image.clone());
+    let mut timing = CaptureTiming::begin();
+    timing.mark(GRAB_ENTER_NS);
+    clear_the_screen(&app, &mut timing).await;
+    let cropped = capture::capture_monitor_region(monitor, x, y, width, height)
+        .and_then(|image| store_full_image(&state, image));
+    let image = match cropped {
+        Ok(image) => image,
+        Err(reason) => return timing.close_failed(reason),
+    };
     restore_screen(&app);
-    run_pipeline_with_image(&app, &state, image).await
+    timing.mark(GRAB_EXIT_NS);
+    run_pipeline_with_image(&app, &state, image, &mut timing).await
 }
 
 async fn run_pipeline_with_image(
     app: &tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
     image: capture::CapturedImage,
+    timing: &mut CaptureTiming,
 ) -> Result<ResultPayload, String> {
     // The latch is set before the screenshot is published rather than after, so
     // a problem raised while this first capture is still being read is already
@@ -667,14 +1104,21 @@ async fn run_pipeline_with_image(
     // they belong to travels with them: a window painting an image it was told
     // nothing about has to guess whether the read is under way.
     publish_progress(app, &CaptureProgress::reading(&image));
-    let read = ocr_with_fallback(app, state, &image).await?;
+    let read = match ocr_with_fallback(app, state, &image, timing).await {
+        Ok(read) => read,
+        Err(reason) => {
+            // A run that never read anything is still a run that took time, and a
+            // read that fails is one of the runs a per-stage figure is wanted for.
+            return timing.close_failed(reason);
+        }
+    };
     let ocr_text = read.text;
     let ocr_engine = read.engine;
     let mut error = read.error;
     // The read is finished before the translation starts, so the text is
     // published on that boundary and a window can stop waiting on the read.
     publish_progress(app, &CaptureProgress::translating(&ocr_text));
-    let translated_text = match translate_if_any(app, &ocr_text) {
+    let translated_text = match translate_if_any(app, &ocr_text, timing) {
         Ok(text) => text,
         Err(reason) => {
             if error.is_empty() {
@@ -692,6 +1136,8 @@ async fn run_pipeline_with_image(
         error,
     };
     publish_progress(app, &CaptureProgress::done(&payload));
+    timing.finish(Some(&payload));
+    timing.append_row();
     Ok(payload)
 }
 
@@ -704,14 +1150,24 @@ async fn ocr_selection(
     width: u32,
     height: u32,
 ) -> Result<ResultPayload, String> {
-    let image = state
-        .full_image
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clone()
-        .ok_or_else(|| "no screenshot yet, capture first".to_string())?;
-    let crop = image.crop(x, y, width, height)?;
-    run_pipeline_with_image(&app, &state, crop).await
+    // The row is opened before the stored screenshot is read rather than after
+    // the pixels are in hand, so a lock this thread poisoned, a selection read
+    // before any grab, and a crop of pixels that are not there each land a row of
+    // their own. A run that failed before the pipeline started and a run that was
+    // never asked for are otherwise the same silence, and a count of repeats
+    // cannot tell those apart from each other.
+    let mut timing = CaptureTiming::begin();
+    let image = match stored_full_image(&state) {
+        Ok(image) => image,
+        Err(reason) => return timing.close_failed(reason),
+    };
+    let crop = match image.crop(x, y, width, height) {
+        Ok(crop) => crop,
+        Err(reason) => return timing.close_failed(reason),
+    };
+    // A selection read crops pixels a grab already took, so its row carries the
+    // read and the translation but no grab: there was none in this run.
+    run_pipeline_with_image(&app, &state, crop, &mut timing).await
 }
 
 #[tauri::command]
@@ -719,7 +1175,8 @@ async fn capture_primary(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<ResultPayload, String> {
-    run_pipeline(&app, &state).await
+    let mut timing = CaptureTiming::begin();
+    run_pipeline(&app, &state, &mut timing).await
 }
 
 /// What one read of a screenshot produced. `error` is empty unless neither
@@ -735,51 +1192,73 @@ struct OcrRead {
 /// with the sidecar. The model lock is taken for the bundled run only and
 /// released before the sidecar starts, so a slow fallback cannot block the
 /// commands that wait on that lock.
+///
+/// The seam covers the read as a whole, the fallback included: the two engines
+/// are two answers to one question, and a figure that separated them would say
+/// how long each engine costs rather than how long reading the screenshot took.
 async fn ocr_with_fallback(
     app: &tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
     image: &capture::CapturedImage,
+    timing: &mut CaptureTiming,
 ) -> Result<OcrRead, String> {
+    timing.mark(OCR_ENTER_NS);
     let dynamic = image.to_dynamic_image()?;
-    let primary = state
-        .ocr
-        .lock()
-        .map_err(|e| e.to_string())
-        .and_then(|mut guard| {
-            ensure_engine(app, &mut guard)
-                .and_then(|engine| models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}")))
-        });
-    match primary {
-        Ok(text) => Ok(OcrRead {
+    let primary = locked(&state.ocr).and_then(|mut guard| {
+        ensure_engine(app, &mut guard)
+            .and_then(|engine| models::run_ocr(engine, &dynamic).map_err(|e| format!("{e}")))
+    });
+    let read = match primary {
+        Ok(text) => OcrRead {
             text,
             engine: OCR_ENGINE_PRIMARY,
             error: String::new(),
-        }),
+        },
         Err(primary_err) => match models::run_ocr_fallback(app, &dynamic)
             .await
             .map_err(|e| format!("{e}"))
         {
-            Ok(text) => Ok(OcrRead {
+            Ok(text) => OcrRead {
                 text,
                 engine: OCR_ENGINE_FALLBACK,
                 error: String::new(),
-            }),
-            Err(fallback_err) => Ok(OcrRead {
+            },
+            Err(fallback_err) => OcrRead {
                 text: String::new(),
                 engine: OCR_ENGINE_NONE,
                 error: format!("{primary_err}; fallback OCR also failed: {fallback_err}"),
-            }),
+            },
         },
-    }
+    };
+    timing.mark(OCR_EXIT_NS);
+    Ok(read)
 }
 
 /// A blank read is not sent to the translator: there is nothing to translate,
 /// and a translation of nothing is not a result the user could act on.
-fn translate_if_any(app: &tauri::AppHandle, ocr_text: &str) -> Result<String, String> {
+///
+/// The load is stamped apart from the inference because it is the larger half
+/// and it is not translation. `load_translator` builds a translator on every call
+/// and holds nothing between captures, so a single number over this seam is the
+/// cost of the model arriving plus the cost of using it, and a reader who is
+/// told that `mt_ms` is inference will put it in the wrong column of the table.
+fn translate_if_any(
+    app: &tauri::AppHandle,
+    ocr_text: &str,
+    timing: &mut CaptureTiming,
+) -> Result<String, String> {
     if ocr_text.trim().is_empty() {
         return Ok(String::new());
     }
-    models::run_translate(app, ocr_text).map_err(|e| format!("{e}"))
+    timing.mark(MT_ENTER_NS);
+    timing.mark(MT_LOAD_ENTER_NS);
+    let translator = models::load_translator(app).map_err(|e| format!("{e}"))?;
+    timing.mark(MT_LOAD_EXIT_NS);
+    timing.mark(MT_INFER_ENTER_NS);
+    let translated = models::run_translate_with(&translator, ocr_text).map_err(|e| format!("{e}"));
+    timing.mark(MT_INFER_EXIT_NS);
+    timing.mark(MT_EXIT_NS);
+    translated
 }
 
 #[cfg(desktop)]
@@ -1178,7 +1657,8 @@ pub fn run() {
             hotkey::configure_guidance_text,
             list_errors,
             clear_errors,
-            report_frontend_error
+            report_frontend_error,
+            record_frontend_perf
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1309,6 +1789,277 @@ mod tests {
             failed["error"], reason,
             "the window is shown the reason rather than a sentence of its own"
         );
+    }
+
+    /// The window's stamps cross a process boundary as JSON and nothing else
+    /// checks that they survive it: a key renamed on one side is a stamp the
+    /// other side reads as absent, which is indistinguishable from a run that
+    /// never drew. The round trip is therefore pinned from the shape the window
+    /// actually sends.
+    #[test]
+    fn a_frontend_row_survives_the_wire_with_its_origin_and_its_stamps() {
+        let marks: FrontendMarks = serde_json::from_str(
+            r#"{"perfTimeOrigin":1767225600123.5,"perfEventReceivedMs":40.25,"perfDrawDoneMs":41.5}"#,
+        )
+        .expect("the camelCase shape the window sends deserialises");
+        assert_eq!(marks.perf_time_origin, 1767225600123.5);
+
+        let wire = serde_json::to_value(FrontendPerf::from_marks(marks)).expect("the row encodes");
+        assert_eq!(wire["row_kind"], ROW_KIND_FRONTEND);
+        assert_eq!(wire["perf_time_origin"].as_f64(), Some(1767225600123.5));
+        assert_eq!(wire["perf_event_received_ms"].as_f64(), Some(40.25));
+        assert_eq!(wire["perf_draw_done_ms"].as_f64(), Some(41.5));
+        assert!(
+            wire["t_wall_unix_ms"].is_u64(),
+            "the row is dated on the app's own clock, which is what orders it against a capture row: {wire}"
+        );
+    }
+
+    /// A run that ended before the draw had two of the three fields and nothing
+    /// standing in for the third. Written as 0 it would read as a stamp taken at
+    /// the time origin, which is a reading no run produces.
+    #[test]
+    fn a_frontend_run_that_never_drew_carries_no_draw_stamp_rather_than_a_zero() {
+        let marks: FrontendMarks = serde_json::from_str(
+            r#"{"perfTimeOrigin":1767225600123.5,"perfEventReceivedMs":40.25}"#,
+        )
+        .expect("a run that ended early still sends what it had");
+
+        let wire = serde_json::to_value(FrontendPerf::from_marks(marks)).expect("the row encodes");
+        assert_eq!(wire["perf_event_received_ms"].as_f64(), Some(40.25));
+        assert!(
+            wire.get("perf_draw_done_ms").is_none(),
+            "the field is left off the row rather than written as zero: {wire}"
+        );
+    }
+
+    /// A key that does not match the shape the window sends is refused rather
+    /// than read. The origin is what every other stamp on the row is read
+    /// against, so a payload carrying one under another spelling is a row whose
+    /// numbers cannot be lined up against anything — and one that would be
+    /// refused at the far end anyway, after the window had sent it.
+    #[test]
+    fn a_stamp_the_window_misspells_is_refused_rather_than_read() {
+        for payload in [
+            r#"{"perf_time_origin":1767225600123.5,"perfEventReceivedMs":40.25}"#,
+            r#"{"perfTimeOrgin":1767225600123.5,"perfEventReceivedMs":40.25}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<FrontendMarks>(payload).is_err(),
+                "an origin the window spelled another way is not an origin: {payload}"
+            );
+        }
+        serde_json::from_str::<FrontendMarks>(r#"{"perfTimeOrigin":1767225600123.5}"#)
+            .expect("the one spelling the window sends is the one that reads");
+    }
+
+    /// The unit every figure under statistics is stated in. The rounding is to
+    /// the microsecond because it is finer than the run-to-run spread of every
+    /// seam measured here, and rounding half up is pinned because a figure that
+    /// rounded to even would disagree with the row it came from at the last digit.
+    #[test]
+    fn millis_rounds_to_the_microsecond_and_rounds_half_up() {
+        assert_eq!(millis(0.0), 0.0);
+        assert_eq!(millis(1_000_000.0), 1.0);
+        assert_eq!(millis(2_500_000.0), 2.5);
+        assert_eq!(
+            millis(999.0),
+            0.001,
+            "one nanosecond is one microsecond, not nothing"
+        );
+        assert_eq!(
+            millis(1_500.0),
+            0.002,
+            "a figure halfway between two microseconds rounds up rather than sitting on the mark"
+        );
+    }
+
+    /// The offset exists so two rows written inside one millisecond can still be
+    /// told apart, so what has to hold is that the difference between two readings
+    /// is the elapsed time between them — the shared origin cancels, which is why
+    /// this is asserted without depending on which test initialised that origin.
+    #[test]
+    fn a_monotonic_offset_is_nanoseconds_from_one_shared_origin() {
+        let first = Instant::now();
+        let at_first = mono_offset_ns(first);
+        let three_ms_later = mono_offset_ns(first + std::time::Duration::from_millis(3));
+        assert_eq!(
+            three_ms_later - at_first,
+            3_000_000,
+            "two readings three milliseconds apart are three million nanoseconds apart"
+        );
+        assert!(
+            at_first <= three_ms_later,
+            "the offset never goes backwards: {at_first} then {three_ms_later}"
+        );
+    }
+
+    /// Half a stage is not a duration. A run that was stamped on entry and then
+    /// failed reports no figure for it, because the alternative — a number derived
+    /// from one end — would be a duration for work this app never timed.
+    #[test]
+    fn a_seam_with_only_one_end_stamped_reports_no_figure() {
+        let mut timing = CaptureTiming::begin();
+        timing.mark(GRAB_ENTER_NS);
+        assert!(
+            timing.span_ms(GRAB_ENTER_NS, GRAB_EXIT_NS).is_none(),
+            "a grab that never finished has no grab figure"
+        );
+        assert!(
+            timing
+                .span_ms("a_seam_this_module_has_none_of", GRAB_ENTER_NS)
+                .is_none(),
+            "a seam that was never stamped at all is not the same as one that was"
+        );
+        timing.mark(GRAB_EXIT_NS);
+        assert!(
+            timing.span_ms(GRAB_ENTER_NS, GRAB_EXIT_NS).is_some(),
+            "both ends on the row is what makes there an interval"
+        );
+    }
+
+    /// A failed capture is one of the runs a per-stage figure is wanted for: it
+    /// still paid the fixed settle wait, and a grab figure counting only the grabs
+    /// that worked would be a figure of the easy cases. What it never reached is
+    /// left off the row rather than written as zero, which would read as a stage
+    /// that was free.
+    #[test]
+    fn a_failed_grab_row_keeps_the_wait_it_paid_and_leaves_the_rest_off() {
+        let mut timing = CaptureTiming::begin();
+        timing.mark(GRAB_ENTER_NS);
+        timing.mark(GRAB_SETTLE_ENTER_NS);
+        timing.mark(GRAB_SETTLE_EXIT_NS);
+        timing.finish(None);
+
+        let wire = serde_json::to_value(&timing).expect("a closed row encodes");
+        assert_eq!(wire["row_kind"], ROW_KIND_CAPTURE);
+        let perf = &wire["perf"];
+        assert!(
+            perf["pipeline_total_ms"].is_number(),
+            "the run took time even though it produced nothing: {wire}"
+        );
+        assert!(
+            perf["grab_settle_ms"].is_number(),
+            "the failed grab still paid the fixed wait, and this is the figure that says so: {wire}"
+        );
+        for absent in ["grab_ms", "ocr_ms", "mt_ms", "mt_load_ms", "mt_infer_ms"] {
+            assert!(
+                perf.get(absent).is_none(),
+                "a stage the run never finished is left off the row: {wire}"
+            );
+        }
+        assert!(
+            wire.get("text").is_none(),
+            "a run that read nothing carries no text facts, and zeroes would read as a blank screen: {wire}"
+        );
+    }
+
+    /// The gate is the environment variable, and a run either logs both clocks or
+    /// neither. Blank counts as unset because a value that names no file is the
+    /// same as no value; a gate that opened on whitespace would create a file
+    /// whose name is spaces in every session that exported an empty variable.
+    #[test]
+    fn the_log_gate_is_the_named_value_and_blank_counts_as_unset() {
+        assert!(
+            latency_log_path_from(None).is_none(),
+            "an unset variable names no file, so an ordinary session writes nothing at all"
+        );
+        assert!(latency_log_path_from(Some("")).is_none());
+        assert!(latency_log_path_from(Some("  \t \n ")).is_none());
+        assert_eq!(
+            latency_log_path_from(Some("  /tmp/goat-run.jsonl  ")).as_deref(),
+            Some(std::path::Path::new("/tmp/goat-run.jsonl")),
+            "a path is taken as written apart from the whitespace around it"
+        );
+    }
+
+    /// The gate decides whether a file exists at all, and an ordinary session must
+    /// leave the data directory as it found it — a row per capture would
+    /// otherwise grow without bound in a directory nothing prunes. This holds the
+    /// gate shut by naming no file rather than by touching the process
+    /// environment, which every test in this binary shares, and it writes through
+    /// both arms so the absence below is the gate's doing rather than a writer
+    /// that does nothing.
+    #[test]
+    fn a_gate_that_names_no_file_writes_no_row_to_it() {
+        let path =
+            std::env::temp_dir().join(format!("goat-latency-gate-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut capture = CaptureTiming::begin();
+        capture.mark(GRAB_ENTER_NS);
+        capture.mark(GRAB_EXIT_NS);
+        capture.finish(None);
+
+        for closed in [None, Some(""), Some("   ")] {
+            let opened = latency_log_path_from(closed);
+            assert!(
+                opened.is_none(),
+                "a gate naming no file leaves nowhere to write: {closed:?}"
+            );
+            assert!(
+                !path.exists(),
+                "a closed gate creates no file, so an ordinary session writes nothing: {}",
+                path.display()
+            );
+        }
+
+        let opened = latency_log_path_from(path.to_str()).expect("a named path opens the gate");
+        append_row_to(&opened, &capture).expect("the open gate writes");
+        assert!(
+            opened.exists(),
+            "the same row reaches the file once a gate names it: {}",
+            opened.display()
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The file is what an operator collects, so a run's row has to land on a line
+    /// of its own: a second run overwrites the first's row, or joins onto it, and
+    /// the artefact would then hold one run's figures under another's names.
+    #[test]
+    fn a_row_reaches_the_file_as_one_line_and_the_next_run_does_not_overwrite_it() {
+        let path =
+            std::env::temp_dir().join(format!("goat-latency-append-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut capture = CaptureTiming::begin();
+        capture.mark(GRAB_ENTER_NS);
+        capture.mark(GRAB_EXIT_NS);
+        capture.finish(None);
+        append_row_to(&path, &capture).expect("the first row is written");
+        append_row_to(&path, &capture).expect("the second row is written");
+
+        let written = std::fs::read_to_string(&path).expect("the collected file is readable");
+        assert_eq!(
+            written.lines().count(),
+            2,
+            "one line per run, rather than one file per run: {written}"
+        );
+        for line in written.lines() {
+            let row: serde_json::Value =
+                serde_json::from_str(line).expect("every line is a whole row of its own");
+            assert_eq!(
+                row["row_kind"], ROW_KIND_CAPTURE,
+                "the field a reader filters the file on survives the file: {row}"
+            );
+        }
+        assert!(
+            written.ends_with('\n'),
+            "a row without a trailing newline would join the next run onto it: {written}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A row may carry what was on screen only as a length and a fingerprint, and
+    /// that fingerprint is only useful if it is the FNV-1a-64 every other reader
+    /// of the same text computes. These are the published vectors for the
+    /// algorithm, so a change to the hash shows up as a change to the figures
+    /// rather than as captures that quietly stopped matching.
+    #[test]
+    fn the_text_fingerprint_is_the_published_fnv1a64() {
+        assert_eq!(fnv1a64(""), "cbf29ce484222325");
+        assert_eq!(fnv1a64("a"), "af63dc4c8601ec8c");
+        assert_eq!(fnv1a64("foobar"), "85944171f73967e8");
+        assert_eq!(fnv1a64("hello"), "a430d84680aabd0b");
     }
 
     /// The other branch is the one a packaged build lives in, and it is pinned
