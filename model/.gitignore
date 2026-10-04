@@ -12,6 +12,11 @@ data/*
 # Evaluation results and model artifacts
 results/*
 !results/.gitkeep
+# The derived evaluation outputs the report cites as measurements.
+# They are small, deterministic, and are the audit trail for every
+# figure the report quotes, so they are tracked rather than ignored.
+!results/derived/
+!results/derived/*.json
 *.onnx
 *.pt
 *.safetensors
