@@ -153,8 +153,17 @@ pub fn load_translator(
     Ok(translator)
 }
 
-pub fn run_translate(app: &tauri::AppHandle, text: &str) -> anyhow::Result<String> {
-    let translator = load_translator(app)?;
+/// Translates one string through a translator the caller is already holding.
+///
+/// The load is a separate call from this one because it is the larger half of
+/// the seam and is not translation: `load_translator` builds a translator on
+/// every call and nothing is held between captures, so a caller that wants to
+/// know what translating costs has to time the load and this apart itself. A
+/// single function that did both could only ever report the sum.
+pub fn run_translate_with(
+    translator: &ct2rs::Translator<ct2rs::tokenizers::auto::Tokenizer>,
+    text: &str,
+) -> anyhow::Result<String> {
     let sources = vec![text.to_string()];
     let target_prefixes = vec![vec![TRANSLATE_TARGET_LANG.to_string()]];
     let options = ct2rs::TranslationOptions::<String, String>::default();

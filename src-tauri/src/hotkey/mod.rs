@@ -100,8 +100,12 @@ pub fn dispatch(app: &AppHandle, action: Action) {
 /// is inside and answers the trigger with nothing.
 async fn capture_off_screen(app: &AppHandle) {
     let state = app.state::<AppState>();
+    // A hotkey capture is a whole capture, so it is measured as one: the row is
+    // opened here and closed by whichever pipeline reads the pixels, and the
+    // grab it holds is the same grab a button press would have paid.
+    let mut timing = crate::CaptureTiming::begin();
     let ticket = crate::CaptureTicket::claim(&crate::CAPTURE_GENERATION);
-    let image = match crate::grab_monitor(app, &state, ticket) {
+    let image = match crate::grab_monitor(app, &state, ticket, &mut timing) {
         Ok(image) => image,
         Err(e) => {
             if !ticket.is_current(&crate::CAPTURE_GENERATION) {
@@ -129,7 +133,7 @@ async fn capture_off_screen(app: &AppHandle) {
     // the time this returns the image to the caller. A run this trigger no longer
     // owns answers with nothing and publishes nothing, which is the whole of what
     // a superseded run is allowed to do.
-    if let Err(e) = crate::run_pipeline_with_image(app, &state, image, ticket).await {
+    if let Err(e) = crate::run_pipeline_with_image(app, &state, image, ticket, &mut timing).await {
         let message = format!("Reading the screenshot failed: {e}");
         report(app, &message);
         // The screenshot is already on screen by this point, so the read is the
