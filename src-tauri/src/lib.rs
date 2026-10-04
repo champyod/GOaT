@@ -130,13 +130,20 @@ fn failure_if_current(
 /// screenshot of GOaT.
 const GRAB_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// Takes the window off the screen and waits for it to actually be gone, so every
-/// grab in the app is taken the same way and none of them can photograph this
-/// app instead of the desktop behind it. The window stays on top of everything,
-/// so a grab taken while it is up is a screenshot of GOaT.
+/// Takes every window off the screen and waits for them to actually be gone, so
+/// every grab in the app is taken the same way and none of them can photograph
+/// this app instead of the desktop behind it. The windows stay on top of
+/// everything, so a grab taken while one is up is a screenshot of GOaT.
+///
+/// The windows that were on the screen are named back to the caller, because
+/// this is the only moment it is known: the grab is taken with the windows
+/// already hidden, so the set read afterwards is the set this put away. Only the
+/// windows read as visible are named, and every window is hidden either way, so
+/// a window this app could not read the state of still cannot end up in the
+/// screenshot.
 ///
 /// A refusal is reported rather than swallowed, because the grab that follows is
-/// then of this window and the user has no other way to know why.
+/// then of this app and the user has no other way to know why.
 ///
 /// The wait is a blocking sleep rather than an await so a grab can hold the lock
 /// that keeps two of them apart: a guard live across an await would make the
@@ -146,20 +153,25 @@ const GRAB_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 /// belongs to. It is a fixed cost every capture pays, so a grab that is slow for
 /// a reason of its own and a grab that is slow because of this cannot be told
 /// apart from the grab figure alone.
-pub(crate) fn clear_the_screen(app: &tauri::AppHandle, timing: &mut CaptureTiming) {
+pub(crate) fn clear_the_screen(app: &tauri::AppHandle, timing: &mut CaptureTiming) -> Vec<String> {
     use tauri::Manager;
-    if let Some(window) = app.get_webview_window("main")
-        && let Err(e) = window.hide()
-    {
-        report_error(
-            app,
-            "capture",
-            &format!("The window could not be hidden: {e}"),
-        );
+    let mut on_screen = Vec::new();
+    for (label, window) in app.webview_windows() {
+        if window.is_visible().unwrap_or(false) {
+            on_screen.push(label);
+        }
+        if let Err(e) = window.hide() {
+            report_error(
+                app,
+                "capture",
+                &format!("The window could not be hidden: {e}"),
+            );
+        }
     }
     timing.mark(GRAB_SETTLE_ENTER_NS);
     std::thread::sleep(GRAB_SETTLE);
     timing.mark(GRAB_SETTLE_EXIT_NS);
+    on_screen
 }
 
 fn default_select_hotkey() -> String {
@@ -1063,10 +1075,10 @@ pub(crate) async fn run_pipeline(
     run_pipeline_with_image(app, state, image, ticket, timing).await
 }
 
-/// The window off the screen, the pixels read, the window back — under one lock
-/// that nothing else may hold across those three steps.
+/// The windows off the screen, the pixels read, the same windows back — under one
+/// lock that nothing else may hold across those three steps.
 ///
-/// Two grabs running side by side would each put the window back while the other
+/// Two grabs running side by side would each put the windows back while the other
 /// was still reading, and the screenshot taken in between photographs GOaT rather
 /// than the desktop the user pointed at. Superseding a run does not spare it:
 /// both requests were accepted before either one read the screen, and a grab that
@@ -1078,9 +1090,9 @@ fn grab_exclusive(
     read: impl FnOnce() -> Result<capture::CapturedImage, String>,
 ) -> Result<capture::CapturedImage, String> {
     let _one_grab_at_a_time = hotkey::lock(&state.grab);
-    clear_the_screen(app, timing);
+    let on_screen = clear_the_screen(app, timing);
     let image = read();
-    restore_screen(app);
+    restore_screen(app, &on_screen);
     image
 }
 
@@ -1145,18 +1157,33 @@ pub(crate) fn grab_monitor(
     Ok(image)
 }
 
-/// Puts the window back once the pixels are in hand. A grab takes it off the
-/// screen on every platform, and a window that never comes back is a capture the
-/// user has no result to look at. It goes back before the pipeline publishes the
-/// screenshot, so the window returns on its bar and the picture arrives into a
-/// window that is already there.
+/// Puts back the windows that were on the screen when the pixels were read, and
+/// only those. A grab takes every window off the screen on every platform, and a
+/// window that never comes back is a capture the user has no result to look at.
+/// The bar goes back before the pipeline publishes the screenshot, so the window
+/// returns on its bar and the picture arrives into a window that is already
+/// there.
+///
+/// The set is the one `clear_the_screen` named rather than a list written here,
+/// so a grab cannot take a window the user had open down with it and leave the
+/// desktop as the capture found it. Only the bar is raised to the front among
+/// them: it is the window a capture is about, and the others are put back where
+/// they were rather than on top of the answer.
 #[cfg(desktop)]
-fn restore_screen(app: &tauri::AppHandle) {
-    show_main_window(app);
+fn restore_screen(app: &tauri::AppHandle, on_screen: &[String]) {
+    use tauri::Manager;
+    for label in on_screen {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.show();
+        }
+    }
+    if on_screen.iter().any(|label| label == "main") {
+        show_main_window(app);
+    }
 }
 
 #[cfg(not(desktop))]
-fn restore_screen(_app: &tauri::AppHandle) {}
+fn restore_screen(_app: &tauri::AppHandle, _on_screen: &[String]) {}
 
 #[tauri::command]
 async fn capture_region(
@@ -1393,14 +1420,19 @@ pub(crate) fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// The tray's menu: the bar, the shortcut window, and the way out. The shortcut
+/// window is here because a launch with an unbound trigger opens it on its own,
+/// and closing it leaves no other way back into it — a trigger has to be chosen
+/// before any capture can happen, and the trigger it is chosen in is this window.
 #[cfg(desktop)]
 fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
     let show_i = MenuItem::with_id(app, "show", "Show GOaT", true, None::<&str>)?;
+    let setup_i = MenuItem::with_id(app, "setup", "Setup...", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+    let menu = Menu::with_items(app, &[&show_i, &setup_i, &quit_i])?;
 
     let mut tray = TrayIconBuilder::with_id("main-tray")
         .tooltip("GOaT")
@@ -1408,6 +1440,7 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
+            "setup" => show_bind_setup(app),
             "quit" => app.exit(0),
             _ => {}
         })
