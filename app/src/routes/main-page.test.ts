@@ -633,3 +633,69 @@ describe('reading a region of the screenshot', () => {
     pending.resolve(null);
   });
 });
+
+/// One `record_frontend_perf` call as the harness records it: the argument object the
+/// page passed, holding that run's own stamps. Absent is not zero — a run that ended
+/// before either stamp had nothing to report.
+type PerfRow = {
+  marks: {
+    perfTimeOrigin: number;
+    perfEventReceivedMs: number | null;
+    perfDrawDoneMs: number | null;
+  };
+};
+
+/// A run this page started ends twice over: the backend publishes the result and ends
+/// the run, and the call the bar was awaiting then answers with the same result and
+/// ends it again. Only the first of those two exits writes the row, because the first
+/// one clears the stamps — a row written on both would sit in the file with nothing
+/// in it beside the row that says what the run cost, and a file of those is not a
+/// count of runs.
+describe('the render stamps a run writes', () => {
+  it('writes one row for a run that reaches its exit twice', async () => {
+    const runs = [deferred<ResultPayload | null>(), deferred<ResultPayload | null>()];
+    let handed = 0;
+    const harness = installTauriMock({ capture_primary: () => runs[handed++].promise });
+    render(Main);
+    await drain();
+
+    for (const [index, run] of runs.entries()) {
+      // Distinct per field, so the query below names the one field the run overwrote
+      // rather than finding two textareas that both happen to hold the same text.
+      const published = `run ${index + 1} published`;
+      const returned = `run ${index + 1} returned`;
+      const translation = (text: string): string => `${text} translated`;
+
+      await fireEvent.click(captureButton());
+      await screen.findByText('Capturing the screen.');
+
+      await harness.emit('capture-progress', {
+        phase: 'done',
+        payload: result({
+          ocr_text: published,
+          translated_text: translation(published)
+        })
+      });
+      await screen.findByDisplayValue(published);
+      expect(harness.argsOf('record_frontend_perf')).toHaveLength(index + 1);
+
+      // The call this page was awaiting answers after that, with text of its own, so
+      // the run provably reaches the exit a second time rather than the row count
+      // being one because the second exit never happened.
+      run.resolve(
+        result({ ocr_text: returned, translated_text: translation(returned) })
+      );
+      await screen.findByDisplayValue(returned);
+      expect(harness.argsOf('record_frontend_perf')).toHaveLength(index + 1);
+    }
+
+    // One row per run and not one per exit: two runs that each ended twice left two.
+    const rows = harness.argsOf('record_frontend_perf') as PerfRow[];
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.marks.perfTimeOrigin).toEqual(expect.any(Number));
+      expect(row.marks.perfEventReceivedMs).toEqual(expect.any(Number));
+      expect(row.marks.perfDrawDoneMs).toEqual(expect.any(Number));
+    }
+  });
+});
