@@ -9,6 +9,7 @@
   } from '@tauri-apps/api/window';
   import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import Camera from '@lucide/svelte/icons/camera';
+  import Crop from '@lucide/svelte/icons/crop';
   import ScanLine from '@lucide/svelte/icons/scan-line';
   import Menu from '@lucide/svelte/icons/menu';
   import X from '@lucide/svelte/icons/x';
@@ -831,10 +832,32 @@
     }
   }
 
-  function startSelect(): void {
-    if (!hasImage) {
-      return;
+  /// A region capture is a capture, so it takes the screen the trigger takes:
+  /// the backend raises the window over the monitor and answers with the event
+  /// this page already handles, which brings the drag surface up and reads what
+  /// is under it. It reads nothing from the picture already on screen — that is
+  /// the crop button's job, and pressing the two is asking for two different
+  /// things rather than one thing with two ways in.
+  ///
+  /// So this is reachable in every window state. An earlier bar had a single
+  /// control that meant this when there was no screenshot and cropped instead
+  /// when there was, which meant the press asked for a different capture
+  /// depending on what happened to be on screen, and a button the user had
+  /// already learned to press for a crop stopped doing that.
+  async function captureRegion(): Promise<void> {
+    try {
+      await invoke('enter_region_select');
+    } catch (e) {
+      reportError('window', `region select could not be started: ${String(e)}`);
     }
+  }
+
+  /// Arms a drag over the screenshot that is already on the canvas, which is cut
+  /// from the same pixels it was drawn from. There is nothing to drag over
+  /// before the first capture, so the button this arms is disabled until a
+  /// screenshot exists rather than swallowing the press and leaving the user
+  /// with a control that looks live and does nothing.
+  function startCrop(): void {
     selStart = null;
     selRect = null;
     selecting = true;
@@ -1014,7 +1037,7 @@
     </div>
   {:else}
     <div class="bar">
-      <!-- Order contract: capture, region, grip, menu, close. The grip stays
+      <!-- Order contract: capture, region, crop, grip, menu, close. The grip stays
            between the leading actions and the trailing ones, so a press on a
            button is never read as a window drag. -->
       <div class="actions">
@@ -1029,12 +1052,23 @@
         </button>
         <button
           class="icon"
-          onclick={startSelect}
+          onclick={captureRegion}
           disabled={isBusy}
-          aria-label="Select region"
-          title="Select region"
+          aria-label="Capture region"
+          title="Capture region"
         >
           <ScanLine size={ICON_SIZE} />
+        </button>
+        <button
+          class="icon"
+          onclick={startCrop}
+          disabled={isBusy || !hasImage}
+          aria-label="Crop region"
+          title={hasImage
+            ? 'Crop region'
+            : 'Crop region — capture a screenshot first'}
+        >
+          <Crop size={ICON_SIZE} />
         </button>
       </div>
       <div class="grip" data-tauri-drag-region aria-hidden="true"></div>

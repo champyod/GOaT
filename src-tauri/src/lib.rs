@@ -852,6 +852,16 @@ pub(crate) fn enter_screen_select(app: &tauri::AppHandle) {
     let _ = app.emit("region-select", ());
 }
 
+/// The same entry a trigger takes, opened to the window as well. The bar's region
+/// capture button is one of two region controls, and it is the only one that can
+/// start a selection from a bar with no screenshot on it — so a bar that had a
+/// single button reached nothing when the crop was the one thing it could not do.
+#[cfg(desktop)]
+#[tauri::command]
+fn enter_region_select(app: tauri::AppHandle) {
+    enter_screen_select(&app);
+}
+
 /// Whether at least one trigger is left without one. The status line is the one
 /// place a backend records that, so it decides whether anything is unbound.
 #[cfg(desktop)]
@@ -1154,6 +1164,8 @@ pub fn run() {
             capture_primary,
             capture_region,
             ocr_selection,
+            #[cfg(desktop)]
+            enter_region_select,
             get_monitor,
             set_monitor,
             os_platform,

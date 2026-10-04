@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
+import { emit } from '@tauri-apps/api/event';
 import type { LogicalPosition, Position } from '@tauri-apps/api/dpi';
 import { describe, expect, it } from 'vitest';
 import Main from './+page.svelte';
@@ -61,6 +62,19 @@ function captureButton(): HTMLButtonElement {
   return screen.getByLabelText<HTMLButtonElement>('Capture');
 }
 
+/// Reads the screen again for a region, through the backend entry the region
+/// trigger uses. Kept apart from the crop button because pressing the two asks
+/// for two different captures.
+function captureRegionButton(): HTMLButtonElement {
+  return screen.getByLabelText<HTMLButtonElement>('Capture region');
+}
+
+/// Reads a region out of the screenshot already on the canvas. Nothing to cut
+/// from before the first capture, so the bar disables this until there is one.
+function cropButton(): HTMLButtonElement {
+  return screen.getByLabelText<HTMLButtonElement>('Crop region');
+}
+
 function mustFind<T extends Element>(root: ParentNode, selector: string): T {
   const found = root.querySelector<T>(selector);
   if (found === null) throw new Error(`the page rendered no ${selector}`);
@@ -102,7 +116,7 @@ async function armRegionSelection(): Promise<Element> {
   });
   stubBox(shot, SHOT_BOX);
   stubBox(mustFind<HTMLCanvasElement>(shot, 'canvas'), SHOT_BOX);
-  await fireEvent.click(screen.getByLabelText<HTMLButtonElement>('Select region'));
+  await fireEvent.click(cropButton());
   return shot;
 }
 
@@ -278,6 +292,117 @@ describe('placing the bar', () => {
     offset.resolve(120);
     await drain();
     expect(placedAt(harness)).toEqual([{ x: 810, y: 120 }]);
+  });
+});
+
+/// The bar's two region controls are two different requests, not one control
+/// with two behaviours. Capturing a region reads the screen again through the
+/// same backend entry the region trigger uses, and is reachable in every window
+/// state. Cropping reads the screenshot already on the canvas, and there is
+/// nothing to cut from before the first capture — so the bar says so by
+/// disabling the control rather than taking a press and doing nothing with it.
+///
+/// The bar used to be a single button that picked between the two depending on
+/// whether a screenshot happened to be on screen, which meant the same press
+/// asked for two different captures and a button the user had learned to press
+/// for a crop silently stopped doing that once it had one.
+describe('the region controls on the bar', () => {
+  it('asks the backend for a region capture on a bar with no screenshot', async () => {
+    const harness = installTauriMock({ enter_region_select: null });
+    render(Main);
+    await drain();
+
+    await fireEvent.click(captureRegionButton());
+    await drain();
+
+    expect(harness.argsOf('enter_region_select')).toHaveLength(1);
+  });
+
+  /// The screenshot on the bar is the crop's business alone. Leaving it on the
+  /// capture button is how one press came to mean two different captures.
+  it('asks the backend for a region capture with a screenshot on the bar', async () => {
+    const harness = installTauriMock({
+      capture_primary: () => result(),
+      enter_region_select: null
+    });
+    render(Main);
+    await drain();
+
+    await fireEvent.click(captureButton());
+    await screen.findByText('Capture complete.');
+    await fireEvent.click(captureRegionButton());
+    await drain();
+
+    expect(harness.argsOf('enter_region_select')).toHaveLength(1);
+  });
+
+  it('raises the screen overlay from the entry the capture button asked for', async () => {
+    installTauriMock({
+      enter_region_select: () => {
+        void emit('region-select', null);
+      }
+    });
+    render(Main);
+    await drain();
+
+    await fireEvent.click(captureRegionButton());
+
+    expect(
+      await screen.findByRole('application', {
+        name: 'Drag to select a screen region'
+      })
+    ).toBeDefined();
+  });
+
+  it('records a region capture the backend refuses rather than dropping the press', async () => {
+    const harness = installTauriMock({
+      enter_region_select: () => {
+        throw new Error('the desktop refused the window change');
+      }
+    });
+    render(Main);
+    await drain();
+
+    await fireEvent.click(captureRegionButton());
+    await drain();
+
+    expect(harness.argsOf('report_frontend_error')).toEqual([
+      {
+        source: 'window',
+        message: expect.stringContaining('region select could not be started')
+      }
+    ]);
+  });
+
+  /// The disabled state is the whole contract here: a control that looks live
+  /// and answers a press with nothing is the thing this replaced, so the button
+  /// has to say it cannot be pressed, and the title has to say why.
+  it('leaves the crop disabled on a bar with no screenshot to cut from', async () => {
+    installTauriMock();
+    render(Main);
+    await drain();
+
+    expect(cropButton().disabled).toBe(true);
+    expect(cropButton().title).toBe('Crop region — capture a screenshot first');
+  });
+
+  it('arms the crop over the screenshot once there is one', async () => {
+    const harness = installTauriMock({
+      capture_primary: () => result(),
+      enter_region_select: null
+    });
+    render(Main);
+    await drain();
+
+    await fireEvent.click(captureButton());
+    await screen.findByText('Capture complete.');
+
+    expect(cropButton().disabled).toBe(false);
+    expect(cropButton().title).toBe('Crop region');
+    await fireEvent.click(cropButton());
+
+    expect(harness.argsOf('enter_region_select')).toHaveLength(0);
+    expect(screen.getByText('Drag to select. Esc cancels.')).toBeDefined();
   });
 });
 
