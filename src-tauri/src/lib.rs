@@ -7,7 +7,7 @@ mod models;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{MutexGuard, OnceLock};
+use std::sync::{Arc, MutexGuard, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
@@ -956,14 +956,16 @@ fn append_row_to<T: serde::Serialize>(path: &std::path::Path, row: &T) -> Result
     append_line(path, &encoded).map_err(|e| e.to_string())
 }
 
-/// The file the rows go to, or nothing at all when no file was named. Blank
-/// counts as unset: a value that names no file is the same as no value, and an
-/// operator who exported an empty variable has not asked for a log.
+/// A named log path, or nothing at all when no path was named. Blank counts as
+/// unset: a value that names no file is the same as no value, and an operator who
+/// exported an empty variable has not asked for a log. One gate serves both files
+/// so that a measurement run records the launch and the captures on one set of
+/// terms rather than on two.
 ///
 /// The named value is an argument rather than read from the environment here, so
 /// the gate can be held by a test. The process's environment is shared by every
 /// test in the binary, and a gate proved by setting it would be proved by a race.
-fn latency_log_path_from(named: Option<&str>) -> Option<std::path::PathBuf> {
+fn named_log_path_from(named: Option<&str>) -> Option<std::path::PathBuf> {
     let named = named?.trim();
     if named.is_empty() {
         return None;
@@ -972,7 +974,7 @@ fn latency_log_path_from(named: Option<&str>) -> Option<std::path::PathBuf> {
 }
 
 fn latency_log_path() -> Option<std::path::PathBuf> {
-    latency_log_path_from(std::env::var(LATENCY_LOG_ENV).ok().as_deref())
+    named_log_path_from(std::env::var(LATENCY_LOG_ENV).ok().as_deref())
 }
 
 /// What the window's own clock saw, as the window sends it.
@@ -1051,6 +1053,176 @@ fn append_line(path: &std::path::Path, line: &str) -> std::io::Result<()> {
         .open(path)?;
     file.write_all(line.as_bytes())?;
     file.write_all(b"\n")
+}
+
+/// The environment variable naming the file one JSON object of launch stamps is
+/// written to. It gates on the same terms as `LATENCY_LOG_ENV`: nothing is
+/// written unless a file is named, so an ordinary session leaves the disk as it
+/// found it.
+const BOOT_STAMPS_ENV: &str = "GOAT_BOOT_STAMPS";
+
+/// Which of this app's timing files this one is, carried in the file rather than
+/// inferred from which keys happen to be on it. A reader that opened the wrong
+/// file would otherwise find nothing to complain about.
+const BOOT_STAMP_ROW_KIND: &str = "boot";
+
+/// What a launch's stamps are and are not, written into every file so a figure
+/// read out of one cannot be restated as something it is not.
+///
+/// The two clocks are kept apart deliberately. The wall fields are Unix-epoch
+/// milliseconds, the only statement here that any process outside this one can
+/// line up against anything. The monotonic fields are nanoseconds from this
+/// launch's first stamp, and they order the seams without trusting a wall clock
+/// an operator or an NTP daemon can step part-way through a launch.
+///
+/// No field here is on the kernel's `CLOCK_BOOTTIME`. That is the timeline a cold
+/// start is measured on, and this process cannot place itself on it: it would be
+/// claiming a figure it has no way to verify. Reducing a wall reading onto the
+/// boot timeline is the harness's work, by `btime`, and the seam it produced is
+/// marked derived there.
+const BOOT_STAMPS_SCOPE: &str = "one launch per file, written once when the main window's page finishes loading, which is the endpoint; \
+every *_wall_unix_ms is the wall clock in Unix-epoch milliseconds at that seam, and the reading harness reduces those onto the kernel's boot timeline by subtracting btime; \
+ready is the app's own event loop reporting Ready and page_loaded is the main window's page finishing to load, so a launch that is stopped by an operator before either has no instant for it; \
+t_app_mono_ns is zero and every *_mono_ns is nanoseconds from it, which is the first statement of run, so the monotonic fields order the seams without trusting a wall clock; \
+no field here is on CLOCK_BOOTTIME and no two readings of different clocks are ever subtracted; \
+a seam the launch never reached is left off rather than written as zero";
+
+/// One launch's own seams, as the file the cold-start harness reads.
+///
+/// The three seams are the ones a launch produces on its own: it started, the app
+/// reported its event loop up, and the main window's page finished loading. What
+/// follows the last of those needs something from an operator — a trigger, a
+/// tray click, a capture — and an interval that ends on what the operator did
+/// next is not a launch.
+///
+/// The two later seams are optional because a launch that never reached one has
+/// no instant for it, and zero is an instant rather than the absence of one.
+#[derive(serde::Serialize, Clone)]
+struct BootStamps {
+    row_kind: &'static str,
+    boot_stamps_scope: &'static str,
+    app_start_wall_unix_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ready_wall_unix_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_loaded_wall_unix_ms: Option<u64>,
+    /// Nanoseconds from this launch's own first stamp, which is always zero. It
+    /// is on the row so the offsets beside it have a stated origin rather than
+    /// an implied one.
+    t_app_mono_ns: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ready_mono_ns: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_loaded_mono_ns: Option<u64>,
+    /// The instant the offsets are measured from. It is the origin rather than a
+    /// figure, so it does not go onto the wire.
+    #[serde(skip)]
+    origin: Instant,
+}
+
+impl BootStamps {
+    /// Opens a launch. This is the first statement of `run`, so the wall clock is
+    /// read before a plugin, a window or an asset has been touched, and every
+    /// monotonic stamp after it is an offset from here rather than from whenever
+    /// the row happened to be written.
+    fn begin() -> Self {
+        let at = Instant::now();
+        Self {
+            row_kind: BOOT_STAMP_ROW_KIND,
+            boot_stamps_scope: BOOT_STAMPS_SCOPE,
+            app_start_wall_unix_ms: wall_unix_ms(),
+            t_app_mono_ns: 0,
+            ready_wall_unix_ms: None,
+            page_loaded_wall_unix_ms: None,
+            ready_mono_ns: None,
+            page_loaded_mono_ns: None,
+            origin: at,
+        }
+    }
+
+    /// Stamps the app reporting its event loop up. A seam reached more than once
+    /// keeps the reading it was first given: `Ready` names the start of this
+    /// launch's event loop, and a later delivery is not a later launch.
+    fn mark_ready(&mut self) {
+        let at = self.mono_ns();
+        let wall = wall_unix_ms();
+        self.ready_mono_ns.get_or_insert(at);
+        self.ready_wall_unix_ms.get_or_insert(wall);
+    }
+
+    /// Stamps the endpoint: the main window's page has finished loading. The same
+    /// first-reading rule applies, and here it is what keeps a reload — a dev
+    /// server reconnect, a navigation — from being written down as the cold
+    /// start's endpoint.
+    fn mark_page_loaded(&mut self) {
+        let at = self.mono_ns();
+        let wall = wall_unix_ms();
+        self.page_loaded_mono_ns.get_or_insert(at);
+        self.page_loaded_wall_unix_ms.get_or_insert(wall);
+    }
+
+    /// Nanoseconds since this launch opened, through the same saturation as every
+    /// other monotonic figure in this file, so a reading that cannot be made gives
+    /// the largest value rather than a negative one.
+    fn mono_ns(&self) -> u64 {
+        let at = Instant::now();
+        u64::try_from(at.saturating_duration_since(self.origin).as_nanos()).unwrap_or(u64::MAX)
+    }
+}
+
+/// Stamps the seam between a launch opening and the app reporting its event loop
+/// up. It is a function of its own so the delivery site carries no state and the
+/// marking has exactly one place to live.
+fn stamp_ready(boot: &Mutex<BootStamps>) {
+    hotkey::lock(boot).mark_ready();
+}
+
+/// Stamps the endpoint and writes the row, so a launch that reached its endpoint
+/// leaves a file behind and a launch that did not leaves none. The row is copied
+/// out from under the lock so no writer holds it across a write to disk.
+fn stamp_page_loaded(boot: &Mutex<BootStamps>) {
+    let row = {
+        let mut stamps = hotkey::lock(boot);
+        stamps.mark_page_loaded();
+        stamps.clone()
+    };
+    write_boot_stamps(&row);
+}
+
+/// Writes the launch's stamps to the file `BOOT_STAMPS_ENV` names, and writes
+/// nothing at all when it is unset.
+///
+/// The row is written once, at the endpoint, rather than rewritten at each seam
+/// as it is stamped: a reader polls for the file and reads it when the file
+/// appears, so one written early and never replaced would report the endpoint as
+/// absent for good. A launch that never reached the endpoint leaves no file at
+/// all, which the harness records as a run that did not finish rather than as a
+/// run whose endpoint cost nothing.
+fn write_boot_stamps(stamps: &BootStamps) {
+    let Some(path) = boot_stamps_path() else {
+        return;
+    };
+    if let Err(reason) = write_boot_stamps_to(&path, stamps) {
+        eprintln!(
+            "GOaT: the launch stamps were neither encoded nor written to {} ({reason})",
+            path.display()
+        );
+    }
+}
+
+/// One JSON object at one path, truncating rather than appending. This file holds
+/// one launch, and a second run appending to it would leave the first run's
+/// figures under the second's names.
+fn write_boot_stamps_to(path: &std::path::Path, stamps: &BootStamps) -> Result<(), String> {
+    let encoded = serde_json::to_string(stamps).map_err(|e| e.to_string())?;
+    std::fs::write(path, encoded).map_err(|e| e.to_string())
+}
+
+/// The file the launch stamps go to, or nothing at all when no file was named.
+/// The same gate the latency log answers to, so a measurement run records both
+/// the launch and the captures it went on to make, or neither.
+fn boot_stamps_path() -> Option<std::path::PathBuf> {
+    named_log_path_from(std::env::var(BOOT_STAMPS_ENV).ok().as_deref())
 }
 
 pub(crate) async fn run_pipeline(
@@ -1702,6 +1874,13 @@ fn set_bar_top_offset(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Stamped from the first statement of the entry point, because that is the
+    // earliest instant in this process anything here can observe. Reading it
+    // after a plugin, a window or an asset would put the start of the launch
+    // somewhere inside the launch.
+    let boot = Arc::new(Mutex::new(BootStamps::begin()));
+    let boot_at_page_load = Arc::clone(&boot);
+    let boot_at_ready = Arc::clone(&boot);
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_autostart::init(
@@ -1738,6 +1917,15 @@ pub fn run() {
                 watch_unbound_triggers(app.handle());
             }
             Ok(())
+        })
+        .on_page_load(move |webview, payload| {
+            use tauri::webview::PageLoadEvent;
+            // Only the main window's own load ends a launch. The menu, setup and
+            // errors windows load pages of their own, and whichever of the four
+            // finished first would otherwise be recorded as the endpoint.
+            if webview.label() == "main" && payload.event() == PageLoadEvent::Finished {
+                stamp_page_loaded(&boot_at_page_load);
+            }
         })
         .on_window_event(|window, event| {
             // The main window is the app itself, so closing it only hides it. The
@@ -1797,8 +1985,16 @@ pub fn run() {
             report_frontend_error,
             record_frontend_perf
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // The event loop reports itself up once the launch has built its windows
+        // and entered the loop, which is the seam between the process starting and
+        // the app being able to answer anything asked of it.
+        .build(tauri::generate_context!())
+        .expect("error while building the tauri application")
+        .run(move |_app, event| {
+            if let tauri::RunEvent::Ready = event {
+                stamp_ready(&boot_at_ready);
+            }
+        });
 }
 
 #[cfg(test)]
@@ -2233,13 +2429,13 @@ mod tests {
     #[test]
     fn the_log_gate_is_the_named_value_and_blank_counts_as_unset() {
         assert!(
-            latency_log_path_from(None).is_none(),
+            named_log_path_from(None).is_none(),
             "an unset variable names no file, so an ordinary session writes nothing at all"
         );
-        assert!(latency_log_path_from(Some("")).is_none());
-        assert!(latency_log_path_from(Some("  \t \n ")).is_none());
+        assert!(named_log_path_from(Some("")).is_none());
+        assert!(named_log_path_from(Some("  \t \n ")).is_none());
         assert_eq!(
-            latency_log_path_from(Some("  /tmp/goat-run.jsonl  ")).as_deref(),
+            named_log_path_from(Some("  /tmp/goat-run.jsonl  ")).as_deref(),
             Some(std::path::Path::new("/tmp/goat-run.jsonl")),
             "a path is taken as written apart from the whitespace around it"
         );
@@ -2263,7 +2459,7 @@ mod tests {
         capture.finish(None);
 
         for closed in [None, Some(""), Some("   ")] {
-            let opened = latency_log_path_from(closed);
+            let opened = named_log_path_from(closed);
             assert!(
                 opened.is_none(),
                 "a gate naming no file leaves nowhere to write: {closed:?}"
@@ -2275,7 +2471,7 @@ mod tests {
             );
         }
 
-        let opened = latency_log_path_from(path.to_str()).expect("a named path opens the gate");
+        let opened = named_log_path_from(path.to_str()).expect("a named path opens the gate");
         append_row_to(&opened, &capture).expect("the open gate writes");
         assert!(
             opened.exists(),
@@ -2283,6 +2479,168 @@ mod tests {
             opened.display()
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The reader looks each seam up under a fixed name and reports one it cannot
+    /// find as a seam the launch never reached, so a field renamed on this side is
+    /// a launch that reached it being recorded as one that did not. The names are
+    /// therefore pinned here against the ones the harness reads.
+    #[test]
+    fn the_boot_stamps_carry_exactly_the_seam_names_the_harness_reads() {
+        let mut stamps = BootStamps::begin();
+        stamps.mark_ready();
+        stamps.mark_page_loaded();
+
+        let wire = serde_json::to_value(&stamps).expect("a stamped launch encodes");
+        assert_eq!(wire["row_kind"], BOOT_STAMP_ROW_KIND);
+        for seam in [
+            "app_start_wall_unix_ms",
+            "ready_wall_unix_ms",
+            "page_loaded_wall_unix_ms",
+        ] {
+            assert!(
+                wire[seam].is_u64(),
+                "the reader looks the seam up under this name, so it must be on the row: {wire}"
+            );
+        }
+        for absent in [
+            "app_start_boottime_s",
+            "ready_boottime_s",
+            "page_loaded_boottime_s",
+        ] {
+            assert!(
+                wire.get(absent).is_none(),
+                "this process never reads the kernel's boot clock, so it writes no figure on one: \
+                {wire}"
+            );
+        }
+    }
+
+    /// A launch that was stopped before a seam reached it has no instant for that
+    /// seam, and zero is an instant rather than the absence of one: written as 0
+    /// it would read as a seam reached at the epoch, which no launch does.
+    #[test]
+    fn a_seam_the_launch_never_reached_is_left_off_the_row() {
+        let stamps = BootStamps::begin();
+
+        let wire = serde_json::to_value(&stamps).expect("a launch that has not finished encodes");
+        assert!(
+            wire["app_start_wall_unix_ms"].is_u64(),
+            "the start is stamped before anything else can fail: {wire}"
+        );
+        for absent in [
+            "ready_wall_unix_ms",
+            "page_loaded_wall_unix_ms",
+            "ready_mono_ns",
+            "page_loaded_mono_ns",
+        ] {
+            assert!(
+                wire.get(absent).is_none(),
+                "a seam that was never stamped is left off rather than written as zero: {wire}"
+            );
+        }
+    }
+
+    /// A main window that reloads finishes loading again — a dev server
+    /// reconnect, a navigation — and the second of those readings is a warm start
+    /// under a different name. The first reading is the one a cold start is made
+    /// of, so it is the one that survives.
+    #[test]
+    fn a_seam_reached_twice_keeps_the_reading_it_was_first_given() {
+        let mut stamps = BootStamps::begin();
+        stamps.mark_page_loaded();
+        let first = serde_json::to_value(&stamps).expect("the launch encodes");
+
+        stamps.mark_page_loaded();
+        stamps.mark_ready();
+        let second = serde_json::to_value(&stamps).expect("the reloaded launch encodes");
+
+        assert_eq!(
+            second["page_loaded_wall_unix_ms"], first["page_loaded_wall_unix_ms"],
+            "the second load is not the endpoint a cold start is measured to: {second}"
+        );
+        assert_eq!(second["page_loaded_mono_ns"], first["page_loaded_mono_ns"]);
+        assert!(
+            second["ready_wall_unix_ms"].is_u64(),
+            "a seam reached after the endpoint is recorded in its own right: {second}"
+        );
+    }
+
+    /// The gate decides whether the file exists at all, and an ordinary session
+    /// must leave the disk as it found it. This holds it shut by naming no file
+    /// rather than by touching the process environment, which every test in this
+    /// binary shares, and it writes through both arms so the absence below is the
+    /// gate's doing rather than a writer that does nothing. The reader parses the
+    /// file as one JSON object and nothing else, which is why a second launch has
+    /// to replace the first rather than join onto it.
+    #[test]
+    fn the_launch_stamps_reach_the_file_only_when_a_gate_names_it() {
+        let path =
+            std::env::temp_dir().join(format!("goat-boot-stamps-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut stamps = BootStamps::begin();
+        stamps.mark_ready();
+        stamps.mark_page_loaded();
+
+        for closed in [None, Some(""), Some("   ")] {
+            let opened = named_log_path_from(closed);
+            assert!(
+                opened.is_none(),
+                "a gate naming no file leaves nowhere to write: {closed:?}"
+            );
+            assert!(
+                !path.exists(),
+                "a closed gate creates no file, so an ordinary session writes nothing: {}",
+                path.display()
+            );
+        }
+
+        let opened = named_log_path_from(path.to_str()).expect("a named path opens the gate");
+        write_boot_stamps_to(&opened, &stamps).expect("the first launch writes");
+        write_boot_stamps_to(&opened, &stamps).expect("a second launch replaces the first");
+
+        let written = std::fs::read_to_string(&path).expect("the collected file is readable");
+        assert_eq!(
+            written.lines().count(),
+            1,
+            "one object for one launch, rather than a line per seam: {written}"
+        );
+        let row: serde_json::Value = serde_json::from_str(&written)
+            .expect("the reader parses this file as one object and nothing else");
+        assert_eq!(row["row_kind"], BOOT_STAMP_ROW_KIND);
+        assert!(
+            row["page_loaded_wall_unix_ms"].is_u64(),
+            "the endpoint is on the row the reader waits for: {row}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The monotonic fields exist so the seams can be ordered by something this
+    /// process controls, which the wall clock cannot be: a clock stepped part-way
+    /// through a launch moves the wall readings against each other and leaves the
+    /// offsets as they were. They are offsets from this launch's own start, so the
+    /// difference between two of them is the time between those two seams.
+    #[test]
+    fn the_monotonic_offsets_are_measured_from_this_launchs_own_start() {
+        let mut stamps = BootStamps::begin();
+        assert_eq!(
+            stamps.t_app_mono_ns, 0,
+            "the origin is the launch's own first statement, so it is zero by construction"
+        );
+
+        stamps.mark_ready();
+        let ready_mono_ns = stamps.ready_mono_ns.expect("the seam was stamped");
+        stamps.mark_page_loaded();
+        let page_loaded_mono_ns = stamps.page_loaded_mono_ns.expect("the seam was stamped");
+
+        assert!(
+            ready_mono_ns <= page_loaded_mono_ns,
+            "the offsets never go backwards: {ready_mono_ns} then {page_loaded_mono_ns}"
+        );
+        assert!(
+            stamps.page_loaded_wall_unix_ms >= stamps.ready_wall_unix_ms,
+            "the wall readings move with the monotonic ones on any clock that has not been stepped"
+        );
     }
 
     /// The file is what an operator collects, so a run's row has to land on a line
