@@ -55,7 +55,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libpipewire-0.3-dev
         if: matrix.platform == 'ubuntu-22.04'
 
       - name: Regenerate icons
@@ -92,6 +92,13 @@ jobs:
         run: |
           pip install -q huggingface_hub
           python -m huggingface_hub.cli.hf download CCYod/GOaT-nllb-1.3B-ct2-int8 --local-dir models/nllb-200-distilled-1.3B-ct2-int8
+
+      # beforeBundleCommand is too late: the goat crate build script resolves the
+      # `resources` bundle key while compiling, so staging has to be a step of its
+      # own ahead of the build. cwd is the repo root, same as beforeBundleCommand's.
+      - name: Stage models for bundling
+        shell: bash
+        run: bash tools/bundle-resources.sh
 
       - uses: tauri-apps/tauri-action@v0
         env:
