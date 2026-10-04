@@ -1,6 +1,6 @@
 {
   "name": "goat",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Global OCR and Translator - NLLB translation, Linux KDE Wayland compatible",
   "private": true,
   "scripts": {
