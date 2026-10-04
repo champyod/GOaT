@@ -142,8 +142,11 @@ jobs:
       # exist on a fresh checkout, so the bundler fails on them. Emptying
       # resources keeps this a compile-and-bundle-shaped check; the real bundle
       # is release.yml's job, which fetches the model and stages it ahead of the
-      # release build.
+      # release build. beforeBundleCommand runs before the config merge matters,
+      # so it needs GOAT_SKIP_MODEL_STAGE to accept that same decision and skip
+      # staging instead of exiting 1 on the missing weights.
       - name: Build Tauri app
         env:
           TAURI_CONFIG: '{"bundle":{"resources":[]}}'
+          GOAT_SKIP_MODEL_STAGE: '1'
         run: bun run tauri build
