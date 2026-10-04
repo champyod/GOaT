@@ -123,6 +123,14 @@
   let ocrText = $state('');
   let translatedText = $state('');
   let hasImage = $state(false);
+  /// The screenshot of the run in flight has not reached the canvas. The frame
+  /// still on the canvas belongs to the run before this one, and the backend
+  /// brings the window back before it publishes the pixels of the new one — so
+  /// without this the window answers a run with the capture the user was already
+  /// looking at. It is separate from `phase` because the screenshot is handed
+  /// over before the read is announced: a run that fails after the frame landed
+  /// has a picture to show and no read to wait for.
+  let awaitingFrame = $state(false);
   let monitors = $state<MonitorInfo[]>([]);
   let monitor = $state(0);
   let barTopOffset = $state(FALLBACK_BAR_TOP_OFFSET);
@@ -294,6 +302,7 @@
       hasImage = true;
       await tick();
       draw(result.image);
+      awaitingFrame = false;
       imgSize = { width: result.image.width, height: result.image.height };
       // A trigger publishes the same result as a button does and knows no offset
       // for it, so this is a whole screen unless the caller that started the run
@@ -313,9 +322,12 @@
   /// The one exit every capture run takes. A result applied, an `invoke` that
   /// rejected and a failure the backend published all end here, so the fields
   /// are never left covered over and the bar is never left holding a run that is
-  /// over.
+  /// over. The screenshot is uncovered here too: a run that ended without
+  /// publishing a frame of its own has none to wait for, and leaving the cover
+  /// up over the last capture the user did get would be a window they cannot use.
   function settle(outcome: 'done' | 'error'): void {
     phase = outcome;
+    awaitingFrame = false;
   }
 
   /// A run that failed, whatever told this page so: a rejected call of its own
@@ -342,6 +354,7 @@
   ): Promise<void> {
     if (isBusy) return;
     phase = 'capturing';
+    awaitingFrame = true;
     try {
       const result = await invoke<ResultPayload>(command, args);
       await applyResult(result, origin);
@@ -368,6 +381,7 @@
       fail('capture', String(e));
       return;
     }
+    awaitingFrame = false;
     imgSize = { width: image.width, height: image.height };
     selOffset = { x: 0, y: 0 };
   }
@@ -375,11 +389,21 @@
   /// The whole of a capture, as the one message the backend sends it on. The
   /// phase is set before the picture or the text that goes under the covers
   /// arrives, so a cover is never up after what it was covering has landed.
+  ///
+  /// The screenshot is the first message a run started by a trigger ever sends,
+  /// and it is the only one that can take the cover off: the window comes back
+  /// on the screen before this arrives, and the cover is what it finds instead of
+  /// the capture it was raised for. A step that carries no image of its own
+  /// leaves the cover up, so a run that never says what it grabbed cannot take
+  /// it down with the text of the step after it.
   function onCaptureProgress(progress: CaptureProgress): void {
     switch (progress.phase) {
       case 'reading':
         phase = 'reading';
-        if (progress.image) void drawImage(progress.image);
+        if (progress.image) {
+          awaitingFrame = true;
+          void drawImage(progress.image);
+        }
         return;
       case 'translating':
         phase = 'translating';
@@ -1095,7 +1119,7 @@
     {#if hasImage}
     <div class="body" bind:this={bodyEl}>
       <div class="content" bind:this={contentEl}>
-        <section class="shot">
+        <section class="shot" aria-busy={awaitingFrame}>
           <h2>Screenshot</h2>
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
             Drag surface over the screenshot; Esc to cancel is on window keydown. -->
@@ -1109,6 +1133,17 @@
             onmouseup={onSelUp}
           >
             <canvas bind:this={canvasEl}></canvas>
+            <!-- The layer rather than a swapped-out canvas: the drag surface and
+                 the window size are measured against this element, so replacing
+                 it to change what it shows would move both. The frame under it
+                 is the capture the run before this one left, which is exactly
+                 what must not be on screen while this one is being taken. -->
+            {#if awaitingFrame}
+              <div class="shot-loading" aria-hidden="true">
+                <span class="field-spinner"></span>
+                <span>Capturing…</span>
+              </div>
+            {/if}
             {#if selRect}
               <div
                 class="selrect"
@@ -1437,10 +1472,19 @@
   }
 
   /* The wash is the darkest one in the window and the ring sits in the middle of
-     it, so the text still under the layer is plainly not what is being read.
-     `role="status"` on the container is what has the label read out, and the
-     ring is decoration as far as anything listening is concerned. */
-  .field-loading {
+     it, so what is still under the layer is plainly not what is being read. The
+     covers are hidden from a screen reader because the phase says the whole of a
+     run in one place, and the ring is decoration as far as anything listening is
+     concerned.
+
+     Two of them are the two text fields and one is the screenshot: the image
+     under the last of those is the capture the run before this one left, which
+     is exactly as much not what is being read as the text under the other two.
+     The screenshot shares this one rule rather than carrying a second set of
+     numbers, and shares `.field-spinner` with them, so a window that is told to
+     stop animating stops every ring at once. */
+  .field-loading,
+  .shot-loading {
     position: absolute;
     inset: 0;
     z-index: 1;
@@ -1489,18 +1533,21 @@
     margin-bottom: 0.4rem;
   }
 
+  /* The cover is positioned against this box rather than the canvas, so it
+     holds the frame's own border under it and covers the picture edge to edge
+     instead of stopping at the border. */
+  .shotwrap {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+  }
+
   .shot canvas {
     width: 100%;
     height: auto;
     display: block;
     border: 1px solid rgba(255, 255, 255, 0.3);
     background: rgba(0, 0, 0, 0.3);
-  }
-
-  .shotwrap {
-    position: relative;
-    display: inline-block;
-    max-width: 100%;
   }
 
   .shotwrap.armed {

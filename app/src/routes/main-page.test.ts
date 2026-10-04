@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { emit } from '@tauri-apps/api/event';
 import type { LogicalPosition, Position } from '@tauri-apps/api/dpi';
 import { describe, expect, it } from 'vitest';
@@ -17,6 +17,10 @@ const IMAGE = {
   rgba: new Array(200 * 200 * 4).fill(255)
 };
 const IMAGE_BYTES = 200 * 200 * 4;
+/// A second screenshot of its own size and its own pixels, so a test can tell
+/// which capture the canvas is holding rather than only that it is holding one.
+const OTHER_IMAGE = { width: 120, height: 80, rgba: new Array(120 * 80 * 4).fill(7) };
+const OTHER_BYTES = 120 * 80 * 4;
 /// The canvas is laid out at a quarter of the screenshot, so a region in CSS
 /// pixels is read back in image pixels and every number below is that factor.
 const SHOT_BOX = { left: 0, top: 0, width: 100, height: 100 };
@@ -49,6 +53,17 @@ function deferred<T>(): Deferred<T> {
     settle = resolve;
   });
   return { promise, resolve: settle };
+}
+
+/// A command answered once and then held open, which is the only way to get one
+/// run finished before the next one starts: the second call is the run under
+/// test, and nothing else is let near the window while it is in flight.
+function firstThenHeld<T>(first: T, second: Deferred<T>): () => Promise<T> {
+  let calls = 0;
+  return () => {
+    calls += 1;
+    return calls === 1 ? Promise.resolve(first) : second.promise;
+  };
 }
 
 /// The one place the run is announced, and the only account of the phase there
@@ -232,6 +247,116 @@ describe('the capture window', () => {
 
     await fireEvent.click(screen.getByLabelText<HTMLButtonElement>('Copy translated text'));
     expect(clipboardWrite).toHaveBeenCalledWith('hello');
+  });
+});
+
+/// The canvas holds the frame of the run before the one in flight until the
+/// backend publishes the screenshot that belongs to it. The window comes back on
+/// the screen before that message does, so a capture started with a capture
+/// already on screen would otherwise answer the run with the picture the user
+/// was already looking at.
+describe('the screenshot a run is still waiting for', () => {
+  it('covers the screenshot from the moment a run starts until its own frame lands', async () => {
+    const second = deferred<ResultPayload>();
+    installTauriMock({ capture_primary: firstThenHeld(result(), second) });
+    render(Main);
+    await drain();
+
+    await fireEvent.click(captureButton());
+    await screen.findByText('Capture complete.');
+    expect(lastPaintedFrame()).toEqual({
+      width: IMAGE.width,
+      height: IMAGE.height,
+      bytes: IMAGE_BYTES
+    });
+
+    await fireEvent.click(captureButton());
+    expect(await screen.findByText('Capturing…')).toBeDefined();
+    // The cover is over the canvas rather than in place of it, so the frame the
+    // run before this one left there is still the one the canvas is holding and
+    // the run has not started over a blank box.
+    expect(lastPaintedFrame()).toEqual({
+      width: IMAGE.width,
+      height: IMAGE.height,
+      bytes: IMAGE_BYTES
+    });
+
+    second.resolve(result({ image: OTHER_IMAGE }));
+    await waitFor(() => {
+      expect(screen.queryByText('Capturing…')).toBeNull();
+    });
+    expect(lastPaintedFrame()).toEqual({
+      width: OTHER_IMAGE.width,
+      height: OTHER_IMAGE.height,
+      bytes: OTHER_BYTES
+    });
+  });
+
+  it('takes the cover off a run that ended without a frame of its own', async () => {
+    const failing = deferred<ResultPayload>();
+    const second = deferred<ResultPayload>();
+    let calls = 0;
+    installTauriMock({
+      capture_primary: () => {
+        calls += 1;
+        if (calls === 1) return Promise.resolve(result());
+        if (calls === 2) return failing.promise;
+        return second.promise;
+      }
+    });
+    render(Main);
+    await drain();
+
+    await fireEvent.click(captureButton());
+    await screen.findByText('Capture complete.');
+    await fireEvent.click(captureButton());
+    expect(await screen.findByText('Capturing…')).toBeDefined();
+
+    failing.resolve(result({ ocr_text: '' }));
+    await waitFor(() => {
+      expect(screen.queryByText('Capturing…')).toBeNull();
+    });
+    expect(lastPaintedFrame()).toEqual({
+      width: IMAGE.width,
+      height: IMAGE.height,
+      bytes: IMAGE_BYTES
+    });
+
+    // The window is left ready for the next run rather than stuck on the cover
+    // the failed one put up.
+    await fireEvent.click(captureButton());
+    expect(await screen.findByText('Capturing…')).toBeDefined();
+    second.resolve(result({ image: OTHER_IMAGE }));
+    await waitFor(() => {
+      expect(lastPaintedFrame()).toEqual({
+        width: OTHER_IMAGE.width,
+        height: OTHER_IMAGE.height,
+        bytes: OTHER_BYTES
+      });
+    });
+  });
+
+  it('shows the screenshot the backend sends over the one the canvas holds', async () => {
+    const harness = installTauriMock();
+    render(Main);
+    await drain();
+
+    await harness.emit('capture-progress', { phase: 'reading', image: IMAGE });
+    expect(lastPaintedFrame()).toEqual({
+      width: IMAGE.width,
+      height: IMAGE.height,
+      bytes: IMAGE_BYTES
+    });
+
+    await harness.emit('capture-progress', {
+      phase: 'done',
+      payload: result({ image: OTHER_IMAGE })
+    });
+    expect(lastPaintedFrame()).toEqual({
+      width: OTHER_IMAGE.width,
+      height: OTHER_IMAGE.height,
+      bytes: OTHER_BYTES
+    });
   });
 });
 
