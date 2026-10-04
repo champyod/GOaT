@@ -46,7 +46,10 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libpipewire-0.3-dev
+          # xcap's wayshot backend links -lgbm, which none of the packages above
+          # pull in, so without libgbm-dev the crate fails at link with rust-lld
+          # unable to find library -lgbm. The build job installs the same set.
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libpipewire-0.3-dev libgbm-dev
       - name: Regenerate icons
         run: bun run tauri icon icon.png
       # Tauri's build script resolves externalBin at compile time, so the
@@ -126,7 +129,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libpipewire-0.3-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libpipewire-0.3-dev libgbm-dev
       - name: Regenerate icons
         run: bun run tauri icon icon.png
       # externalBin requires binaries/tesseract-ocr-<triple>, and that directory
