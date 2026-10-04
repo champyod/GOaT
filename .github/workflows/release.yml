@@ -6,11 +6,17 @@ on:
       - "v*"
   workflow_dispatch:
 
+# Least privilege by default; the two jobs that write to the repo opt back in.
 permissions:
-  contents: write
+  contents: read
 
+# Green gate, in one place: the matrix below only builds, `release` is the sole
+# writer of the release object, and it runs only when all three platforms are
+# green (`needs: build`) on a v* tag ref. A red matrix or a manual dispatch
+# therefore cannot leave a release object behind.
 jobs:
-  publish:
+  build:
+    name: build (${{ matrix.platform }})
     runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -94,23 +100,80 @@ jobs:
         run: bash tools/bundle-resources.sh
 
       # Signing is intentionally off: the repo holds no TAURI_SIGNING_* or APPLE_*
-      # secrets, and passing them as empty strings makes tauri-action attempt a
-      # codesign keychain import that then fails (see run 37170825011, macOS row).
-      # Re-add the variables here once the secrets actually exist.
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tauriScript: bun run tauri
-          tagName: v__VERSION__
-          releaseName: GOaT v__VERSION__
-          releaseBody: "See the assets to download and install this version."
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }}
+      # secrets, and tauri-action turned the empty variables into a codesign
+      # keychain import that then failed (see run 37170825011, macOS row).
+      # Export them here once the secrets actually exist.
+      # shell: bash because Windows runners default run: to PowerShell, and
+      # matrix.args has to vanish entirely on the rows that carry no target,
+      # the same way the unquoted expansion does for build.sh above.
+      - name: Build Tauri bundles
+        shell: bash
+        run: bun run tauri build ${{ matrix.args }}
 
+      # A release asset is one file with no parent directory, so the per-target
+      # subdirs (dmg/, deb/, nsis/, ...) are flattened into assets/ here and the
+      # artifact is the asset list itself. targets "all" also emits a .app
+      # directory beside the dmg on macOS; a release asset cannot be a directory,
+      # and the dmg next to it is the installable form.
+      - name: Stage bundles as flat assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          find src-tauri/target -type f -path '*/release/bundle/*' -not -path '*.app/*' \
+            -exec cp {} assets/ \;
+          ls -l assets
+          test -n "$(ls -A assets)"
+
+      # Named per platform because v4 artifacts are immutable, so matrix rows
+      # must never collide; `release` merges them back by this pattern. An empty
+      # asset dir fails above and again here, never silently shipping nothing.
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.platform }}
+          path: assets/
+          if-no-files-found: error
+
+  # The only job that writes the release object. `needs: build` skips it when any
+  # platform is red, and the `if` skips it on the workflow_dispatch run that only
+  # mints the tag, so the release is always created from a complete matrix.
+  release:
+    name: create draft release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+          path: bundles
+
+      # The tag is the release's identity and a tag run is re-runnable, so an
+      # existing draft gets its assets replaced instead of failing the re-run.
+      - name: Create draft release and upload bundles
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload --clobber "$TAG" bundles/*
+          else
+            gh release create "$TAG" --draft \
+              --title "GOaT ${TAG}" \
+              --notes "See the assets to download and install this version." \
+              bundles/*
+          fi
+
+  # Hangs off `release` rather than `build` so a manual dispatch, which has no
+  # release and whose github.ref_name is a branch, cannot announce one.
   notify:
-    needs: publish
+    needs: release
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -133,15 +196,18 @@ jobs:
           ')
           curl -s --fail-with-body -H "Content-Type: application/json" -d "$payload" "${WEBHOOK_URL}"
 
-  # A manual dispatch runs from a branch, so it carries no v* ref and tauri-action has
-  # nothing to release under. Minting the tag here, after the matrix is green, is what
-  # keeps a red build from ever reaching a published tag; the resulting tag push then
-  # starts the run that actually builds the official release. Gated on workflow_dispatch
-  # so that second run skips this job instead of re-pushing a tag at itself.
+  # A manual dispatch runs from a branch, so it carries no v* ref and there is
+  # nothing to release under. Minting the tag here, after the matrix is green, is
+  # what keeps a red build from ever reaching a published tag; the resulting tag
+  # push starts a second run whose `release` job is the one that publishes. Gated
+  # on workflow_dispatch so that second run skips this job instead of re-pushing
+  # a tag at itself.
   tag-release:
-    needs: [publish]
+    needs: [build]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
