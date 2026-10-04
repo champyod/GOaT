@@ -5,15 +5,25 @@
   import { Effect, getCurrentWindow } from '@tauri-apps/api/window';
   import Save from '@lucide/svelte/icons/save';
 
+  import {
+    CAPTURE_PLACEHOLDER,
+    GUIDANCE_ID,
+    NO_DIALOG_TITLE,
+    NOT_BOUND,
+    REGION_PLACEHOLDER,
+    WAITING_TITLE,
+    createKeybindConfig,
+    type TriggerRow
+  } from '$lib/keybind.svelte';
+
   const ICON_SIZE = 16;
-  const NOT_BOUND = 'Not bound';
   const KEY_ESCAPE = 'Escape';
   const KEY_ENTER = 'Enter';
   const KEY_ARROW_UP = 'ArrowUp';
   const KEY_ARROW_DOWN = 'ArrowDown';
   const DROPDOWN_MARK = 'data-dropdown';
-  const CAPTURE_TRIGGER_TITLE = 'Save capture trigger';
-  const REGION_TRIGGER_TITLE = 'Save region trigger';
+  const SAVE_CAPTURE_TITLE = 'Save capture trigger';
+  const SAVE_REGION_TITLE = 'Save region trigger';
   const CHOOSE_CAPTURE_TITLE = 'Choose capture trigger';
   const CHOOSE_REGION_TITLE = 'Choose region trigger';
   /// Why the switch is off on a build that will not write the entry. A dev binary
@@ -69,8 +79,6 @@
     { name: 'Violet', value: '#8a5ad0' },
   ];
 
-  type Trigger = 'capture' | 'region';
-
   type MonitorInfo = {
     index: number;
     name: string;
@@ -113,17 +121,6 @@
     is_dev: boolean;
   };
 
-  /// The backend in use, what it says about the session, and the trigger each
-  /// shortcut is actually bound to. A trigger is never read out of the stored
-  /// config alone, because a portal session ignores anything typed.
-  type HotkeyStatus = {
-    backend: 'system' | 'portal';
-    detail: string;
-    warning: string;
-    capture_trigger: string | null;
-    select_trigger: string | null;
-  };
-
   let autostart = $state(false);
   let autostartPath = $state('');
   let autostartBusy = $state(false);
@@ -152,11 +149,6 @@
   let nativePlatform = $state<NativePlatform>('unsupported');
   let nativeBlur = $state(false);
   let nativeBlurBusy = $state(false);
-  let hotkeyStatus = $state<HotkeyStatus | null>(null);
-  let captureShortcut = $state('');
-  let selectShortcut = $state('');
-  let savingTrigger = $state<Trigger | null>(null);
-  let triggerStatus = $state('');
   const registered: UnlistenFn[] = [];
 
   /// The diagnostics window is the one place a problem is written down, so a
@@ -189,22 +181,32 @@
       });
   }
 
-  /// The status line is the only account of what the backend actually holds, and
-  /// a window-system session reports the stored shortcut itself, so both fields
-  /// follow it instead of keeping a second copy that can drift from the trigger
-  /// a key press reaches.
-  function applyStatus(line: HotkeyStatus): void {
-    hotkeyStatus = line;
-    if (line.backend !== 'system') return;
-    captureShortcut = line.capture_trigger ?? captureShortcut;
-    selectShortcut = line.select_trigger ?? selectShortcut;
+  /// The trigger machine this panel shares with the setup window: the backend's
+  /// account of the session, the fields behind the two rows, and every state a
+  /// row draws itself from. A refusal still goes to the diagnostics window
+  /// through `reportError`, and now reads out on the panel under the rows as
+  /// well, so the reason is where the press was.
+  const keybind = createKeybindConfig({ onError: reportError });
+  const view = $derived(keybind.view);
+
+  function fieldValue(row: TriggerRow): string {
+    return keybind.field(row);
   }
 
-  // A portal session fires only the trigger its own dialog produced, so nothing
-  // typed in this panel is bound there and the row shows what the backend holds.
-  const portalBackend = $derived(hotkeyStatus?.backend === 'portal');
-  const captureTrigger = $derived(hotkeyStatus?.capture_trigger ?? null);
-  const selectTrigger = $derived(hotkeyStatus?.select_trigger ?? null);
+  function setFieldValue(row: TriggerRow, value: string): void {
+    keybind.setField(row, value);
+  }
+
+  /// What the pointer reads on a bind button. This panel's own wording names the
+  /// row while no round is going, but a round the desktop's own dialog is holding,
+  /// and a desktop with no dialog to open at all, both have to say so from the
+  /// button itself — a disabled button shows no title of its own, and the wait is
+  /// held for both rows at once rather than for the one that asked for it.
+  function triggerTitle(own: string): string {
+    if (view.saving || view.waiting) return WAITING_TITLE;
+    if (view.noShortcutDialog) return NO_DIALOG_TITLE;
+    return own;
+  }
 
   onMount(() => {
     invoke<AutostartState>('is_autostart')
@@ -237,14 +239,7 @@
       .catch((e) => {
         reportError('bar', String(e));
       });
-    void subscribe<HotkeyStatus>('hotkey-status', applyStatus);
-    invoke<HotkeyStatus>('hotkey_status')
-      .then((value) => {
-        applyStatus(value);
-      })
-      .catch((e) => {
-        reportError('hotkey', String(e));
-      });
+    void keybind.start();
     void subscribe<Appearance>('appearance-changed', applyAppearance);
     invoke<Appearance>('get_appearance')
       .then(applyAppearance)
@@ -259,6 +254,7 @@
         reportError('appearance', String(e));
       });
     return () => {
+      keybind.stop();
       for (const unlisten of registered) unlisten();
     };
   });
@@ -434,32 +430,6 @@
   /// stolen would leave the arrows with nothing to answer to.
   function keepFocusOnTrigger(event: MouseEvent): void {
     event.preventDefault();
-  }
-
-  /// Both rows save through the same command: a window-system session registers
-  /// the shortcut it is handed, while a portal session ignores it and opens the
-  /// desktop's own dialog instead. The reason a row failed belongs to the
-  /// diagnostics window, so the status line carries the outcome alone.
-  async function saveTrigger(trigger: Trigger): Promise<void> {
-    if (savingTrigger) return;
-    const isCapture = trigger === 'capture';
-    savingTrigger = trigger;
-    try {
-      const command = isCapture ? 'set_hotkey' : 'set_select_hotkey';
-      const held = await invoke<string>(command, {
-        hotkey: isCapture ? captureShortcut : selectShortcut,
-      });
-      if (isCapture) captureShortcut = held;
-      else selectShortcut = held;
-      triggerStatus = isCapture ? 'Capture trigger saved' : 'Region trigger saved';
-    } catch (e) {
-      reportError('hotkey', String(e));
-      triggerStatus = isCapture
-        ? 'Capture trigger not saved'
-        : 'Region trigger not saved';
-    } finally {
-      savingTrigger = null;
-    }
   }
 
   /// The window is hidden rather than closed: the bar raises it again on the
@@ -733,30 +703,32 @@
   <div class="keys">
     <div class="row">
       <span class="keylabel">Capture</span>
-      {#if portalBackend}
-        <span class="bound">{captureTrigger ?? NOT_BOUND}</span>
+      {#if view.portalBackend}
+        <span class="bound">{view.captureTrigger ?? NOT_BOUND}</span>
         <button
           class="choose"
           aria-label={CHOOSE_CAPTURE_TITLE}
-          title={CHOOSE_CAPTURE_TITLE}
-          onclick={() => saveTrigger('capture')}
-          disabled={savingTrigger !== null}
+          aria-describedby={view.guidanceId}
+          title={triggerTitle(CHOOSE_CAPTURE_TITLE)}
+          onclick={() => keybind.saveTrigger('capture')}
+          disabled={view.bindDisabled}
         >
           Choose…
         </button>
       {:else}
         <input
           class="shortcut"
-          bind:value={captureShortcut}
+          bind:value={() => fieldValue('capture'), (value) => setFieldValue('capture', value)}
           aria-label="Capture trigger"
-          placeholder="Ctrl+Shift+S"
+          placeholder={CAPTURE_PLACEHOLDER}
         />
         <button
           class="icon"
-          aria-label={CAPTURE_TRIGGER_TITLE}
-          title={CAPTURE_TRIGGER_TITLE}
-          onclick={() => saveTrigger('capture')}
-          disabled={savingTrigger !== null}
+          aria-label={SAVE_CAPTURE_TITLE}
+          aria-describedby={view.guidanceId}
+          title={triggerTitle(SAVE_CAPTURE_TITLE)}
+          onclick={() => keybind.saveTrigger('capture')}
+          disabled={view.bindDisabled}
         >
           <Save size={ICON_SIZE} />
         </button>
@@ -764,37 +736,42 @@
     </div>
     <div class="row">
       <span class="keylabel">Region</span>
-      {#if portalBackend}
-        <span class="bound">{selectTrigger ?? NOT_BOUND}</span>
+      {#if view.portalBackend}
+        <span class="bound">{view.selectTrigger ?? NOT_BOUND}</span>
         <button
           class="choose"
           aria-label={CHOOSE_REGION_TITLE}
-          title={CHOOSE_REGION_TITLE}
-          onclick={() => saveTrigger('region')}
-          disabled={savingTrigger !== null}
+          aria-describedby={view.guidanceId}
+          title={triggerTitle(CHOOSE_REGION_TITLE)}
+          onclick={() => keybind.saveTrigger('region')}
+          disabled={view.bindDisabled}
         >
           Choose…
         </button>
       {:else}
         <input
           class="shortcut"
-          bind:value={selectShortcut}
+          bind:value={() => fieldValue('region'), (value) => setFieldValue('region', value)}
           aria-label="Region trigger"
-          placeholder="Ctrl+Shift+E"
+          placeholder={REGION_PLACEHOLDER}
         />
         <button
           class="icon"
-          aria-label={REGION_TRIGGER_TITLE}
-          title={REGION_TRIGGER_TITLE}
-          onclick={() => saveTrigger('region')}
-          disabled={savingTrigger !== null}
+          aria-label={SAVE_REGION_TITLE}
+          aria-describedby={view.guidanceId}
+          title={triggerTitle(SAVE_REGION_TITLE)}
+          onclick={() => keybind.saveTrigger('region')}
+          disabled={view.bindDisabled}
         >
           <Save size={ICON_SIZE} />
         </button>
       {/if}
     </div>
-    {#if triggerStatus}
-      <p class="statusline" role="status">{triggerStatus}</p>
+    {#if view.noShortcutDialog && view.guidanceText}
+      <p id={GUIDANCE_ID} class="statusline" role="status">{view.guidanceText}</p>
+    {/if}
+    {#if view.statusLine}
+      <p class="statusline" data-tone={view.statusLineTone} role="status">{view.statusLine}</p>
     {/if}
   </div>
 
@@ -1263,12 +1240,21 @@
     font-size: 0.75rem;
   }
 
-  /* A save that landed is worth saying out loud here, where the row is; the
-     reason one did not belongs to the diagnostics window. */
+  /* A save that landed is worth saying out loud here, where the row is, and so is
+     a reason one did not: the shared machine reads both out on this line, and the
+     tone is what tells them apart at a glance. */
   .statusline {
     margin: 0;
     color: #c9ccd2;
     font-size: 0.75rem;
+  }
+
+  .statusline[data-tone='warning'] {
+    color: #ffc46b;
+  }
+
+  .statusline[data-tone='error'] {
+    color: #ff9d9d;
   }
 
   /* The window is dismissed from its own panel as well as by losing focus, so
